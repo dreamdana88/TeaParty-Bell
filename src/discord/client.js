@@ -5,15 +5,14 @@ import { logger } from "../utils/logger.js";
  * 创建 Discord Client 实例。
  *
  * Phase 1 只使用最小必要 Intents：
- * - Guilds：服务器基本信息
- * - GuildMessages：消息发送
+ * - Guilds（非特权）：服务器基本信息
+ * - GuildMessages（非特权）：消息事件。Phase 9 测试命令需要。
  *
- * 后续 Phase 需要监听 Boost 事件时会在此处补充。
+ * 后续 Phase 若需 Boost 检测，将评估补充 GuildMembers（特权）。
  *
- * @param {object} config - 完整配置对象（来自 config 模块）
- * @returns {Client}
+ * @returns {{ client: Client, login: Function, destroy: Function }}
  */
-export function createClient(config) {
+export function createClient() {
   const client = new Client({
     intents: [
       GatewayIntentBits.Guilds,
@@ -57,7 +56,7 @@ export function createClient(config) {
    */
   async function destroy() {
     logger.info("正在断开 Discord 连接...");
-    client.destroy();
+    await client.destroy();
     logger.info("Discord 连接已关闭");
   }
 

@@ -7,4 +7,9 @@ import { start } from "./core/bot.js";
 // 此处只负责调用 start()，不做任何业务逻辑。
 // ============================================================
 
-start();
+try {
+  await start();
+} catch (err) {
+  console.error("BOT 启动失败", err);
+  process.exit(1);
+}

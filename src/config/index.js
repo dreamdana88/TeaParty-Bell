@@ -8,14 +8,16 @@ const projectRoot = resolve(__dirname, "..", "..");
 dotenv.config({ path: resolve(projectRoot, ".env") });
 
 /**
- * 必填配置项列表。任何一项缺失都将导致启动失败。
+ * Phase 1 必填配置项。任何一项缺失都将导致启动失败。
+ *
+ * DEEPSEEK_API_KEY 在 Phase 4（DeepSeek 接入）之前不强制要求。
+ * Phase 4 时将其加入此列表。
  */
 const REQUIRED_CONFIG = [
   "DISCORD_BOT_TOKEN",
   "DISCORD_APPLICATION_ID",
   "DISCORD_GUILD_ID",
   "DISCORD_THANKS_CHANNEL_ID",
-  "DEEPSEEK_API_KEY",
 ];
 
 /**
@@ -35,7 +37,7 @@ export function loadConfig() {
     // DeepSeek
     deepseekApiKey: process.env.DEEPSEEK_API_KEY,
     deepseekBaseUrl: process.env.DEEPSEEK_BASE_URL || "https://api.deepseek.com",
-    deepseekModel: process.env.DEEPSEEK_MODEL || "deepseek-chat",
+    deepseekModel: process.env.DEEPSEEK_MODEL || "deepseek-v4-flash",
 
     // 应用行为
     testMode: stringToBool(process.env.TEST_MODE, false),
@@ -43,8 +45,6 @@ export function loadConfig() {
     reactionCount: parseInt(process.env.REACTION_COUNT, 10) || 8,
   };
 
-  // 仅 Phase 1 阶段：DeepSeek 尚未接入，暂不要求
-  // DEEPSEEK_API_KEY 在 Phase 4 时必需。此处宽容处理。
   const missing = REQUIRED_CONFIG.filter(
     (key) => !process.env[key]
   );
@@ -52,6 +52,13 @@ export function loadConfig() {
   if (missing.length > 0) {
     throw new Error(
       `缺少必要的环境变量（请检查 .env）：${missing.join(", ")}`
+    );
+  }
+
+  // Phase 4 之前 DeepSeek 未接入，仅提示不阻断
+  if (!process.env.DEEPSEEK_API_KEY) {
+    console.warn(
+      "[WARN] 未设置 DEEPSEEK_API_KEY。Phase 4 接入 DeepSeek 后此项将变为必填。"
     );
   }
 

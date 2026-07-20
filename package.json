@@ -1,6 +1,6 @@
 {
   "name": "teaparty-bell",
-  "version": "0.0.0.1",
+  "version": "0.1.0",
   "description": "茶会钟声（小G宝）— Discord 社区 BOT，自动感谢 Boost 助力",
   "private": true,
   "type": "module",

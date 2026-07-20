@@ -32,7 +32,7 @@ export async function start() {
   }
 
   // ---- 3. 创建 Discord Client ----
-  const { client, login, destroy } = createClient(config);
+  const { client, login, destroy } = createClient();
 
   // ---- 4. 登录 ----
   try {
