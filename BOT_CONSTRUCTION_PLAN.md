@@ -2,6 +2,24 @@
 
 暂定名称：小G宝 / 茶会钟声
 
+## 官方文档优先来源
+
+涉及 Discord 和 DeepSeek 接口时，优先查询以下官方文档：
+
+- Discord Gateway / Intents
+  <https://docs.discord.com/developers/events/gateway>
+
+- Discord Message Resource
+  <https://docs.discord.com/developers/resources/message>
+
+- discord.js 官方文档
+  <https://discord.js.org/docs>
+
+- DeepSeek API 官方文档
+  <https://api-docs.deepseek.com/>
+
+禁止优先使用博客、Stack Overflow、过时教程或未经验证的第三方示例替代官方文档。
+
 ## 一、项目定位
 
 开发一个拥有固定名称、头像和 Discord Bot 身份的社区 BOT。
