@@ -4,12 +4,21 @@ import { logger } from "../utils/logger.js";
 /**
  * 创建 Discord Client 实例。
  *
- * Phase 1 只使用最小必要 Intents：
- * - Guilds（非特权）：服务器基本信息
- * - GuildMessages（非特权）：接收 MESSAGE_CREATE 事件。
- *   Phase 2 计划监听其中的 GUILD_BOOST 系统消息来检测助力。
+ * Phase 1–2 使用的 Gateway Intents：
+ * - Guilds（非特权，无需 Developer Portal 额外开启）
+ *   服务器基本信息。
+ * - GuildMessages（非特权，无需 Developer Portal 额外开启）
+ *   接收 MESSAGE_CREATE 事件。
+ *   Phase 2 用于监听 GUILD_BOOST 系统消息（type 8/9/10/11）。
  *
- * Phase 2 若确认需 GuildMembers（特权）将通过官方文档验证后补充。
+ * 当前未使用任何 Privileged Intent。
+ * Privileged Intent（需 Portal 开启 + 100 服务器以上需验证）：
+ *   GuildMembers(2)、GuildPresences(256)、MessageContent(32768)
+ *
+ * 真实环境测试前置条件（Discord 服务器端）：
+ * - 服务器设置 → 概览 → System Messages Channel 已设置
+ * - 服务器设置 → 概览 → "Send a message when someone Boosts this server" 已开启
+ * 未满足以上条件时 Boost 系统消息不会生成，BOT 将无事件可监听。
  *
  * @returns {{ client: Client, login: Function, destroy: Function }}
  */

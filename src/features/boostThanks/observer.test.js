@@ -7,9 +7,10 @@
  * 运行：node src/features/boostThanks/observer.test.js
  */
 
-import { extractBoostObservation } from "./observer.js";
+import { EventEmitter } from "events";
+import { extractBoostObservation, setupBoostObserver } from "./observer.js";
 import { isBoostMessageType, BOOST_MESSAGE_TYPES } from "./constants.js";
-import { MessageType } from "discord.js";
+import { MessageType, Events } from "discord.js";
 
 let passed = 0;
 let failed = 0;
@@ -169,6 +170,128 @@ for (const sk of sensitiveKeys) {
 }
 // authorId/authorUsername 不包含密钥信息
 assert(!obs.authorUsername?.includes("token"), "authorUsername 不含 token 字样");
+
+// ============================================================
+// 测试 10：setupBoostObserver 集成测试
+// 验证注册后 boost 消息触发日志、普通消息不触发
+// ============================================================
+
+console.log("\n=== 测试 10：setupBoostObserver 事件监听集成 ===\n");
+
+/**
+ * Mock Client：继承 EventEmitter，模拟 discord.js Client 的 on() 行为
+ */
+class MockClient extends EventEmitter {
+  constructor() {
+    super();
+  }
+}
+
+/**
+ * Mock Logger：记录 info 调用次数和参数
+ */
+function makeMockLogger() {
+  const calls = [];
+  return {
+    calls,
+    info(msg, data) { calls.push({ level: "info", msg, data }); },
+    debug(msg, data) { calls.push({ level: "debug", msg, data }); },
+    warn(msg, data) { calls.push({ level: "warn", msg, data }); },
+    error(msg, data) { calls.push({ level: "error", msg, data }); },
+  };
+}
+
+// --- 10a: 注册后，Boost 消息触发 info 日志 ---
+{
+  const mockClient = new MockClient();
+  const mockLogger = makeMockLogger();
+  setupBoostObserver(mockClient, mockLogger);
+
+  const boostMsg = makeMockMessage({ type: 8, system: true });
+  mockClient.emit(Events.MessageCreate, boostMsg);
+
+  const boostLogs = mockLogger.calls.filter(c => c.level === "info");
+  assert(boostLogs.length >= 1, "Boost type 8 消息触发 ≥1 条 info 日志");
+  if (boostLogs.length > 0) {
+    assert(
+      boostLogs.some(c => c.msg?.includes("[BoostObserver]")),
+      "日志包含 [BoostObserver] 标记"
+    );
+    const obsLog = boostLogs.find(c => c.msg?.includes("[BoostObserver]"));
+    assert(obsLog.data?.messageType === 8, "日志 data 中 messageType = 8");
+  }
+}
+
+// --- 10b: 注册后，普通消息不触发观察日志 ---
+{
+  const mockClient = new MockClient();
+  const mockLogger = makeMockLogger();
+  setupBoostObserver(mockClient, mockLogger);
+
+  const normalMsg = makeMockMessage({ type: MessageType.Default, system: false });
+  mockClient.emit(Events.MessageCreate, normalMsg);
+
+  const boostLogs = mockLogger.calls.filter(c => c.level === "info" && c.msg?.includes("[BoostObserver]"));
+  assertEqual(boostLogs.length, 0, "普通 type 0 消息不触发 [BoostObserver] 日志");
+}
+
+// --- 10c: 非 Boost 系统消息不触发 ---
+{
+  const mockClient = new MockClient();
+  const mockLogger = makeMockLogger();
+  setupBoostObserver(mockClient, mockLogger);
+
+  const joinMsg = makeMockMessage({ type: MessageType.UserJoin, system: true });
+  mockClient.emit(Events.MessageCreate, joinMsg);
+
+  const boostLogs = mockLogger.calls.filter(c => c.level === "info" && c.msg?.includes("[BoostObserver]"));
+  assertEqual(boostLogs.length, 0, "UserJoin (type 7) 系统消息不触发 [BoostObserver]");
+}
+
+// --- 10d: partial 消息不触发 ---
+{
+  const mockClient = new MockClient();
+  const mockLogger = makeMockLogger();
+  setupBoostObserver(mockClient, mockLogger);
+
+  const partialMsg = makeMockMessage({ type: 8, system: true, partial: true });
+  mockClient.emit(Events.MessageCreate, partialMsg);
+
+  const boostLogs = mockLogger.calls.filter(c => c.level === "info" && c.msg?.includes("[BoostObserver]"));
+  assertEqual(boostLogs.length, 0, "partial Boost 消息不触发 [BoostObserver]");
+}
+
+// --- 10e: 所有四种 Boost 类型均触发 ---
+for (const typeNum of [8, 9, 10, 11]) {
+  const mockClient = new MockClient();
+  const mockLogger = makeMockLogger();
+  setupBoostObserver(mockClient, mockLogger);
+
+  const msg = makeMockMessage({ type: typeNum, system: true });
+  mockClient.emit(Events.MessageCreate, msg);
+
+  const boostLogs = mockLogger.calls.filter(c => c.level === "info" && c.msg?.includes("[BoostObserver]"));
+  assertEqual(boostLogs.length, 1, `Boost type ${typeNum} 精确触发 1 条 [BoostObserver] 日志`);
+}
+
+// --- 10f: 多个不同消息仅 Boost 触发 ---
+{
+  const mockClient = new MockClient();
+  const mockLogger = makeMockLogger();
+  setupBoostObserver(mockClient, mockLogger);
+
+  mockClient.emit(Events.MessageCreate, makeMockMessage({ type: MessageType.Default, system: false }));
+  mockClient.emit(Events.MessageCreate, makeMockMessage({ type: MessageType.Reply, system: false }));
+  mockClient.emit(Events.MessageCreate, makeMockMessage({ type: 8, system: true }));
+  mockClient.emit(Events.MessageCreate, makeMockMessage({ type: MessageType.UserJoin, system: true }));
+  mockClient.emit(Events.MessageCreate, makeMockMessage({ type: 9, system: true }));
+  mockClient.emit(Events.MessageCreate, makeMockMessage({ type: MessageType.Default, system: false }));
+
+  const boostLogs = mockLogger.calls.filter(c => c.level === "info" && c.msg?.includes("[BoostObserver]"));
+  assertEqual(boostLogs.length, 2, "混合消息中仅 2 条 Boost (type 8,9) 触发 [BoostObserver]");
+  assertEqual(boostLogs[0].data?.messageType, 8, "第一条是 type 8");
+  assertEqual(boostLogs[1].data?.messageType, 9, "第二条是 type 9");
+}
 
 // ============================================================
 // Summary
