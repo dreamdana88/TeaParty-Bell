@@ -6,9 +6,10 @@ import { logger } from "../utils/logger.js";
  *
  * Phase 1 只使用最小必要 Intents：
  * - Guilds（非特权）：服务器基本信息
- * - GuildMessages（非特权）：消息事件。Phase 9 测试命令需要。
+ * - GuildMessages（非特权）：接收 MESSAGE_CREATE 事件。
+ *   Phase 2 计划监听其中的 GUILD_BOOST 系统消息来检测助力。
  *
- * 后续 Phase 若需 Boost 检测，将评估补充 GuildMembers（特权）。
+ * Phase 2 若确认需 GuildMembers（特权）将通过官方文档验证后补充。
  *
  * @returns {{ client: Client, login: Function, destroy: Function }}
  */

@@ -42,7 +42,7 @@ export function loadConfig() {
     // 应用行为
     testMode: stringToBool(process.env.TEST_MODE, false),
     logLevel: process.env.LOG_LEVEL || "info",
-    reactionCount: parseInt(process.env.REACTION_COUNT, 10) || 8,
+    reactionCount: parseInt(process.env.REACTION_COUNT, 10) || 10,
   };
 
   const missing = REQUIRED_CONFIG.filter(
@@ -52,13 +52,6 @@ export function loadConfig() {
   if (missing.length > 0) {
     throw new Error(
       `缺少必要的环境变量（请检查 .env）：${missing.join(", ")}`
-    );
-  }
-
-  // Phase 4 之前 DeepSeek 未接入，仅提示不阻断
-  if (!process.env.DEEPSEEK_API_KEY) {
-    console.warn(
-      "[WARN] 未设置 DEEPSEEK_API_KEY。Phase 4 接入 DeepSeek 后此项将变为必填。"
     );
   }
 
