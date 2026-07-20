@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+
+# Environment (contains secrets — do NOT commit)
+.env
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build / output
+dist/
+build/
+
+# Debug logs
+*.log
+logs/
+
+# Data (runtime generated)
+data/history/*.json
+!data/history/.gitkeep
