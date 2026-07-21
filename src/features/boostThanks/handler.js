@@ -92,7 +92,17 @@ export function createBoostThanksHandler(opts) {
       // ---- 3. 拼装消息 ----
       const content = assembleMessage(title, body);
 
-      // ---- 4. 发送到感谢频道 ----
+      // ---- 4. TEST_MODE：跳过真实发送（仅预览并返回成功）----
+      if (config.testMode) {
+        logger.info("[BoostThanks] TEST_MODE：跳过真实发送", {
+          ...ctx,
+          targetChannelId: config.discordThanksChannelId,
+          content,
+        });
+        return true;
+      }
+
+      // ---- 5. 发送到感谢频道 ----
       const channelId = config.discordThanksChannelId;
       try {
         await doSend(client, channelId, content);
@@ -105,7 +115,7 @@ export function createBoostThanksHandler(opts) {
         return false;
       }
 
-      // ---- 5. 成功 ----
+      // ---- 6. 成功 ----
       logger.info("[BoostThanks] 感谢消息已发送", {
         ...ctx,
         channelId,

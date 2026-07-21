@@ -689,6 +689,81 @@ for (const typeNum of [9, 10, 11]) {
 }
 
 // ============================================================
+// 测试 13：onAggregated 回调错误捕获（Phase 6 Review Fix）
+// ============================================================
+
+console.log("\n=== 测试 13a：onAggregated 同步抛错被捕获 ===\n");
+{
+  const mockClient = new MockClient();
+  const mockLogger = makeMockLogger();
+  let callbackCalled = false;
+  const onAggregated = () => {
+    callbackCalled = true;
+    throw new Error("同步回调失败");
+  };
+  setupBoostObserver(mockClient, mockLogger, SHORT_WINDOW, onAggregated);
+
+  mockClient.emit(Events.MessageCreate, makeMockMessage({ type: 8, system: true }));
+
+  await new Promise(r => setTimeout(r, 30));
+
+  assert(callbackCalled, "回调被调用");
+  const errLogs = mockLogger.calls.filter(c => c.level === "error");
+  const cbErrLogs = errLogs.filter(c => (c.msg ?? "").includes("回调失败"));
+  assert(cbErrLogs.length >= 1, "产生回调失败错误日志");
+}
+
+console.log("\n=== 测试 13b：onAggregated 异步 reject 被捕获 ===\n");
+{
+  const mockClient = new MockClient();
+  const mockLogger = makeMockLogger();
+  let callbackCalled = false;
+  const onAggregated = async () => {
+    callbackCalled = true;
+    throw new Error("异步回调 reject");
+  };
+  setupBoostObserver(mockClient, mockLogger, SHORT_WINDOW, onAggregated);
+
+  mockClient.emit(Events.MessageCreate, makeMockMessage({ type: 8, system: true }));
+
+  // 等待 microtask + Promise 链完成
+  await new Promise(r => setTimeout(r, 30));
+
+  assert(callbackCalled, "异步回调被调用");
+  const errLogs = mockLogger.calls.filter(c => c.level === "error");
+  const cbErrLogs = errLogs.filter(c => (c.msg ?? "").includes("回调失败"));
+  assert(cbErrLogs.length >= 1, "产生回调失败错误日志（异步 reject）");
+}
+
+console.log("\n=== 测试 13c：onAggregated 回调抛错不中断 observer 主流程 ===\n");
+{
+  const mockClient = new MockClient();
+  const mockLogger = makeMockLogger();
+  let callCount = 0;
+  const onAggregated = () => {
+    callCount++;
+    throw new Error("每次必崩");
+  };
+  setupBoostObserver(mockClient, mockLogger, SHORT_WINDOW, onAggregated);
+
+  // 发送两次 Boost
+  mockClient.emit(Events.MessageCreate, makeMockMessage({ type: 8, system: true }));
+  await new Promise(r => setTimeout(r, 30));
+  mockClient.emit(Events.MessageCreate, makeMockMessage({ type: 8, system: true, id: "msg_second" }));
+  await new Promise(r => setTimeout(r, 30));
+
+  // 两次回调都应被调用（主流程未中断）
+  assert(callCount >= 2, "两次回调均被调用（主流程未因错误中断）");
+  const errLogs = mockLogger.calls.filter(c => c.level === "error");
+  const cbErrLogs = errLogs.filter(c => (c.msg ?? "").includes("回调失败"));
+  assert(cbErrLogs.length >= 2, "每次失败均记录错误日志");
+
+  // 验证聚合仍正常运行
+  const aggLogs = mockLogger.calls.filter(c => (c.msg ?? "").includes("[BoostAggregator]"));
+  assert(aggLogs.length >= 2, "聚合日志正常（observer 主流程不受影响）");
+}
+
+// ============================================================
 // Summary
 // ============================================================
 

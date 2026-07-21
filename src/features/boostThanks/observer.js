@@ -69,8 +69,16 @@ export function setupBoostObserver(client, logger, config, onAggregated) {
   aggregator.onAggregate((finalEvent) => {
     logger.info("[BoostAggregator] 聚合完成", finalEvent);
     if (onAggregated) {
-      // fire-and-forget：handler 内部管理自己的错误
-      onAggregated(finalEvent);
+      // fire-and-forget，但捕获同步/异步错误以防 unhandled rejection
+      Promise.resolve()
+        .then(() => onAggregated(finalEvent))
+        .catch((error) => {
+          logger.error("[BoostObserver] 聚合完成回调失败", {
+            error: error?.message ?? String(error),
+            guildId: finalEvent.guildId,
+            userId: finalEvent.userId,
+          });
+        });
     }
   });
 

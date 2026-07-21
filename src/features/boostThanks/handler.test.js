@@ -262,6 +262,66 @@ console.log("\n=== 测试 9：感谢频道 ID 正确使用 ===\n");
   assertEqual(mockSender.calls[0].channelId, "111111111111", "使用自定义 channelId");
 }
 
+console.log("\n=== 测试 10：TEST_MODE=true → 完整生成预览，不真实发送 ===\n");
+{
+  const mockSender = makeMockSender();
+  const mockLogger = makeMockLogger();
+  const testModeConfig = { ...TEST_CONFIG, testMode: true };
+  const handler = createBoostThanksHandler({
+    config: testModeConfig,
+    client: MOCK_CLIENT,
+    logger: mockLogger,
+    aiOverride: makeMockAi("这是TEST_MODE下的AI正文🧪"),
+    senderOverride: mockSender.sendMessage,
+  });
+
+  const result = await handler.handleBoostEvent(TEST_EVENT);
+  assertEqual(result, true, "TEST_MODE 返回 true");
+  assertEqual(mockSender.calls.length, 0, "TEST_MODE sender 调用次数为 0");
+
+  // 验证预览日志
+  const testModeLogs = mockLogger.calls.filter(c => c.msg && c.msg.includes("TEST_MODE"));
+  assertEqual(testModeLogs.length, 1, "产生 TEST_MODE 跳过发送日志");
+  assert(testModeLogs[0].data.content, "日志含完整 content");
+  assertIncludes(testModeLogs[0].data.content, "这是TEST_MODE下的AI正文🧪", "预览含 AI 正文");
+  assertIncludes(testModeLogs[0].data.content, "两个助力", "预览含正确标题");
+  assertIncludes(testModeLogs[0].data.content, "<@1426581758194876577>", "预览含用户 Mention");
+  assertEqual(testModeLogs[0].data.targetChannelId, "999999999999", "日志记录目标 channelId");
+  assertEqual(testModeLogs[0].data.userId, TEST_EVENT.userId, "日志含 userId");
+  assertEqual(testModeLogs[0].data.boostCount, 2, "日志含 boostCount");
+
+  // 验证 AI 确实被调用（产生的预览日志包含 AI 正文即证明 AI 执行了）
+  // 验证标题被构造（预览含标题即证明）
+  // 验证消息被拼装（预览含完整 content 即证明）
+}
+
+console.log("\n=== 测试 11：TEST_MODE=false → 正常发送路径继续成立 ===\n");
+{
+  const mockSender = makeMockSender();
+  const mockLogger = makeMockLogger();
+  const prodConfig = { ...TEST_CONFIG, testMode: false };
+  const handler = createBoostThanksHandler({
+    config: prodConfig,
+    client: MOCK_CLIENT,
+    logger: mockLogger,
+    aiOverride: makeMockAi("正常发送路径正文✅"),
+    senderOverride: mockSender.sendMessage,
+  });
+
+  const result = await handler.handleBoostEvent(TEST_EVENT);
+  assertEqual(result, true, "testMode=false 返回 true");
+  assertEqual(mockSender.calls.length, 1, "testMode=false sender 被调用 1 次");
+  assertIncludes(mockSender.calls[0].content, "正常发送路径正文✅", "消息含 AI 正文");
+
+  // 验证没有 TEST_MODE 跳过日志
+  const testModeLogs = mockLogger.calls.filter(c => c.msg && c.msg.includes("TEST_MODE"));
+  assertEqual(testModeLogs.length, 0, "testMode=false 无 TEST_MODE 日志");
+
+  // 验证有成功发送日志
+  const successLogs = mockLogger.calls.filter(c => c.msg && c.msg.includes("已发送"));
+  assertEqual(successLogs.length, 1, "testMode=false 产生成功发送日志");
+}
+
 // ============================================================
 console.log(`\n========================================`);
 console.log(`测试结果：${passed} passed, ${failed} failed`);
