@@ -2,6 +2,7 @@ import { loadConfig } from "../config/index.js";
 import { setLogLevel, logger } from "../utils/logger.js";
 import { createClient } from "../discord/client.js";
 import { setupBoostObserver } from "../features/boostThanks/observer.js";
+import { createBoostThanksHandler } from "../features/boostThanks/handler.js";
 
 /**
  * TeaParty-Bell 主生命周期管理。
@@ -35,8 +36,14 @@ export async function start() {
   // ---- 3. 创建 Discord Client ----
   const { client, login, destroy } = createClient();
 
-  // ---- 3.5 注册 Feature 监听器（须在登录前完成）----
-  const observerCleanup = setupBoostObserver(client, logger, config);
+  // ---- 3.5 注册 Feature 监听器 + 感谢发送链路（须在登录前完成）----
+  const thanksHandler = createBoostThanksHandler({ config, client, logger });
+  const observerCleanup = setupBoostObserver(
+    client,
+    logger,
+    config,
+    (event) => thanksHandler.handleBoostEvent(event)
+  );
 
   // ---- 4. 登录 ----
   try {

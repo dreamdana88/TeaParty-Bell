@@ -1,16 +1,14 @@
 /**
- * Boost 事件观察器（Phase 2–3）。
+ * Boost 事件观察器（Phase 2–6）。
  *
  * 职责：
  * - 监听 MESSAGE_CREATE 事件
  * - 筛选 Boost 相关系统消息（type 8/9/10/11）
  * - 将可计数 Boost（type 8）标准化为 BoostEvent 并送入聚合器
  * - 将 Tier 通知（type 9/10/11）仅做观察日志，不进入聚合
- * - 聚合完成后输出最终 BoostEvent 日志
+ * - 聚合完成后调用 onAggregated 回调（Phase 6：感谢发送链路）
  *
  * 当前不执行：
- * - DeepSeek 调用
- * - 感谢消息发送
  * - Reaction 添加
  * - 防重复持久化
  */
@@ -56,19 +54,24 @@ export function extractBoostObservation(message) {
 }
 
 /**
- * 向 Client 注册 Boost 观察监听器（Phase 3 含聚合）。
+ * 向 Client 注册 Boost 观察监听器。
  *
  * @param {import("discord.js").Client} client - Discord Client 实例
  * @param {object} logger - Logger 实例
  * @param {object} config - 完整配置对象（含 boostAggregationWindowMs）
+ * @param {Function} [onAggregated] - Phase 6：聚合完成回调 (event) => void
  * @returns {{ destroy: Function }} 返回清理函数供 shutdown 使用
  */
-export function setupBoostObserver(client, logger, config) {
+export function setupBoostObserver(client, logger, config, onAggregated) {
   const aggregator = createAggregator(config);
 
-  // 聚合完成回调：输出最终 BoostEvent
+  // 聚合完成回调
   aggregator.onAggregate((finalEvent) => {
     logger.info("[BoostAggregator] 聚合完成", finalEvent);
+    if (onAggregated) {
+      // fire-and-forget：handler 内部管理自己的错误
+      onAggregated(finalEvent);
+    }
   });
 
   client.on(Events.MessageCreate, (message) => {
