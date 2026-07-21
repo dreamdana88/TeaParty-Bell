@@ -45,8 +45,10 @@ export function loadConfig() {
     reactionCount: parseInt(process.env.REACTION_COUNT, 10) || 10,
 
     // 聚合
-    boostAggregationWindowMs:
-      parseInt(process.env.BOOST_AGGREGATION_WINDOW_MS, 10) || 15000,
+    boostAggregationWindowMs: validatePositiveInt(
+      process.env.BOOST_AGGREGATION_WINDOW_MS,
+      15000
+    ),
   };
 
   const missing = REQUIRED_CONFIG.filter(
@@ -69,4 +71,23 @@ export function loadConfig() {
 function stringToBool(value, defaultValue) {
   if (value === undefined || value === null) return defaultValue;
   return value === "true" || value === "1";
+}
+
+/**
+ * 正整数校验。
+ * 非数字、0、负数、非整数均回退到 defaultValue。
+ *
+ * @param {string|undefined|null} value - 环境变量原始值
+ * @param {number} defaultValue - 默认值
+ * @returns {number} 有效的正整数
+ */
+function validatePositiveInt(value, defaultValue) {
+  if (value === undefined || value === null || value === "") {
+    return defaultValue;
+  }
+  const num = Number(value);
+  if (!Number.isInteger(num) || num <= 0) {
+    return defaultValue;
+  }
+  return num;
 }

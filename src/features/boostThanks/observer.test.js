@@ -228,7 +228,7 @@ console.log("\n=== 测试 10：normalizeObservation 标准化 ===\n");
 }
 
 {
-  // 10b: 缺失 userId → null
+  // 10b: 缺失 userId（关键字段）→ null
   const noUserId = {
     messageId: "msg",
     messageType: 8,
@@ -244,7 +244,71 @@ console.log("\n=== 测试 10：normalizeObservation 标准化 ===\n");
 }
 
 {
-  // 10c: 缺失 displayName → 不崩溃，设为 null
+  // 10c: 缺失 eventId（关键字段）→ null
+  const noEventId = {
+    messageId: null,
+    messageType: 8,
+    authorId: "u1",
+    authorUsername: "Test",
+    guildId: "g",
+    channelId: "c",
+    memberDisplayName: "Disp",
+    createdTimestamp: 1,
+  };
+  const evt = normalizeObservation(noEventId);
+  assertEqual(evt, null, "缺失 eventId（messageId=null）时返回 null");
+}
+
+{
+  // 10d: 缺失 guildId（关键字段）→ null
+  const noGuildId = {
+    messageId: "msg",
+    messageType: 8,
+    authorId: "u1",
+    authorUsername: "Test",
+    guildId: null,
+    channelId: "c",
+    memberDisplayName: "Disp",
+    createdTimestamp: 1,
+  };
+  const evt = normalizeObservation(noGuildId);
+  assertEqual(evt, null, "缺失 guildId 时返回 null");
+}
+
+{
+  // 10e: 缺失 timestamp（关键字段，null）→ null
+  const noTimestamp = {
+    messageId: "msg",
+    messageType: 8,
+    authorId: "u1",
+    authorUsername: "Test",
+    guildId: "g",
+    channelId: "c",
+    memberDisplayName: "Disp",
+    createdTimestamp: null,
+  };
+  const evt = normalizeObservation(noTimestamp);
+  assertEqual(evt, null, "缺失 timestamp（null）时返回 null");
+}
+
+{
+  // 10f: timestamp 为 0 → null（Discord snowflake 时间戳不会是 0）
+  const zeroTimestamp = {
+    messageId: "msg",
+    messageType: 8,
+    authorId: "u1",
+    authorUsername: "Test",
+    guildId: "g",
+    channelId: "c",
+    memberDisplayName: "Disp",
+    createdTimestamp: 0,
+  };
+  const evt = normalizeObservation(zeroTimestamp);
+  assertEqual(evt, null, "timestamp=0 时返回 null");
+}
+
+{
+  // 10g: 缺失 displayName → 不崩溃，设为 null
   const noDisplay = {
     messageId: "msg",
     messageType: 8,
@@ -261,7 +325,7 @@ console.log("\n=== 测试 10：normalizeObservation 标准化 ===\n");
 }
 
 {
-  // 10d: 缺失 username → 不崩溃，设为 null
+  // 10h: 缺失 username → 不崩溃，设为 null
   const noUsername = {
     messageId: "msg",
     messageType: 8,
@@ -275,6 +339,23 @@ console.log("\n=== 测试 10：normalizeObservation 标准化 ===\n");
   const evt = normalizeObservation(noUsername);
   assertNotNull(evt, "username=null 时仍返回对象");
   assertEqual(evt.username, null, "  username = null");
+}
+
+{
+  // 10i: sourceChannelId 为 null → 允许（非关键字段）
+  const noChannel = {
+    messageId: "msg",
+    messageType: 8,
+    authorId: "u1",
+    authorUsername: "Test",
+    guildId: "g",
+    channelId: null,
+    memberDisplayName: "Disp",
+    createdTimestamp: 1,
+  };
+  const evt = normalizeObservation(noChannel);
+  assertNotNull(evt, "sourceChannelId=null 时仍返回对象");
+  assertEqual(evt.sourceChannelId, null, "  sourceChannelId = null");
 }
 
 // ============================================================
@@ -591,7 +672,7 @@ for (const typeNum of [9, 10, 11]) {
   cleanup.destroy();
 }
 
-// --- 12g: 缺失 userId 的 Boost 记录 warn 并跳过 ---
+// --- 12g: 缺失关键字段的 Boost 记录 warn 并跳过 ---
 {
   const mockClient = new MockClient();
   const mockLogger = makeMockLogger();
@@ -600,7 +681,9 @@ for (const typeNum of [9, 10, 11]) {
   mockClient.emit(Events.MessageCreate, makeMockMessage({ type: 8, system: true, author: null }));
 
   const warnLogs = mockLogger.calls.filter(c => c.level === "warn");
-  assert(warnLogs.length >= 1, "缺失 userId 时产生 warn 日志");
+  assert(warnLogs.length >= 1, "缺失关键字段时产生 warn 日志");
+  const warnMsg = warnLogs[0]?.msg ?? "";
+  assert(warnMsg.includes("缺少关键字段"), "warn 日志提示缺少关键字段");
   const aggLogs = mockLogger.calls.filter(c => c.msg?.includes("[BoostAggregator]"));
   assertEqual(aggLogs.length, 0, "不进入聚合");
 }

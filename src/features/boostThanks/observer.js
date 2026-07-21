@@ -94,9 +94,11 @@ export function setupBoostObserver(client, logger, config) {
       // 可计数 Boost（type 8）：标准化 → 聚合
       const boostEvent = normalizeObservation(observation);
       if (!boostEvent) {
-        logger.warn("[BoostObserver] 标准化失败（缺少 userId），跳过", {
+        logger.warn("[BoostObserver] 标准化失败（缺少关键字段），跳过", {
           messageId: observation.messageId,
           authorId: observation.authorId,
+          guildId: observation.guildId,
+          createdTimestamp: observation.createdTimestamp,
         });
         return;
       }

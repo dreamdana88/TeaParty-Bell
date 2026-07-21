@@ -44,7 +44,7 @@ export function createAggregator(config) {
       const timer = setTimeout(() => {
         pending.delete(key);
         if (onComplete) {
-          onComplete(existing?.boostEvent || boostEvent);
+          onComplete(boostEvent);
         }
       }, windowMs);
 

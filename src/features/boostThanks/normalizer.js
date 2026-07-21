@@ -31,26 +31,35 @@
  * - sourceChannelId  ← observation.channelId
  * - timestamp        ← observation.createdTimestamp
  *
+ * 关键字段（eventId / userId / guildId / timestamp）缺失任意一个
+ * 即拒绝标准化，返回 null。displayName、username、sourceChannelId
+ * 允许为 null。
+ *
  * @param {object} observation - extractBoostObservation 的输出
- * @returns {BoostEvent|null} 标准化事件；若缺少 userId 则返回 null
+ * @returns {BoostEvent|null} 标准化事件；缺少关键字段则返回 null
  */
 export function normalizeObservation(observation) {
+  const eventId = observation.messageId;
   const userId = observation.authorId;
-  if (!userId) {
-    // userId 是身份主键，缺失时拒绝进入聚合流程
+  const guildId = observation.guildId;
+  const timestamp = observation.createdTimestamp;
+
+  // 关键字段校验：eventId、userId、guildId、timestamp 均不得缺失
+  // userId 是身份主键，timestamp 为 0 视为缺失（Discord snowflake 时间戳不会为 0）
+  if (!eventId || !userId || !guildId || !timestamp) {
     return null;
   }
 
   return {
     eventType: "boost",
-    eventId: observation.messageId,
+    eventId,
     userId,
     username: observation.authorUsername ?? null,
     displayName: observation.memberDisplayName ?? null,
-    guildId: observation.guildId,
-    sourceChannelId: observation.channelId,
-    timestamp: observation.createdTimestamp,
+    guildId,
+    sourceChannelId: observation.channelId ?? null,
+    timestamp,
     boostCount: 1,
-    eventIds: [observation.messageId],
+    eventIds: [eventId],
   };
 }

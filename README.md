@@ -66,13 +66,29 @@ data/
 
 ## 施工状态
 
-当前处于 **Phase 2：Boost 事件验证**（自动测试完成，等待真实 Discord Boost 环境验证）。
+当前处于 **Phase 3：统一事件层与连续助力聚合**。
+
+| Phase | 状态 | 说明 |
+|-------|------|------|
+| Phase 1：基础骨架 | ✅ 完成 | Node.js 项目骨架、配置、日志、Discord 客户端、启动生命周期 |
+| Phase 2：Boost 事件验证 | ✅ 完成 | Boost 事件识别（MESSAGE_CREATE + type 8/9/10/11），**已通过真实 Discord Boost 环境验证** |
+| Phase 3：统一事件层 + 聚合 | 🔄 进行中 | BoostEvent 标准化 + 连续助力聚合，自动测试完成（130 tests），**待真实单次 Boost 聚合链路验证** |
+| Phase 4–9 | ⏳ 待开始 | 详见施工规划 |
 
 详细施工规划见 [BOT_CONSTRUCTION_PLAN.md](./BOT_CONSTRUCTION_PLAN.md)。
 
+### Phase 2 真实验证结论
+
+已在真实 Discord 环境中确认：
+
+- `GuildBoost`（type 8）系统消息可通过 `Guilds` + `GuildMessages`（均为非特权 Intent）正常捕获
+- `message.author.id`、`message.author.username`、`message.member.displayName`、`message.guildId`、`message.channelId`、`message.createdTimestamp` 均可从系统消息中获取
+- 不需要 `GuildMembers` 或 `GuildPresences` 特权 Intent
+- 每次 Boost 产生一条独立的 type 8 系统消息
+
 ### 真实环境测试前置条件
 
-在真实 Discord 环境中验证 Boost 检测前，请确保：
+在真实 Discord 环境中运行本 BOT 前，请确保：
 
 **Discord Developer Portal（BOT 端）：**
 
@@ -94,14 +110,6 @@ data/
 **`.env` 配置：**
 
 - `DISCORD_BOT_TOKEN`、`DISCORD_APPLICATION_ID`、`DISCORD_GUILD_ID`、`DISCORD_THANKS_CHANNEL_ID` 已正确填写
-
-**验证步骤：**
-
-1. 启动 BOT：`npm start`
-2. 确认日志中看到 `Discord BOT 已就绪`
-3. 请一位成员对服务器进行 Nitro Boost 助力
-4. 观察 BOT 日志中是否出现 `[BoostObserver] 检测到疑似 Boost 事件`
-5. 将包含完整 `[BoostObserver]` 日志的内容提供给开发者继续分析
 
 ## License
 
