@@ -73,27 +73,24 @@ const STYLE_POOL = [
 const STYLE_HINTS = {
   lifeBlessing:
     "本次风格方向：生活怪祝福。围绕吃饭、睡觉、天气、快递、钱、工作、游戏和日常小事进行具体又突然的祝福。" +
-    "允许一本正经地胡说八道。不要使用酒馆、角色卡、世界书、模型、上下文、截断、预设等社区术语。",
+    "允许一本正经地胡说八道。",
 
   fairyTale:
     "本次风格方向：童话胡说八道。创造不存在的食物、天气、动物、植物或奇怪好运。" +
-    "可以天马行空，不要解释世界观。不要使用酒馆、角色卡、世界书、模型、上下文、截断、预设等社区术语。",
+    "可以天马行空，不要解释世界观。",
 
   abstractChaos:
-    "本次风格方向：互联网抽象怪话。像群友突然冒出来的一句话。允许跳跃、荒诞、没头没尾，但要自然。" +
-    "不要使用酒馆、角色卡、世界书、模型、上下文、截断、预设等社区术语。",
+    "本次风格方向：互联网抽象怪话。像群友突然冒出来的一句话。允许跳跃、荒诞、没头没尾，但要自然。",
 
   oneLiner:
-    "本次风格方向：一句话突然梗。保持简短。可以前半句正常，后半句突然拐弯。" +
-    "不要使用酒馆、角色卡、世界书、模型、上下文、截断、预设等社区术语。",
+    "本次风格方向：一句话突然梗。保持简短。可以前半句正常，后半句突然拐弯。",
 
   gentleBlessing:
-    "本次风格方向：温柔祝福。真诚、自然、有生命力。避免鸡汤、宏大叙事和万能成功学。" +
-    "不使用酒馆、角色卡、世界书、模型、上下文、截断、预设等社区术语。",
+    "本次风格方向：温柔祝福。真诚、自然、有生命力。避免鸡汤、宏大叙事和万能成功学。",
 
   antiRoutine:
     "本次风格方向：反套路戏精。可以模仿霸总、广告、天气预报、新闻播报、系统通知等语气，" +
-    "然后突然转成祝福。不要使用酒馆、角色卡、世界书、模型等非必要社区术语。",
+    "然后突然转成祝福。",
 
   lightTavern:
     "本次风格方向：轻度酒馆梗。允许使用 1 到 2 个 SillyTavern 玩家熟悉的梗（如酒馆、角色卡、模型、上下文等），" +
@@ -107,6 +104,11 @@ const STYLE_HINTS = {
 
 /** SillyTavern/AI 相关风格 key 集合 */
 const TECH_STYLE_KEYS = new Set(["lightTavern", "aiGamer"]);
+
+/** 非 Tech 风格统一限制：不向所有风格注入技术语境 */
+const NON_TECH_RESTRICTION =
+  "本次创作请完全围绕指定风格展开，无需使用 SillyTavern 或 AI 相关语境。" +
+  "如果用户提供了兴趣信息，可以自然参考兴趣内容，不因此被限制。";
 
 // ---- 导出（供测试） ----
 
@@ -199,6 +201,11 @@ export function createCopyGenerator(config, aiOverride) {
     let userMessage = `请为 "${userName}" 生成 Boost 感谢正文。`;
     userMessage += `\n助力数量：${boostLabel}`;
     userMessage += `\n\n${style.hint}`;
+
+    // 非 Tech 风格 → 统一注入技术语境限制
+    if (!isTechStyle(style.key)) {
+      userMessage += `\n\n${NON_TECH_RESTRICTION}`;
+    }
 
     if (context.interest && typeof context.interest === "string" && context.interest.trim()) {
       userMessage += `\n兴趣：${context.interest.trim()}`;
