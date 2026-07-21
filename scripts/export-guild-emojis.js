@@ -17,7 +17,7 @@ import { fileURLToPath } from "url";
 import { createWriteStream, mkdirSync, existsSync } from "fs";
 import { rename, unlink } from "fs/promises";
 import { pipeline } from "stream/promises";
-import { Client, GatewayIntentBits } from "discord.js";
+import { Client, GatewayIntentBits, Events } from "discord.js";
 
 import { loadConfig } from "../src/config/index.js";
 import { logger as log } from "../src/utils/logger.js";
@@ -241,23 +241,40 @@ export async function exportGuildEmojis(config) {
   let guild;
 
   try {
-    // ---- 3. 登录 ----
+    // ---- 3. 登录并等待 Client Ready ----
     console.log("正在连接 Discord...");
-    await client.login(config.discordBotToken);
-    console.log(`已登录：${client.user.tag}`);
 
-    // ---- 4. 获取目标 Guild ----
-    guild = client.guilds.cache.get(config.discordGuildId);
+    // 先注册 Ready 监听再 login，确保不错过事件
+    const readyPromise = new Promise((resolve) => {
+      client.once(Events.ClientReady, (readyClient) => {
+        resolve(readyClient);
+      });
+    });
+
+    await client.login(config.discordBotToken);
+    const readyClient = await readyPromise;
+    console.log(`已登录：${readyClient.user.tag}`);
+
+    // ---- 4. 获取目标 Guild（Ready 后 cache 已就绪）----
+    guild = readyClient.guilds.cache.get(config.discordGuildId);
     if (!guild) {
-      // 尝试 fetch（可能尚未缓存）
+      // cache 未命中时尝试直接 fetch（极少数情况）
       try {
-        guild = await client.guilds.fetch(config.discordGuildId);
+        guild = await readyClient.guilds.fetch(config.discordGuildId);
       } catch {
         console.error(`❌ 找不到目标服务器（Guild ID: ${config.discordGuildId}）`);
         console.error("   请确认 BOT 已加入该服务器，且 Guild ID 正确。");
         await client.destroy();
         return { success: false, code: 1 };
       }
+    }
+
+    // 验证 Guild 对象完整性
+    if (!guild || !guild.id || !guild.emojis || typeof guild.emojis.fetch !== "function") {
+      console.error("❌ 获取到的 Guild 对象不完整，无法继续导出。");
+      console.error(`   guild: ${!!guild}, id: ${guild?.id ?? "N/A"}, emojis: ${!!guild?.emojis}`);
+      await client.destroy();
+      return { success: false, code: 1 };
     }
 
     console.log(`目标服务器：${guild.name}（${guild.id}）`);
