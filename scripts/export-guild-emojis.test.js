@@ -275,7 +275,40 @@ console.log("\n=== 测试 13：失败 Emoji 写入 manifest ===\n");
   assert(manifest.emojis[0].filename.includes("broken"), "filename 仍被记录");
 }
 
-console.log("\n=== 测试 14：不泄露 Bot Token ===\n");
+console.log("\n=== 测试 14：失败下载不留下 .part 残留 ===\n");
+
+{
+  // downloadFile 内部使用 .part 临时文件，失败后清理
+  // 验证 manifest 中失败记录的 filename 不含 .part 后缀
+  const records = [
+    { id: "bad", name: "broken_emoji", animated: false, available: true, managed: false, roles: [], filename: "broken_emoji__bad.webp", downloaded: false, error: "CDN HTTP 500" },
+  ];
+  const manifest = buildManifest("g1", records);
+  assertEqual(manifest.emojis[0].filename, "broken_emoji__bad.webp", "失败记录 filename 为正式名（非 .part）");
+  assert(!manifest.emojis[0].filename.endsWith(".part"), "filename 不以 .part 结尾");
+  assertEqual(manifest.emojis[0].downloaded, false, "downloaded = false");
+  assert(manifest.emojis[0].error !== null, "有 error 记录");
+}
+
+console.log("\n=== 测试 15：成功下载后 filename 为正式 .webp ===\n");
+
+{
+  // 所有成功记录 filename 均为 .webp，不含 .part
+  const records = [
+    { id: "1", name: "ok1", animated: false, available: true, managed: false, roles: [], filename: "ok1__1.webp", downloaded: true, error: null },
+    { id: "2", name: "ok2", animated: true, available: true, managed: false, roles: [], filename: "ok2__2.webp", downloaded: true, error: null },
+    { id: "3", name: "bad", animated: false, available: true, managed: false, roles: [], filename: "bad__3.webp", downloaded: false, error: "CDN HTTP 503" },
+  ];
+  const manifest = buildManifest("g1", records);
+  for (const e of manifest.emojis) {
+    assert(e.filename.endsWith(".webp"), `${e.id} filename 以 .webp 结尾`);
+    assert(!e.filename.includes(".part"), `${e.id} filename 不含 .part`);
+  }
+  assertEqual(manifest.successCount, 2, "successCount = 2");
+  assertEqual(manifest.failedCount, 1, "failedCount = 1");
+}
+
+console.log("\n=== 测试 16：不泄露 Bot Token ===\n");
 
 {
   // 验证 manifest / filename / URL 中不含敏感信息
@@ -299,7 +332,7 @@ console.log("\n=== 测试 14：不泄露 Bot Token ===\n");
   assert(!filename.includes("token"), "文件名不含 token");
 }
 
-console.log("\n=== 测试 15：输出目录限制正确 ===\n");
+console.log("\n=== 测试 17：输出目录限制正确 ===\n");
 
 {
   // 验证 sanitizeFileName 阻止路径穿越
@@ -333,7 +366,7 @@ console.log("\n=== 测试 15：输出目录限制正确 ===\n");
   assert(filename.endsWith(".webp"), "仍以 .webp 结尾");
 }
 
-console.log("\n=== 测试 16：工具结束后正确销毁 Client —— 逻辑验证 ===\n");
+console.log("\n=== 测试 18：工具结束后正确销毁 Client —— 逻辑验证 ===\n");
 
 {
   // exportGuildEmojis 函数在所有路径中都调用 client.destroy()

@@ -15,6 +15,7 @@
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 import { createWriteStream, mkdirSync, existsSync } from "fs";
+import { rename, unlink } from "fs/promises";
 import { pipeline } from "stream/promises";
 import { Client, GatewayIntentBits } from "discord.js";
 
@@ -163,10 +164,13 @@ function ensureDir(dir) {
 }
 
 /**
- * 下载单个 Emoji 到指定路径。
+ * 下载单个 Emoji 到指定路径（原子写入）。
+ *
+ * 先写入 .part 临时文件，下载完整成功后 rename 为正式文件。
+ * 失败时清理 .part，不留下不完整的正式文件。
  *
  * @param {string} url - CDN URL
- * @param {string} filePath - 本地保存路径
+ * @param {string} filePath - 本地保存路径（最终 .webp 文件）
  * @returns {Promise<void>}
  */
 async function downloadFile(url, filePath) {
@@ -174,11 +178,24 @@ async function downloadFile(url, filePath) {
   if (!response.ok) {
     throw new Error(`CDN HTTP ${response.status}`);
   }
-  const fileStream = createWriteStream(filePath);
-  // response.body 是 ReadableStream（Node 18+ 原生 fetch）
-  // pipeline 接受 Node Readable，需要用 Readable.fromWeb 转换
-  const { Readable } = await import("stream");
-  await pipeline(Readable.fromWeb(response.body), fileStream);
+
+  const partPath = `${filePath}.part`;
+  const fileStream = createWriteStream(partPath);
+
+  try {
+    const { Readable } = await import("stream");
+    await pipeline(Readable.fromWeb(response.body), fileStream);
+    // 下载完整成功：原子 rename
+    await rename(partPath, filePath);
+  } catch (err) {
+    // 下载或写入失败：尝试清理 .part 临时文件，不留下损坏文件
+    try {
+      await unlink(partPath);
+    } catch {
+      // 清理失败不影响主逻辑（可能文件未创建或已删除）
+    }
+    throw err;
+  }
 }
 
 /**
