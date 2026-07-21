@@ -1,5 +1,5 @@
 /**
- * observer.js 单元测试（Phase 2）。
+ * observer.js / normalizer.js / aggregator.js 测试（Phase 2–3）。
  *
  * 使用最小 mock 对象模拟 discord.js Message，
  * 不依赖真实 Discord 连接。
@@ -9,7 +9,9 @@
 
 import { EventEmitter } from "events";
 import { extractBoostObservation, setupBoostObserver } from "./observer.js";
-import { isBoostMessageType, BOOST_MESSAGE_TYPES } from "./constants.js";
+import { normalizeObservation } from "./normalizer.js";
+import { createAggregator } from "./aggregator.js";
+import { isBoostMessageType, isCountableBoostType, BOOST_MESSAGE_TYPES, COUNTABLE_BOOST_TYPES } from "./constants.js";
 import { MessageType, Events } from "discord.js";
 
 let passed = 0;
@@ -81,7 +83,15 @@ assert(BOOST_MESSAGE_TYPES.size === 4, "共 4 种 Boost 类型");
 assert(!BOOST_MESSAGE_TYPES.has(0), "不包含 Default (0)");
 assert(!BOOST_MESSAGE_TYPES.has(7), "不包含 UserJoin (7)");
 
-console.log("\n=== 测试 2：isBoostMessageType 函数 ===\n");
+console.log("\n=== 测试 1b：COUNTABLE_BOOST_TYPES 常量 ===\n");
+
+assert(COUNTABLE_BOOST_TYPES.has(8), "包含 GuildBoost (8)");
+assert(!COUNTABLE_BOOST_TYPES.has(9), "不包含 Tier1 (9)");
+assert(!COUNTABLE_BOOST_TYPES.has(10), "不包含 Tier2 (10)");
+assert(!COUNTABLE_BOOST_TYPES.has(11), "不包含 Tier3 (11)");
+assertEqual(COUNTABLE_BOOST_TYPES.size, 1, "仅 1 种可计数类型");
+
+console.log("\n=== 测试 2：isBoostMessageType / isCountableBoostType 函数 ===\n");
 
 assert(isBoostMessageType(8) === true, "type 8 → true");
 assert(isBoostMessageType(9) === true, "type 9 → true");
@@ -91,6 +101,13 @@ assert(isBoostMessageType(0) === false, "type 0 → false");
 assert(isBoostMessageType(7) === false, "type 7 → false");
 assert(isBoostMessageType(1) === false, "type 1 → false");
 assert(isBoostMessageType(12) === false, "type 12 → false");
+
+// isCountableBoostType
+assert(isCountableBoostType(8) === true, "isCountable: type 8 → true");
+assert(isCountableBoostType(9) === false, "isCountable: type 9 → false");
+assert(isCountableBoostType(10) === false, "isCountable: type 10 → false");
+assert(isCountableBoostType(11) === false, "isCountable: type 11 → false");
+assert(isCountableBoostType(0) === false, "isCountable: type 0 → false");
 
 console.log("\n=== 测试 3：普通消息不应触发 ===\n");
 
@@ -176,11 +193,263 @@ for (const sk of sensitiveKeys) {
 assert(!obs.authorUsername?.includes("token"), "authorUsername 不含 token 字样");
 
 // ============================================================
-// 测试 10：setupBoostObserver 集成测试
-// 验证注册后 boost 消息触发日志、普通消息不触发
+// 测试 10：normalizeObservation
 // ============================================================
 
-console.log("\n=== 测试 10：setupBoostObserver 事件监听集成 ===\n");
+console.log("\n=== 测试 10：normalizeObservation 标准化 ===\n");
+
+{
+  // 10a: 完整数据正确转换
+  const obs = {
+    messageId: "msg_001",
+    messageType: 8,
+    messageTypeName: "GuildBoost",
+    guildId: "g1",
+    channelId: "ch_sys",
+    authorId: "u1",
+    authorUsername: "TestUser",
+    memberDisplayName: "TestDisplay",
+    createdTimestamp: 1700000000000,
+    system: true,
+  };
+  const evt = normalizeObservation(obs);
+  assertNotNull(evt, "完整观察数据返回非 null");
+  assertEqual(evt.eventType, "boost", "  eventType = boost");
+  assertEqual(evt.eventId, "msg_001", "  eventId");
+  assertEqual(evt.userId, "u1", "  userId");
+  assertEqual(evt.username, "TestUser", "  username");
+  assertEqual(evt.displayName, "TestDisplay", "  displayName");
+  assertEqual(evt.guildId, "g1", "  guildId");
+  assertEqual(evt.sourceChannelId, "ch_sys", "  sourceChannelId");
+  assertEqual(evt.timestamp, 1700000000000, "  timestamp");
+  assertEqual(evt.boostCount, 1, "  boostCount 初始 = 1");
+  assertEqual(evt.eventIds.length, 1, "  eventIds 长度 = 1");
+  assertEqual(evt.eventIds[0], "msg_001", "  eventIds[0]");
+}
+
+{
+  // 10b: 缺失 userId → null
+  const noUserId = {
+    messageId: "msg",
+    messageType: 8,
+    authorId: null,
+    authorUsername: null,
+    guildId: "g",
+    channelId: "c",
+    memberDisplayName: null,
+    createdTimestamp: 1,
+  };
+  const evt = normalizeObservation(noUserId);
+  assertEqual(evt, null, "缺失 authorId 时返回 null");
+}
+
+{
+  // 10c: 缺失 displayName → 不崩溃，设为 null
+  const noDisplay = {
+    messageId: "msg",
+    messageType: 8,
+    authorId: "u1",
+    authorUsername: "Test",
+    guildId: "g",
+    channelId: "c",
+    memberDisplayName: null,
+    createdTimestamp: 1,
+  };
+  const evt = normalizeObservation(noDisplay);
+  assertNotNull(evt, "displayName=null 时仍返回对象");
+  assertEqual(evt.displayName, null, "  displayName = null");
+}
+
+{
+  // 10d: 缺失 username → 不崩溃，设为 null
+  const noUsername = {
+    messageId: "msg",
+    messageType: 8,
+    authorId: "u1",
+    authorUsername: null,
+    guildId: "g",
+    channelId: "c",
+    memberDisplayName: "Disp",
+    createdTimestamp: 1,
+  };
+  const evt = normalizeObservation(noUsername);
+  assertNotNull(evt, "username=null 时仍返回对象");
+  assertEqual(evt.username, null, "  username = null");
+}
+
+// ============================================================
+// 测试 11：createAggregator 聚合
+// ============================================================
+
+console.log("\n=== 测试 11：createAggregator 聚合 ===\n");
+
+function makeBoostEvent(overrides = {}) {
+  return {
+    eventType: "boost",
+    eventId: overrides.eventId ?? "evt_001",
+    userId: overrides.userId ?? "u1",
+    username: overrides.username ?? "TestUser",
+    displayName: overrides.displayName ?? "TestDisplay",
+    guildId: overrides.guildId ?? "g1",
+    sourceChannelId: overrides.sourceChannelId ?? "ch_sys",
+    timestamp: overrides.timestamp ?? Date.now(),
+    boostCount: 1,
+    eventIds: [overrides.eventId ?? "evt_001"],
+  };
+}
+
+// --- 11a: 单个 Boost → boostCount=1 ---
+{
+  const results = [];
+  const agg = createAggregator({ boostAggregationWindowMs: 10 });
+  agg.onAggregate((evt) => results.push(evt));
+
+  agg.accept(makeBoostEvent({ eventId: "e1" }));
+
+  assertEqual(results.length, 0, "窗口未结束前不输出");
+
+  await new Promise(r => setTimeout(r, 30));
+  assertEqual(results.length, 1, "窗口结束后输出 1 条");
+  assertEqual(results[0].boostCount, 1, "boostCount = 1");
+  assertEqual(results[0].eventIds.length, 1, "eventIds 长度 = 1");
+  agg.destroy();
+}
+
+// --- 11b: 同一用户连续 2 次 Boost → boostCount=2 ---
+{
+  const results = [];
+  const agg = createAggregator({ boostAggregationWindowMs: 10 });
+  agg.onAggregate((evt) => results.push(evt));
+
+  agg.accept(makeBoostEvent({ eventId: "e1" }));
+  await new Promise(r => setTimeout(r, 5));
+  agg.accept(makeBoostEvent({ eventId: "e2" }));
+
+  await new Promise(r => setTimeout(r, 30));
+  assertEqual(results.length, 1, "连续 2 次仅输出 1 条");
+  assertEqual(results[0].boostCount, 2, "boostCount = 2");
+  assertEqual(results[0].eventIds.length, 2, "eventIds 长度 = 2");
+  assertEqual(results[0].eventIds[0], "e1", "eventIds[0] = e1");
+  assertEqual(results[0].eventIds[1], "e2", "eventIds[1] = e2");
+  agg.destroy();
+}
+
+// --- 11c: 同一用户连续 3 次 Boost → boostCount=3 ---
+{
+  const results = [];
+  const agg = createAggregator({ boostAggregationWindowMs: 10 });
+  agg.onAggregate((evt) => results.push(evt));
+
+  agg.accept(makeBoostEvent({ eventId: "e1" }));
+  await new Promise(r => setTimeout(r, 3));
+  agg.accept(makeBoostEvent({ eventId: "e2" }));
+  await new Promise(r => setTimeout(r, 3));
+  agg.accept(makeBoostEvent({ eventId: "e3" }));
+
+  await new Promise(r => setTimeout(r, 30));
+  assertEqual(results.length, 1, "连续 3 次仅输出 1 条");
+  assertEqual(results[0].boostCount, 3, "boostCount = 3");
+  assertEqual(results[0].eventIds.length, 3, "eventIds 长度 = 3");
+  agg.destroy();
+}
+
+// --- 11d: 不同用户同时 Boost → 分别产生独立聚合 ---
+{
+  const results = [];
+  const agg = createAggregator({ boostAggregationWindowMs: 10 });
+  agg.onAggregate((evt) => results.push(evt));
+
+  agg.accept(makeBoostEvent({ eventId: "e1", userId: "u1", username: "UserA" }));
+  agg.accept(makeBoostEvent({ eventId: "e2", userId: "u2", username: "UserB" }));
+
+  await new Promise(r => setTimeout(r, 30));
+  assertEqual(results.length, 2, "不同用户各自输出 1 条");
+  // 按 userId 排序确认
+  results.sort((a, b) => a.userId.localeCompare(b.userId));
+  assertEqual(results[0].boostCount, 1, "u1 boostCount = 1");
+  assertEqual(results[1].boostCount, 1, "u2 boostCount = 1");
+  agg.destroy();
+}
+
+// --- 11e: 同一用户在不同服务器 → 分别处理 ---
+{
+  const results = [];
+  const agg = createAggregator({ boostAggregationWindowMs: 10 });
+  agg.onAggregate((evt) => results.push(evt));
+
+  agg.accept(makeBoostEvent({ eventId: "e1", guildId: "g1" }));
+  agg.accept(makeBoostEvent({ eventId: "e2", guildId: "g2" }));
+
+  await new Promise(r => setTimeout(r, 30));
+  assertEqual(results.length, 2, "不同服务器各自输出 1 条");
+  agg.destroy();
+}
+
+// --- 11f: 新 Boost 到来 → 窗口重置 ---
+{
+  const results = [];
+  const agg = createAggregator({ boostAggregationWindowMs: 50 });
+  agg.onAggregate((evt) => results.push(evt));
+
+  agg.accept(makeBoostEvent({ eventId: "e1" }));
+  await new Promise(r => setTimeout(r, 20)); // 还没到 50ms
+  agg.accept(makeBoostEvent({ eventId: "e2" }));
+  await new Promise(r => setTimeout(r, 20)); // 从 e2 起重新计时，还没到 50ms
+
+  // 此时不应有输出，因为从 e2 起才过了 20ms
+  assertEqual(results.length, 0, "新事件重置窗口后不应提前输出");
+
+  await new Promise(r => setTimeout(r, 60)); // 等待 e2 的窗口结束
+  assertEqual(results.length, 1, "窗口最终输出 1 条");
+  assertEqual(results[0].boostCount, 2, "boostCount = 2");
+  agg.destroy();
+}
+
+// --- 11g: 窗口结束 → 状态清理 ---
+{
+  const results = [];
+  const agg = createAggregator({ boostAggregationWindowMs: 10 });
+  agg.onAggregate((evt) => results.push(evt));
+
+  agg.accept(makeBoostEvent({ eventId: "e1" }));
+  await new Promise(r => setTimeout(r, 30));
+  assertEqual(results.length, 1, "第一次输出");
+
+  // 同一用户再次 Boost → 应作为新聚合重新开始
+  agg.accept(makeBoostEvent({ eventId: "e2" }));
+  await new Promise(r => setTimeout(r, 30));
+  assertEqual(results.length, 2, "第二次 Boost 应作为新聚合");
+  assertEqual(results[1].boostCount, 1, "新聚合 boostCount = 1");
+  agg.destroy();
+}
+
+// --- 11h: destroy → 清理待处理计时器无泄漏 ---
+{
+  const results = [];
+  const agg = createAggregator({ boostAggregationWindowMs: 60000 });
+  agg.onAggregate((evt) => results.push(evt));
+
+  agg.accept(makeBoostEvent());
+  agg.destroy();
+
+  // 窗口超大但 destroy 后不应泄漏
+  await new Promise(r => setTimeout(r, 50));
+  assertEqual(results.length, 0, "destroy 后无回调（计时器已清理）");
+}
+
+// --- 11i: 空聚合器 destroy 不崩溃 ---
+{
+  const agg = createAggregator({ boostAggregationWindowMs: 10000 });
+  // 无任何 accept 就 destroy
+  agg.destroy();
+  assert(true, "空聚合器 destroy 不崩溃");
+}
+
+// ============================================================
+// 测试 12：setupBoostObserver Phase 3 集成
+// ============================================================
+
+console.log("\n=== 测试 12：setupBoostObserver Phase 3 集成 ===\n");
 
 /**
  * Mock Client：继承 EventEmitter，模拟 discord.js Client 的 on() 行为
@@ -205,32 +474,37 @@ function makeMockLogger() {
   };
 }
 
-// --- 10a: 注册后，Boost 消息触发 info 日志 ---
+const SHORT_WINDOW = { boostAggregationWindowMs: 10 };
+
+// --- 12a: 注册后，可计数 Boost (type 8) 触发 observer + aggregator 日志 ---
 {
   const mockClient = new MockClient();
   const mockLogger = makeMockLogger();
-  setupBoostObserver(mockClient, mockLogger);
+  const cleanup = setupBoostObserver(mockClient, mockLogger, SHORT_WINDOW);
 
-  const boostMsg = makeMockMessage({ type: 8, system: true });
-  mockClient.emit(Events.MessageCreate, boostMsg);
+  mockClient.emit(Events.MessageCreate, makeMockMessage({ type: 8, system: true }));
 
-  const boostLogs = mockLogger.calls.filter(c => c.level === "info");
-  assert(boostLogs.length >= 1, "Boost type 8 消息触发 ≥1 条 info 日志");
-  if (boostLogs.length > 0) {
-    assert(
-      boostLogs.some(c => c.msg?.includes("[BoostObserver]")),
-      "日志包含 [BoostObserver] 标记"
-    );
-    const obsLog = boostLogs.find(c => c.msg?.includes("[BoostObserver]"));
-    assert(obsLog.data?.messageType === 8, "日志 data 中 messageType = 8");
-  }
+  const observerLogs = mockLogger.calls.filter(
+    c => c.level === "info" && c.msg?.includes("[BoostObserver] 收到可计数 Boost")
+  );
+  assertEqual(observerLogs.length, 1, "type 8 触发 [BoostObserver] 收到可计数 Boost");
+  assert(observerLogs[0].data?.boostCount === 1, "observer data 中 boostCount = 1");
+
+  // 等待聚合输出
+  await new Promise(r => setTimeout(r, 30));
+  const aggLogs = mockLogger.calls.filter(
+    c => c.level === "info" && c.msg?.includes("[BoostAggregator] 聚合完成")
+  );
+  assertEqual(aggLogs.length, 1, "聚合完成后触发 [BoostAggregator] 聚合完成");
+  assertEqual(aggLogs[0].data.boostCount, 1, "聚合结果 boostCount = 1");
+  cleanup.destroy();
 }
 
-// --- 10b: 注册后，普通消息不触发观察日志 ---
+// --- 12b: 注册后，普通消息不触发观察日志 ---
 {
   const mockClient = new MockClient();
   const mockLogger = makeMockLogger();
-  setupBoostObserver(mockClient, mockLogger);
+  setupBoostObserver(mockClient, mockLogger, SHORT_WINDOW);
 
   const normalMsg = makeMockMessage({ type: MessageType.Default, system: false });
   mockClient.emit(Events.MessageCreate, normalMsg);
@@ -239,11 +513,11 @@ function makeMockLogger() {
   assertEqual(boostLogs.length, 0, "普通 type 0 消息不触发 [BoostObserver] 日志");
 }
 
-// --- 10c: 非 Boost 系统消息不触发 ---
+// --- 12c: 非 Boost 系统消息不触发 ---
 {
   const mockClient = new MockClient();
   const mockLogger = makeMockLogger();
-  setupBoostObserver(mockClient, mockLogger);
+  setupBoostObserver(mockClient, mockLogger, SHORT_WINDOW);
 
   const joinMsg = makeMockMessage({ type: MessageType.UserJoin, system: true });
   mockClient.emit(Events.MessageCreate, joinMsg);
@@ -252,11 +526,11 @@ function makeMockLogger() {
   assertEqual(boostLogs.length, 0, "UserJoin (type 7) 系统消息不触发 [BoostObserver]");
 }
 
-// --- 10d: partial 消息不触发 ---
+// --- 12d: partial 消息不触发 ---
 {
   const mockClient = new MockClient();
   const mockLogger = makeMockLogger();
-  setupBoostObserver(mockClient, mockLogger);
+  setupBoostObserver(mockClient, mockLogger, SHORT_WINDOW);
 
   const partialMsg = makeMockMessage({ type: 8, system: true, partial: true });
   mockClient.emit(Events.MessageCreate, partialMsg);
@@ -265,36 +539,70 @@ function makeMockLogger() {
   assertEqual(boostLogs.length, 0, "partial Boost 消息不触发 [BoostObserver]");
 }
 
-// --- 10e: 所有四种 Boost 类型均触发 ---
-for (const typeNum of [8, 9, 10, 11]) {
+// --- 12e: Tier 类型 (9/10/11) 触发观察日志但视为 Tier 通知 ---
+for (const typeNum of [9, 10, 11]) {
   const mockClient = new MockClient();
   const mockLogger = makeMockLogger();
-  setupBoostObserver(mockClient, mockLogger);
+  setupBoostObserver(mockClient, mockLogger, SHORT_WINDOW);
 
   const msg = makeMockMessage({ type: typeNum, system: true });
   mockClient.emit(Events.MessageCreate, msg);
 
-  const boostLogs = mockLogger.calls.filter(c => c.level === "info" && c.msg?.includes("[BoostObserver]"));
-  assertEqual(boostLogs.length, 1, `Boost type ${typeNum} 精确触发 1 条 [BoostObserver] 日志`);
+  const tierLogs = mockLogger.calls.filter(
+    c => c.level === "info" && c.msg?.includes("[BoostObserver] 收到 Tier 通知")
+  );
+  assertEqual(tierLogs.length, 1, `Tier type ${typeNum} 触发 [BoostObserver] 收到 Tier 通知`);
+
+  // 不应触发聚合
+  const aggLogs = mockLogger.calls.filter(
+    c => c.level === "info" && c.msg?.includes("[BoostAggregator]")
+  );
+  assertEqual(aggLogs.length, 0, `Tier type ${typeNum} 不触发 [BoostAggregator]`);
 }
 
-// --- 10f: 多个不同消息仅 Boost 触发 ---
+// --- 12f: 混合消息仅可计数 Boost 进入聚合 ---
 {
   const mockClient = new MockClient();
   const mockLogger = makeMockLogger();
-  setupBoostObserver(mockClient, mockLogger);
+  const cleanup = setupBoostObserver(mockClient, mockLogger, SHORT_WINDOW);
 
   mockClient.emit(Events.MessageCreate, makeMockMessage({ type: MessageType.Default, system: false }));
-  mockClient.emit(Events.MessageCreate, makeMockMessage({ type: MessageType.Reply, system: false }));
   mockClient.emit(Events.MessageCreate, makeMockMessage({ type: 8, system: true }));
   mockClient.emit(Events.MessageCreate, makeMockMessage({ type: MessageType.UserJoin, system: true }));
   mockClient.emit(Events.MessageCreate, makeMockMessage({ type: 9, system: true }));
-  mockClient.emit(Events.MessageCreate, makeMockMessage({ type: MessageType.Default, system: false }));
+  mockClient.emit(Events.MessageCreate, makeMockMessage({ type: 10, system: true }));
 
-  const boostLogs = mockLogger.calls.filter(c => c.level === "info" && c.msg?.includes("[BoostObserver]"));
-  assertEqual(boostLogs.length, 2, "混合消息中仅 2 条 Boost (type 8,9) 触发 [BoostObserver]");
-  assertEqual(boostLogs[0].data?.messageType, 8, "第一条是 type 8");
-  assertEqual(boostLogs[1].data?.messageType, 9, "第二条是 type 9");
+  const observerCountable = mockLogger.calls.filter(
+    c => c.level === "info" && c.msg?.includes("[BoostObserver] 收到可计数 Boost")
+  );
+  assertEqual(observerCountable.length, 1, "仅 type 8 触发可计数日志");
+
+  const observerTier = mockLogger.calls.filter(
+    c => c.level === "info" && c.msg?.includes("[BoostObserver] 收到 Tier 通知")
+  );
+  assertEqual(observerTier.length, 2, "type 9,10 触发 2 条 Tier 通知");
+
+  await new Promise(r => setTimeout(r, 30));
+  const aggLogs = mockLogger.calls.filter(
+    c => c.level === "info" && c.msg?.includes("[BoostAggregator]")
+  );
+  assertEqual(aggLogs.length, 1, "仅 1 条聚合（type 8）");
+  assertEqual(aggLogs[0].data.boostCount, 1, "聚合结果 boostCount = 1");
+  cleanup.destroy();
+}
+
+// --- 12g: 缺失 userId 的 Boost 记录 warn 并跳过 ---
+{
+  const mockClient = new MockClient();
+  const mockLogger = makeMockLogger();
+  setupBoostObserver(mockClient, mockLogger, SHORT_WINDOW);
+
+  mockClient.emit(Events.MessageCreate, makeMockMessage({ type: 8, system: true, author: null }));
+
+  const warnLogs = mockLogger.calls.filter(c => c.level === "warn");
+  assert(warnLogs.length >= 1, "缺失 userId 时产生 warn 日志");
+  const aggLogs = mockLogger.calls.filter(c => c.msg?.includes("[BoostAggregator]"));
+  assertEqual(aggLogs.length, 0, "不进入聚合");
 }
 
 // ============================================================

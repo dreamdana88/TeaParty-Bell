@@ -36,7 +36,7 @@ export async function start() {
   const { client, login, destroy } = createClient();
 
   // ---- 3.5 注册 Feature 监听器（须在登录前完成）----
-  setupBoostObserver(client, logger);
+  const observerCleanup = setupBoostObserver(client, logger, config);
 
   // ---- 4. 登录 ----
   try {
@@ -52,6 +52,11 @@ export async function start() {
   // ---- 5. 进程退出处理 ----
   async function shutdown(signal) {
     logger.info(`收到 ${signal} 信号，正在关闭...`);
+    try {
+      if (observerCleanup) observerCleanup.destroy();
+    } catch (err) {
+      logger.error("Observer 清理时发生异常", { message: err.message });
+    }
     try {
       await destroy();
     } catch (err) {

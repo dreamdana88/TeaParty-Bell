@@ -1,21 +1,24 @@
 /**
- * Boost 事件观察器（Phase 2）。
+ * Boost 事件观察器（Phase 2–3）。
  *
  * 职责：
  * - 监听 MESSAGE_CREATE 事件
  * - 筛选 Boost 相关系统消息（type 8/9/10/11）
- * - 提取并输出结构化调试信息
- * - 为真实环境验证收集数据
+ * - 将可计数 Boost（type 8）标准化为 BoostEvent 并送入聚合器
+ * - 将 Tier 通知（type 9/10/11）仅做观察日志，不进入聚合
+ * - 聚合完成后输出最终 BoostEvent 日志
  *
  * 当前不执行：
- * - 防重复检查
  * - DeepSeek 调用
  * - 感谢消息发送
  * - Reaction 添加
+ * - 防重复持久化
  */
 
 import { Events, MessageType } from "discord.js";
-import { isBoostMessageType } from "./constants.js";
+import { isBoostMessageType, isCountableBoostType } from "./constants.js";
+import { normalizeObservation } from "./normalizer.js";
+import { createAggregator } from "./aggregator.js";
 
 /**
  * 从 Message 对象提取 Boost 观察数据。
@@ -53,14 +56,23 @@ export function extractBoostObservation(message) {
 }
 
 /**
- * 向 Client 注册 Boost 观察监听器。
+ * 向 Client 注册 Boost 观察监听器（Phase 3 含聚合）。
  *
  * @param {import("discord.js").Client} client - Discord Client 实例
- * @param {object} logger - Logger 实例（来自 utils/logger）
+ * @param {object} logger - Logger 实例
+ * @param {object} config - 完整配置对象（含 boostAggregationWindowMs）
+ * @returns {{ destroy: Function }} 返回清理函数供 shutdown 使用
  */
-export function setupBoostObserver(client, logger) {
+export function setupBoostObserver(client, logger, config) {
+  const aggregator = createAggregator(config);
+
+  // 聚合完成回调：输出最终 BoostEvent
+  aggregator.onAggregate((finalEvent) => {
+    logger.info("[BoostAggregator] 聚合完成", finalEvent);
+  });
+
   client.on(Events.MessageCreate, (message) => {
-    // 1. 忽略部分消息（尚未完整加载的消息）
+    // 1. 忽略部分消息
     if (message.partial) {
       logger.debug("收到 partial message，跳过", { messageId: message.id });
       return;
@@ -74,13 +86,33 @@ export function setupBoostObserver(client, logger) {
     // 3. 提取观察数据
     const observation = extractBoostObservation(message);
     if (!observation) {
-      // 系统消息但不是 Boost 类型（如 UserJoin=7 等），静默忽略
       return;
     }
 
-    // 4. 输出结构化观察日志
-    logger.info("[BoostObserver] 检测到疑似 Boost 事件", observation);
+    // 4. 按消息类型路由
+    if (isCountableBoostType(observation.messageType)) {
+      // 可计数 Boost（type 8）：标准化 → 聚合
+      const boostEvent = normalizeObservation(observation);
+      if (!boostEvent) {
+        logger.warn("[BoostObserver] 标准化失败（缺少 userId），跳过", {
+          messageId: observation.messageId,
+          authorId: observation.authorId,
+        });
+        return;
+      }
+      logger.info("[BoostObserver] 收到可计数 Boost", boostEvent);
+      aggregator.accept(boostEvent);
+    } else {
+      // Tier 通知（type 9/10/11）：仅观察，不进入聚合
+      logger.info("[BoostObserver] 收到 Tier 通知（不计入 boostCount）", observation);
+    }
   });
+
+  return {
+    destroy() {
+      aggregator.destroy();
+    },
+  };
 }
 
 // ---- 内部工具 ----

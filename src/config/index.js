@@ -43,6 +43,10 @@ export function loadConfig() {
     testMode: stringToBool(process.env.TEST_MODE, false),
     logLevel: process.env.LOG_LEVEL || "info",
     reactionCount: parseInt(process.env.REACTION_COUNT, 10) || 10,
+
+    // 聚合
+    boostAggregationWindowMs:
+      parseInt(process.env.BOOST_AGGREGATION_WINDOW_MS, 10) || 15000,
   };
 
   const missing = REQUIRED_CONFIG.filter(
