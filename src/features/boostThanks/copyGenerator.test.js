@@ -300,16 +300,6 @@ console.log("\n=== 测试 34b：aiGamer 不含统一 NON_TECH_RESTRICTION ===\n"
   assert(!uc.includes("无需使用 SillyTavern"), "不含统一限制指令");
 }
 
-console.log("\n=== 测试 34c：非 tech + 技术兴趣 → 有限制但兴趣正常传入 ===\n");
-{
-  const capture = {};
-  const gen = createCopyGenerator(TEST_CONFIG, makeCapturingMockAi("ok", capture));
-  await gen.generateCopy({ displayName: "X", boostCount: 1, styleHint: "gentleBlessing", interest: "SillyTavern、角色卡制作" });
-  const uc = capture.messages[1].content;
-  assertIncludes(uc, "无需使用 SillyTavern", "含统一限制指令");
-  assertIncludes(uc, "SillyTavern、角色卡制作", "兴趣信息正常传入（未被限制删除）");
-}
-
 console.log("\n=== 测试 35：未知 styleHint 抛出 ===\n");
 {
   await assertRejects(

@@ -107,8 +107,7 @@ const TECH_STYLE_KEYS = new Set(["lightTavern", "aiGamer"]);
 
 /** 非 Tech 风格统一限制：不向所有风格注入技术语境 */
 const NON_TECH_RESTRICTION =
-  "本次创作请完全围绕指定风格展开，无需使用 SillyTavern 或 AI 相关语境。" +
-  "如果用户提供了兴趣信息，可以自然参考兴趣内容，不因此被限制。";
+  "本次创作请完全围绕指定风格展开，无需使用 SillyTavern 或 AI 相关语境。";
 
 // ---- 导出（供测试） ----
 
