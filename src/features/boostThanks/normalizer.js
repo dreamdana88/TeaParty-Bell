@@ -13,7 +13,7 @@
  * @property {string|null} username    - Discord 用户名
  * @property {string|null} displayName - 服务器显示名（可 null）
  * @property {string} guildId     - 服务器 ID
- * @property {string} sourceChannelId - Boost 系统消息实际频道
+ * @property {string|null} sourceChannelId - Boost 系统消息实际频道（可 null）
  * @property {number} timestamp   - 事件时间（ms）
  * @property {number} boostCount  - 初始值 1，经聚合后可能大于 1
  * @property {string[]} eventIds  - 合并来源的所有消息 ID
