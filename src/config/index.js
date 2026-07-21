@@ -8,10 +8,10 @@ const projectRoot = resolve(__dirname, "..", "..");
 dotenv.config({ path: resolve(projectRoot, ".env") });
 
 /**
- * Phase 1 必填配置项。任何一项缺失都将导致启动失败。
+ * Phase 1 必填配置项（Discord 核心）。任何一项缺失都将导致启动失败。
  *
- * DEEPSEEK_API_KEY 在 Phase 4（DeepSeek 接入）之前不强制要求。
- * Phase 4 时将其加入此列表。
+ * DEEPSEEK_API_KEY 不在此列：缺少时 Discord BOT 仍可正常启动，
+ * 仅 AI 功能不可用（调用时抛出明确错误）。
  */
 const REQUIRED_CONFIG = [
   "DISCORD_BOT_TOKEN",

@@ -12,7 +12,7 @@
  */
 
 import { loadConfig } from "../src/config/index.js";
-import { createDeepSeekProvider } from "../src/ai/deepseek.js";
+import { createAiProvider } from "../src/ai/index.js";
 
 const config = loadConfig();
 
@@ -22,15 +22,14 @@ if (!config.deepseekApiKey) {
   process.exit(1);
 }
 
-const provider = createDeepSeekProvider(config);
+const ai = createAiProvider(config);
 
-console.log(`Model: ${provider.model}`);
 console.log(`Base URL: ${config.deepseekBaseUrl}`);
 console.log(`Timeout: ${config.deepseekTimeoutMs}ms`);
 console.log("Sending test request...\n");
 
 try {
-  const result = await provider.chat(
+  const result = await ai.generateText(
     [
       {
         role: "user",

@@ -114,7 +114,7 @@ export function createDeepSeekProvider(config) {
     body.thinking = options.thinking ?? { type: "disabled" };
 
     // ---- 3. 构造请求 ----
-    const url = `${base}/v1/chat/completions`;
+    const url = `${base}/chat/completions`;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -189,17 +189,27 @@ export function createDeepSeekProvider(config) {
     }
 
     // ---- 7. 提取最终 content（不使用 reasoning_content）----
-    const content = choice.message.content;
-    if (content === null || content === undefined || content === "") {
+    const raw = choice.message.content;
+    if (raw === null || raw === undefined) {
       const finishReason = choice.finish_reason ?? "unknown";
       throw new DeepSeekError(
-        `DeepSeek API 返回的 content 为空（finish_reason: ${finishReason}）`,
+        `DeepSeek API 返回的 content 为 null/undefined（finish_reason: ${finishReason}）`,
+        "empty_content"
+      );
+    }
+
+    // trim 后再判断是否为空，覆盖 whitespace-only（如 "   \n "）
+    const trimmed = String(raw).trim();
+    if (trimmed === "") {
+      const finishReason = choice.finish_reason ?? "unknown";
+      throw new DeepSeekError(
+        `DeepSeek API 返回的 content 为空或仅含空白字符（finish_reason: ${finishReason}）`,
         "empty_content"
       );
     }
 
     // ---- 8. 标准化返回 ----
-    return String(content).trim();
+    return trimmed;
   }
 
   return {
@@ -248,6 +258,12 @@ function _httpError(status, body) {
   }
 
   switch (status) {
+    case 400:
+      return new DeepSeekError(
+        `DeepSeek API 请求格式错误（400）${hint}`,
+        "invalid_format",
+        { httpStatus: status }
+      );
     case 401:
       return new DeepSeekError(
         `DeepSeek API 认证失败（401）：API Key 无效或未授权${hint}`,
