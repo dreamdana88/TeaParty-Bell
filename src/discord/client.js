@@ -15,11 +15,6 @@ import { logger } from "../utils/logger.js";
  * Privileged Intent（需 Portal 开启 + 100 服务器以上需验证）：
  *   GuildMembers(2)、GuildPresences(256)、MessageContent(32768)
  *
- * 真实环境测试前置条件（Discord 服务器端）：
- * - 服务器设置 → 概览 → System Messages Channel 已设置
- * - 服务器设置 → 概览 → "Send a message when someone Boosts this server" 已开启
- * 未满足以上条件时 Boost 系统消息不会生成，BOT 将无事件可监听。
- *
  * @returns {{ client: Client, login: Function, destroy: Function }}
  */
 export function createClient() {

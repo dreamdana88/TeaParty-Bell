@@ -113,6 +113,10 @@ for (const typeNum of [8, 9, 10, 11]) {
     assertEqual(obs.messageId, "1234567890", "  messageId");
     assertEqual(obs.authorId, "333333333333", "  authorId");
     assertEqual(obs.authorUsername, "TestUser", "  authorUsername");
+    assert(
+      typeof obs.messageTypeName === "string" && obs.messageTypeName.startsWith("GuildBoost"),
+      `  messageTypeName 以 GuildBoost 开头 (got: ${obs.messageTypeName})`
+    );
   }
 }
 

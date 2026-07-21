@@ -6,12 +6,6 @@
  * @see {@link https://discord.com/developers/docs/resources/message#message-object-message-types}
  *
  * 禁止在其他文件中散落硬编码数字 8, 9, 10, 11。
- *
- * 真实环境依赖：
- * - Discord 服务器必须设置 System Messages Channel 并开启
- *   "Send a message when someone Boosts this server"
- * - Boost 系统消息的 channelId 为 System Messages Channel，
- *   与 DISCORD_THANKS_CHANNEL_ID（后续感谢发送目标）是独立配置
  */
 
 import { MessageType } from "discord.js";
@@ -19,7 +13,7 @@ import { MessageType } from "discord.js";
 /**
  * Boost 相关的 Discord 系统消息类型集合。
  *
- * GuildBoost（8）：    成员助力服务器（System Messages Channel）
+ * GuildBoost（8）：    成员助力服务器
  * GuildBoostTier1（9）：成员助力且服务器达到 Tier 1
  * GuildBoostTier2（10）：成员助力且服务器达到 Tier 2
  * GuildBoostTier3（11）：成员助力且服务器达到 Tier 3

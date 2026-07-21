@@ -7,16 +7,6 @@
  * - 提取并输出结构化调试信息
  * - 为真实环境验证收集数据
  *
- * 真实环境前置条件（Discord 服务器端）：
- * - 服务器必须设置 System Messages Channel
- * - 服务器必须开启 "Send a message when someone Boosts this server"
- * - 不满足时 Boost 系统消息不会生成
- *
- * 关于 channelId：
- * - Boost 事件的 channelId 是 System Messages Channel 的实际频道
- * - 该频道与 DISCORD_THANKS_CHANNEL_ID（感谢发送目标）是不同频道
- * - Phase 6 会在 DISCORD_THANKS_CHANNEL_ID 发送感谢，不在此处
- *
  * 当前不执行：
  * - 防重复检查
  * - DeepSeek 调用
@@ -31,6 +21,9 @@ import { isBoostMessageType } from "./constants.js";
  * 从 Message 对象提取 Boost 观察数据。
  *
  * 所有字段必须来自真实事件数据，不可用则明确标为 null。
+ *
+ * channelId 来自 Discord 系统消息实际所在频道（即服务器的 System Messages Channel）。
+ * 该频道与 DISCORD_THANKS_CHANNEL_ID 职责独立：两者可以是同一频道也可以是不同频道。
  *
  * @param {import("discord.js").Message} message - Discord Message 对象
  * @returns {object|null} 观察数据，非 Boost 消息返回 null
@@ -48,7 +41,7 @@ export function extractBoostObservation(message) {
   return {
     messageId: message.id,
     messageType: type,
-    messageTypeName: message.constructor.name === "Message" ? _typeName(type) : "unknown",
+    messageTypeName: _typeName(type),
     guildId: message.guildId ?? message.guild?.id ?? null,
     channelId: message.channelId ?? null,
     authorId: message.author?.id ?? null,
