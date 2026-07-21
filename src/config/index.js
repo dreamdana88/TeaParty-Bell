@@ -38,6 +38,10 @@ export function loadConfig() {
     deepseekApiKey: process.env.DEEPSEEK_API_KEY,
     deepseekBaseUrl: process.env.DEEPSEEK_BASE_URL || "https://api.deepseek.com",
     deepseekModel: process.env.DEEPSEEK_MODEL || "deepseek-v4-flash",
+    deepseekTimeoutMs: validatePositiveInt(
+      process.env.DEEPSEEK_TIMEOUT_MS,
+      30000
+    ),
 
     // 应用行为
     testMode: stringToBool(process.env.TEST_MODE, false),
