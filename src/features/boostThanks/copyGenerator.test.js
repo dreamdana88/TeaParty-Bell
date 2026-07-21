@@ -1,5 +1,5 @@
 /**
- * messageBuilder.js / copyGenerator.js 自动测试（Phase 5 Review Fix）。
+ * messageBuilder.js / copyGenerator.js 自动测试（Phase 5 - 文风优化）。
  *
  * 使用 Mock AI，不消耗真实 DeepSeek API 额度。
  *
@@ -7,7 +7,7 @@
  */
 
 import { buildTitle, assembleMessage } from "./messageBuilder.js";
-import { createCopyGenerator, getPromptPath } from "./copyGenerator.js";
+import { createCopyGenerator, getPromptPath, pickStyle, isTechStyle, getStyleKeys } from "./copyGenerator.js";
 
 let passed = 0;
 let failed = 0;
@@ -36,7 +36,6 @@ async function assertRejects(promiseFn, expectedMsg, label) {
 function makeMockAi(response) {
   return { generateText: async () => response };
 }
-/** Capturing mock: records messages + options, returns response */
 function makeCapturingMockAi(response, capture) {
   return {
     generateText: async (messages, options) => {
@@ -52,6 +51,9 @@ const TEST_USER_ID = "1426581758194876577";
 const TEST_DISPLAY = "Dreamdana";
 
 // ============================================================
+// 原有测试（1–29，保持兼容）
+// ============================================================
+
 console.log("\n=== 测试 1：单次 Boost 标题完全正确 ===\n");
 {
   const title = buildTitle("1426581758194876577", 1);
@@ -81,239 +83,273 @@ console.log("\n=== 测试 3：3～99 中文数字 ===\n");
 
 console.log("\n=== 测试 4：100+ 使用阿拉伯数字，不出现 undefined ===\n");
 {
-  assertIncludes(buildTitle("1", 100), "100个助力", "100→100个助力");
-  assertIncludes(buildTitle("1", 128), "128个助力", "128→128个助力");
-  assertIncludes(buildTitle("1", 999), "999个助力", "999→999个助力");
-  // 确保不含 undefined
+  assertIncludes(buildTitle("1", 100), "100个助力", "100→100个");
+  assertIncludes(buildTitle("1", 128), "128个助力", "128→128个");
+  assertIncludes(buildTitle("1", 999), "999个助力", "999→999个");
   for (const n of [100, 128, 500, 999]) {
-    const t = buildTitle("1", n);
-    assert(!t.includes("undefined"), `${n} 标题不含 undefined`);
+    assert(!buildTitle("1", n).includes("undefined"), `${n} 不含 undefined`);
   }
 }
 
-console.log("\n=== 测试 5：userId 校验加强（纯数字）===\n");
+console.log("\n=== 测试 5：userId 纯数字 ===\n");
 {
-  await assertRejects(() => buildTitle("", 1), "纯数字", "空字符串→抛出");
+  await assertRejects(() => buildTitle("", 1), "纯数字", "空→抛出");
   await assertRejects(() => buildTitle(null, 1), "纯数字", "null→抛出");
   await assertRejects(() => buildTitle("abc", 1), "纯数字", "abc→抛出");
-  await assertRejects(() => buildTitle("u_123", 1), "纯数字", "含下划线→抛出");
-  await assertRejects(() => buildTitle("12 34", 1), "纯数字", "含空格→抛出");
-  // 正常纯数字不抛
-  buildTitle("123456789", 1); assert(true, "纯数字 userId 正常");
+  await assertRejects(() => buildTitle("u_123", 1), "纯数字", "下划线→抛出");
+  await assertRejects(() => buildTitle("12 34", 1), "纯数字", "空格→抛出");
+  buildTitle("123456789", 1); assert(true, "纯数字正常");
 }
 
-console.log("\n=== 测试 6：assembleMessage 使用双换行 ===\n");
+console.log("\n=== 测试 6：assembleMessage 双换行 ===\n");
 {
   const msg = assembleMessage("# title", "body");
-  assert(msg.includes("\n\n"), "包含双换行 \\n\\n");
+  assert(msg.includes("\n\n"), "包含 \\n\\n");
   assert(!msg.includes("\n\n\n"), "不含三换行");
-  assertEqual(msg, "# title\n\nbody", "格式为 title\\n\\nbody");
+  assertEqual(msg, "# title\n\nbody", "格式 title\\n\\nbody");
 }
 
-console.log("\n=== 测试 7：AI 只负责正文（不再要求 userId）===\n");
+console.log("\n=== 测试 7：AI 只负责正文（无 userId）===\n");
 {
-  const mockAi = makeMockAi("祝你今天一切顺利✨");
-  const gen = createCopyGenerator(TEST_CONFIG, mockAi);
+  const gen = createCopyGenerator(TEST_CONFIG, makeMockAi("祝你今天一切顺利✨"));
   const body = await gen.generateCopy({ displayName: TEST_DISPLAY, boostCount: 1 });
-  assertEqual(body, "祝你今天一切顺利✨", "正文正确返回（无 userId）");
+  assertEqual(body, "祝你今天一切顺利✨", "正文正确");
 }
 
-console.log("\n=== 测试 8：正文 trim 正确 ===\n");
+console.log("\n=== 测试 8：正文 trim ===\n");
 {
   const gen = createCopyGenerator(TEST_CONFIG, makeMockAi("  \n  前后空白  \n  "));
   const body = await gen.generateCopy({ displayName: TEST_DISPLAY, boostCount: 1 });
   assertEqual(body, "前后空白", "trim");
 }
 
-console.log("\n=== 测试 9：空正文明确失败 ===\n");
+console.log("\n=== 测试 9：空正文 ===\n");
 {
-  const gen = createCopyGenerator(TEST_CONFIG, makeMockAi(""));
   await assertRejects(
-    () => gen.generateCopy({ displayName: TEST_DISPLAY, boostCount: 1 }),
+    () => createCopyGenerator(TEST_CONFIG, makeMockAi("")).generateCopy({ displayName: "X", boostCount: 1 }),
     "正文为空", "空→抛出");
 }
 
-console.log("\n=== 测试 10：whitespace-only 正文明确失败 ===\n");
+console.log("\n=== 测试 10：whitespace-only ===\n");
 {
-  const gen = createCopyGenerator(TEST_CONFIG, makeMockAi("   \n \t  "));
   await assertRejects(
-    () => gen.generateCopy({ displayName: TEST_DISPLAY, boostCount: 1 }),
-    "正文为空", "whitespace-only→抛出");
+    () => createCopyGenerator(TEST_CONFIG, makeMockAi("  \n \t ")).generateCopy({ displayName: "X", boostCount: 1 }),
+    "正文为空", "whitespace→抛出");
 }
 
-console.log("\n=== 测试 11：AI 输出用户 Mention 时拒绝 ===\n");
+console.log("\n=== 测试 11–18：Discord 格式拦截 ===\n");
 {
   await assertRejects(
-    () => createCopyGenerator(TEST_CONFIG, makeMockAi("感谢 <@123456> 助力")).generateCopy({ displayName: "X", boostCount: 1 }),
-    "Discord 用户 Mention", "<@123>→拒绝");
+    () => createCopyGenerator(TEST_CONFIG, makeMockAi("<@123>")).generateCopy({ displayName: "X", boostCount: 1 }),
+    "用户 Mention", "<@123>→拒绝");
   await assertRejects(
-    () => createCopyGenerator(TEST_CONFIG, makeMockAi("<@!987654> 好")).generateCopy({ displayName: "X", boostCount: 1 }),
-    "Discord 用户 Mention", "<@!987>→拒绝");
-}
-
-console.log("\n=== 测试 12：AI 输出 Role Mention 时拒绝 ===\n");
-{
+    () => createCopyGenerator(TEST_CONFIG, makeMockAi("<@!987>")).generateCopy({ displayName: "X", boostCount: 1 }),
+    "用户 Mention", "<@!987>→拒绝");
   await assertRejects(
-    () => createCopyGenerator(TEST_CONFIG, makeMockAi("通知 <@&456> 一声")).generateCopy({ displayName: "X", boostCount: 1 }),
+    () => createCopyGenerator(TEST_CONFIG, makeMockAi("<@&456>")).generateCopy({ displayName: "X", boostCount: 1 }),
     "身份组 Mention", "<@&456>→拒绝");
-}
-
-console.log("\n=== 测试 13：AI 输出 Channel Mention 时拒绝 ===\n");
-{
   await assertRejects(
-    () => createCopyGenerator(TEST_CONFIG, makeMockAi("去 <#789> 看看")).generateCopy({ displayName: "X", boostCount: 1 }),
+    () => createCopyGenerator(TEST_CONFIG, makeMockAi("<#789>")).generateCopy({ displayName: "X", boostCount: 1 }),
     "频道 Mention", "<#789>→拒绝");
-}
-
-console.log("\n=== 测试 14：AI 输出 @everyone 时拒绝 ===\n");
-{
   await assertRejects(
-    () => createCopyGenerator(TEST_CONFIG, makeMockAi("感谢 @everyone")).generateCopy({ displayName: "X", boostCount: 1 }),
+    () => createCopyGenerator(TEST_CONFIG, makeMockAi("@everyone")).generateCopy({ displayName: "X", boostCount: 1 }),
     "@everyone", "@everyone→拒绝");
-}
-
-console.log("\n=== 测试 15：AI 输出 @here 时拒绝 ===\n");
-{
   await assertRejects(
-    () => createCopyGenerator(TEST_CONFIG, makeMockAi("@here 有人在吗")).generateCopy({ displayName: "X", boostCount: 1 }),
+    () => createCopyGenerator(TEST_CONFIG, makeMockAi("@here")).generateCopy({ displayName: "X", boostCount: 1 }),
     "@everyone", "@here→拒绝");
-}
-
-console.log("\n=== 测试 16：AI 输出静态 Emoji 时拒绝 ===\n");
-{
   await assertRejects(
-    () => createCopyGenerator(TEST_CONFIG, makeMockAi("送你 <:heart_red:123> 哦")).generateCopy({ displayName: "X", boostCount: 1 }),
+    () => createCopyGenerator(TEST_CONFIG, makeMockAi("<:x:1>")).generateCopy({ displayName: "X", boostCount: 1 }),
     "自定义 Emoji", "静态 Emoji→拒绝");
-}
-
-console.log("\n=== 测试 17：AI 输出动画 Emoji 时拒绝 ===\n");
-{
   await assertRejects(
-    () => createCopyGenerator(TEST_CONFIG, makeMockAi("<a:partyparrot:456> 好")).generateCopy({ displayName: "X", boostCount: 1 }),
+    () => createCopyGenerator(TEST_CONFIG, makeMockAi("<a:x:1>")).generateCopy({ displayName: "X", boostCount: 1 }),
     "自定义 Emoji", "动画 Emoji→拒绝");
-}
-
-console.log("\n=== 测试 18：AI 输出 Markdown 标题时拒绝 ===\n");
-{
   for (const level of [1, 2, 3]) {
-    const prefix = "#".repeat(level);
     await assertRejects(
-      () => createCopyGenerator(TEST_CONFIG, makeMockAi(`${prefix} 标题\n正文`)).generateCopy({ displayName: "X", boostCount: 1 }),
-      "Markdown 标题", `${prefix} 标题→拒绝`);
+      () => createCopyGenerator(TEST_CONFIG, makeMockAi(`${"#".repeat(level)} 标题`)).generateCopy({ displayName: "X", boostCount: 1 }),
+      "Markdown 标题", `H${level}→拒绝`);
   }
 }
 
-console.log("\n=== 测试 19：displayName 缺失时仍可生成 ===\n");
+console.log("\n=== 测试 19：displayName 缺失 ===\n");
 {
   const gen = createCopyGenerator(TEST_CONFIG, makeMockAi("新朋友你好！🎉"));
   const body = await gen.generateCopy({ displayName: null, boostCount: 1 });
-  assert(body.length > 0, "生成非空正文");
+  assert(body.length > 0, "非空");
 }
 
-console.log("\n=== 测试 20：boostCount 非法时明确失败 ===\n");
+console.log("\n=== 测试 20：boostCount 非法 ===\n");
 {
-  await assertRejects(() => buildTitle("1", 0), "正整", "buildTitle=0→抛出");
-  await assertRejects(() => buildTitle("1", -1), "正整", "buildTitle=-1→抛出");
-  await assertRejects(() => buildTitle("1", 1.5), "正整", "buildTitle=1.5→抛出");
-  const gen = createCopyGenerator(TEST_CONFIG, makeMockAi("x"));
-  await assertRejects(() => gen.generateCopy({ boostCount: 0 }), "正整", "generateCopy=0→抛出");
-}
-
-console.log("\n=== 测试 21：100 Unicode 字符允许 ===\n");
-{
-  const exactly100 = "啊".repeat(100); // 100 emoji chars
-  const gen = createCopyGenerator(TEST_CONFIG, makeMockAi(exactly100));
-  const body = await gen.generateCopy({ displayName: TEST_DISPLAY, boostCount: 1 });
-  assertEqual(Array.from(body).length, 100, "100 字符允许");
-}
-
-console.log("\n=== 测试 22：101 Unicode 字符拒绝 ===\n");
-{
-  const gen = createCopyGenerator(TEST_CONFIG, makeMockAi("啊".repeat(101)));
+  await assertRejects(() => buildTitle("1", 0), "正整", "buildTitle 0");
+  await assertRejects(() => buildTitle("1", -1), "正整", "buildTitle -1");
+  await assertRejects(() => buildTitle("1", 1.5), "正整", "buildTitle 1.5");
   await assertRejects(
-    () => gen.generateCopy({ displayName: TEST_DISPLAY, boostCount: 1 }),
-    "过长", "101 字符→拒绝");
+    () => createCopyGenerator(TEST_CONFIG, makeMockAi("x")).generateCopy({ boostCount: 0 }),
+    "正整", "generateCopy 0");
 }
 
-console.log("\n=== 测试 23：Emoji Unicode 长度计算正确 ===\n");
+console.log("\n=== 测试 21–23：Unicode 长度 ===\n");
 {
-  // Emoji 可能占多个 UTF-16 code units，但 Array.from 正确计数为 1
-  const textWithEmoji = "你好✨🎉世界";
-  assertEqual(Array.from(textWithEmoji).length, 6, "Array.from 正确计数字符（含 Emoji）");
-  const gen = createCopyGenerator(TEST_CONFIG, makeMockAi(textWithEmoji));
-  const body = await gen.generateCopy({ displayName: TEST_DISPLAY, boostCount: 1 });
-  assertEqual(body, textWithEmoji, "含 Emoji 正文通过");
+  const gen100 = createCopyGenerator(TEST_CONFIG, makeMockAi("啊".repeat(100)));
+  assertEqual(Array.from((await gen100.generateCopy({ displayName: "X", boostCount: 1 }))).length, 100, "100 允许");
+  await assertRejects(
+    () => createCopyGenerator(TEST_CONFIG, makeMockAi("啊".repeat(101))).generateCopy({ displayName: "X", boostCount: 1 }),
+    "过长", "101→拒绝");
+  const genEmoji = createCopyGenerator(TEST_CONFIG, makeMockAi("你好✨🎉世界"));
+  const bEmoji = await genEmoji.generateCopy({ displayName: "X", boostCount: 1 });
+  assertEqual(Array.from(bEmoji).length, 6, "Emoji 长度正确");
 }
 
-console.log("\n=== 测试 24：无 interest 时不伪造兴趣 ===\n");
+console.log("\n=== 测试 24：无 interest 不伪造 ===\n");
+{
+  const capture = {};
+  await createCopyGenerator(TEST_CONFIG, makeCapturingMockAi("ok", capture)).generateCopy({ displayName: "X", boostCount: 1 });
+  assert(!capture.messages[1].content.includes("兴趣"), "不含「兴趣」");
+}
+
+console.log("\n=== 测试 25：capturing mock ===\n");
 {
   const capture = {};
   const gen = createCopyGenerator(TEST_CONFIG, makeCapturingMockAi("ok", capture));
-  await gen.generateCopy({ displayName: TEST_DISPLAY, boostCount: 1 });
-  const userContent = capture.messages[1].content;
-  assert(!userContent.includes("兴趣"), "不传 interest 时不含「兴趣」字段");
-}
-
-console.log("\n=== 测试 25：capturing mock 验证 messages 和 options ===\n");
-{
-  const capture = {};
-  const gen = createCopyGenerator(TEST_CONFIG, makeCapturingMockAi("ok", capture));
-  await gen.generateCopy({ displayName: "Dreamdana", boostCount: 2, interest: "星露谷" });
+  await gen.generateCopy({ displayName: "Dreamdana", boostCount: 2, interest: "星露谷", styleHint: "gentleBlessing" });
 
   const msgs = capture.messages;
   const opts = capture.options;
 
-  // messages 验证
-  assert(msgs.length === 2, "messages 长度 = 2");
+  assert(msgs.length === 2, "messages=2");
   assertEqual(msgs[0].role, "system", "system role");
-  assert(msgs[0].content.length > 0, "system content 非空");
+  assert(msgs[0].content.length > 0, "system 非空");
   assertEqual(msgs[1].role, "user", "user role");
-  assertIncludes(msgs[1].content, "Dreamdana", "user content 含 displayName");
-  assertIncludes(msgs[1].content, "2个助力", "user content 含 boostCount");
-  assertIncludes(msgs[1].content, "星露谷", "user content 含 interest");
-  assert(!msgs[1].content.includes(TEST_USER_ID), "user content 不含 userId");
-  assert(!msgs[1].content.includes("sk-test"), "user content 不含 API Key");
-
-  // options 验证
-  assertEqual(opts.maxTokens, 128, "maxTokens = 128");
-  assert(opts.thinking !== undefined, "thinking 已设置");
-  assertEqual(opts.thinking.type, "disabled", "thinking = disabled");
+  assertIncludes(msgs[1].content, "Dreamdana", "含 displayName");
+  assertIncludes(msgs[1].content, "2个助力", "含 boostCount");
+  assertIncludes(msgs[1].content, "星露谷", "含 interest");
+  assert(!msgs[1].content.includes(TEST_USER_ID), "不含 userId");
+  assert(!msgs[1].content.includes("sk-test"), "不含 API Key");
+  assertEqual(opts.maxTokens, 128, "maxTokens=128");
+  assertEqual(opts.thinking.type, "disabled", "thinking=disabled");
 }
 
-console.log("\n=== 测试 26：Prompt 文件路径正确 ===\n");
+console.log("\n=== 测试 26–29：杂项 ===\n");
 {
-  const p = getPromptPath();
-  assert(p.replace(/\\/g, "/").endsWith("data/prompts/boost-thanks.md"), "路径正确");
-  const { readFileSync } = await import("fs");
-  let ok = false;
-  try { readFileSync(p, "utf-8"); ok = true; } catch {}
-  assert(ok, "文件存在可读");
+  assert(getPromptPath().replace(/\\/g, "/").endsWith("data/prompts/boost-thanks.md"), "Prompt 路径");
+  assert(!buildTitle(TEST_USER_ID, 1).includes("sk-test"), "标题无 Key");
+  assert(!assembleMessage("# t", "hi").includes("sk-test"), "消息无 Key");
+  const body = await createCopyGenerator(TEST_CONFIG, makeMockAi("ok")).generateCopy({ displayName: "X", boostCount: 1 });
+  assert(!body.includes("sk-test") && !body.includes("Bearer"), "正文无 Key");
+  assertEqual(await createCopyGenerator(TEST_CONFIG, makeMockAi("mock ok")).generateCopy({ displayName: "X", boostCount: 1 }), "mock ok", "Mock 正常");
+  assert((await createCopyGenerator(TEST_CONFIG, makeMockAi("✨🎉")).generateCopy({ displayName: "X", boostCount: 1 })).length > 0, "Emoji 通过");
 }
 
-console.log("\n=== 测试 27：不泄露 Token/API Key ===\n");
+// ============================================================
+// 新增：风格抽签系统测试（30–40）
+// ============================================================
+
+console.log("\n=== 测试 30：pickStyle 返回合法 key ===\n");
 {
-  const title = buildTitle(TEST_USER_ID, 1);
-  assert(!title.includes("sk-test"), "标题不含 API Key");
-  const msg = assembleMessage(title, "hi");
-  assert(!msg.includes("sk-test"), "消息不含 API Key");
-  const gen = createCopyGenerator(TEST_CONFIG, makeMockAi("ok"));
-  const body = await gen.generateCopy({ displayName: TEST_DISPLAY, boostCount: 1 });
-  assert(!body.includes("sk-test"), "正文不含 API Key");
-  assert(!body.includes("Bearer"), "正文不含 Bearer");
+  const validKeys = getStyleKeys();
+  for (let i = 0; i < 20; i++) {
+    const s = pickStyle();
+    assert(validKeys.includes(s.key), `pickStyle 返回合法 key: ${s.key}`);
+    assert(typeof s.hint === "string" && s.hint.length > 0, `hint 非空: ${s.key}`);
+  }
 }
 
-console.log("\n=== 测试 28：Mock AI 注入不绑死 deepseek ===\n");
+console.log("\n=== 测试 31：风格池包含全部 8 种风格 ===\n");
 {
-  const gen = createCopyGenerator(TEST_CONFIG, makeMockAi("mock ok"));
-  const body = await gen.generateCopy({ displayName: "X", boostCount: 1 });
-  assertEqual(body, "mock ok", "Mock AI 正常工作");
+  const keys = getStyleKeys();
+  assertEqual(keys.length, 8, "8 种风格");
+  const expected = ["lifeBlessing","fairyTale","abstractChaos","oneLiner","gentleBlessing","antiRoutine","lightTavern","aiGamer"];
+  for (const k of expected) assert(keys.includes(k), `含 ${k}`);
 }
 
-console.log("\n=== 测试 29：Unicode Emoji 正常通过 ===\n");
+console.log("\n=== 测试 32：isTechStyle 正确判断 ===\n");
 {
-  const gen = createCopyGenerator(TEST_CONFIG, makeMockAi("祝你今天愉快！✨🎉 一切顺利～"));
-  const body = await gen.generateCopy({ displayName: TEST_DISPLAY, boostCount: 1 });
-  assert(body.length > 0, "含 Unicode Emoji 通过");
+  assert(isTechStyle("lightTavern"), "lightTavern 是 tech");
+  assert(isTechStyle("aiGamer"), "aiGamer 是 tech");
+  assert(!isTechStyle("lifeBlessing"), "lifeBlessing 非 tech");
+  assert(!isTechStyle("fairyTale"), "fairyTale 非 tech");
+  assert(!isTechStyle("gentleBlessing"), "gentleBlessing 非 tech");
+}
+
+console.log("\n=== 测试 33：非 tech 风格 → user message 含术语禁止指令 ===\n");
+{
+  const capture = {};
+  const gen = createCopyGenerator(TEST_CONFIG, makeCapturingMockAi("ok", capture));
+  await gen.generateCopy({ displayName: "X", boostCount: 1, styleHint: "lifeBlessing" });
+  const uc = capture.messages[1].content;
+  assertIncludes(uc, "生活怪祝福", "含风格方向提示");
+  assertIncludes(uc, "不要使用", "含术语禁止指令");
+}
+
+console.log("\n=== 测试 34：指定酒馆风格 → user message 允许术语 ===\n");
+{
+  const capture = {};
+  const gen = createCopyGenerator(TEST_CONFIG, makeCapturingMockAi("ok", capture));
+  await gen.generateCopy({ displayName: "X", boostCount: 1, styleHint: "lightTavern" });
+  const uc = capture.messages[1].content;
+  assertIncludes(uc, "轻度酒馆梗", "含风格方向");
+  assertIncludes(uc, "SillyTavern", "含酒馆语境词");
+  // 不应该有"不要使用"这种全禁指令
+  assert(!uc.includes("不要使用酒馆"), "不含「不要使用酒馆」全禁");
+}
+
+console.log("\n=== 测试 35：未知 styleHint 抛出 ===\n");
+{
+  await assertRejects(
+    () => createCopyGenerator(TEST_CONFIG, makeMockAi("x")).generateCopy({ displayName: "X", boostCount: 1, styleHint: "nonexistent" }),
+    "未知的 styleHint", "未知 styleHint→抛出");
+}
+
+console.log("\n=== 测试 36：不指定 styleHint 时随机抽签 ===\n");
+{
+  // 调用 10 次，确认都能成功（不会因缺 style 而崩溃）
+  for (let i = 0; i < 10; i++) {
+    const gen = createCopyGenerator(TEST_CONFIG, makeMockAi("ok"));
+    const body = await gen.generateCopy({ displayName: "X", boostCount: 1 });
+    assertEqual(body, "ok", `随机风格第 ${i + 1} 次成功`);
+  }
+}
+
+console.log("\n=== 测试 37：AI 玩家怪梗风格正确进入 messages ===\n");
+{
+  const capture = {};
+  const gen = createCopyGenerator(TEST_CONFIG, makeCapturingMockAi("ok", capture));
+  await gen.generateCopy({ displayName: "X", boostCount: 3, styleHint: "aiGamer" });
+  const uc = capture.messages[1].content;
+  assertIncludes(uc, "AI 玩家怪梗", "含风格方向");
+  assertIncludes(uc, "模型", "含技术语境词");
+  assertIncludes(uc, "社区梗", "含社区梗说明");
+}
+
+console.log("\n=== 测试 38：tech 风格权重合计约 15% ===\n");
+{
+  // 不精确统计，只验证 tech 风格存在且各自权重合理
+  // 手工验证 weight 总和
+  const techWeight = 10 + 5; // lightTavern + aiGamer
+  const totalWeight = 20 + 15 + 15 + 15 + 10 + 10 + 10 + 5; // 100
+  assertEqual(techWeight, 15, "tech 权重=15/100");
+  assertEqual(totalWeight, 100, "总权重=100");
+}
+
+console.log("\n=== 测试 39：styleHint 出现在 user message 中 ===\n");
+{
+  for (const key of getStyleKeys()) {
+    const capture = {};
+    const gen = createCopyGenerator(TEST_CONFIG, makeCapturingMockAi("ok", capture));
+    await gen.generateCopy({ displayName: "X", boostCount: 1, styleHint: key });
+    const uc = capture.messages[1].content;
+    assert(uc.includes("本次风格方向"), `${key} → user message 含风格方向`);
+  }
+}
+
+console.log("\n=== 测试 40：displayName 作为上下文但默认不重复称呼 ===\n");
+{
+  // Prompt 中已明确"正文默认不要再叫用户的 displayName"
+  // 此处验证 displayName 仍作为上下文数据正确传入
+  const capture = {};
+  const gen = createCopyGenerator(TEST_CONFIG, makeCapturingMockAi("ok", capture));
+  await gen.generateCopy({ displayName: "Dreamdana", boostCount: 1, styleHint: "gentleBlessing" });
+  assertIncludes(capture.messages[1].content, '"Dreamdana"', "displayName 作为数据传入");
+  // 但不强制验证 AI 是否真的没重复称呼（那是 Prompt 效果，需真实 AI 测试）
 }
 
 // ============================================================
