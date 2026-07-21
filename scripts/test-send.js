@@ -32,7 +32,7 @@ if (!config.discordBotToken) {
   process.exit(1);
 }
 
-const TEST_USER_ID = process.env.SEND_TEST_USER_ID || "1426581758194876577";
+const TEST_USER_ID = process.env.SEND_TEST_USER_ID || "1047079087413411870";
 const TEST_BOOST_COUNT = Math.max(1, parseInt(process.env.SEND_TEST_BOOST_COUNT, 10) || 2);
 
 // ---- 创建临时 Client（仅本次测试）----
