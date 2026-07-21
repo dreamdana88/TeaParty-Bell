@@ -190,6 +190,8 @@ export function createDeepSeekProvider(config) {
 
     // ---- 7. 提取最终 content（不使用 reasoning_content）----
     const raw = choice.message.content;
+
+    // null / undefined → 空内容
     if (raw === null || raw === undefined) {
       const finishReason = choice.finish_reason ?? "unknown";
       throw new DeepSeekError(
@@ -198,8 +200,16 @@ export function createDeepSeekProvider(config) {
       );
     }
 
-    // trim 后再判断是否为空，覆盖 whitespace-only（如 "   \n "）
-    const trimmed = String(raw).trim();
+    // 非字符串类型（number、object 等）→ 响应结构异常，不得强制转换
+    if (typeof raw !== "string") {
+      throw new DeepSeekError(
+        `DeepSeek API 返回的 content 类型异常（${typeof raw}），预期为 string`,
+        "invalid_response"
+      );
+    }
+
+    // trim 后再判断是否为空，覆盖 "" 和 whitespace-only（如 "   \n "）
+    const trimmed = raw.trim();
     if (trimmed === "") {
       const finishReason = choice.finish_reason ?? "unknown";
       throw new DeepSeekError(

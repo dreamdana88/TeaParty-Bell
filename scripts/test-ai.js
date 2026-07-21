@@ -5,7 +5,7 @@
  * 基本连接和文本生成能力。
  *
  * 不依赖 Discord，不发送消息，不进入感谢业务流程。
- * 必须复用正式 src/ai/deepseek.js Provider，不得重复实现 API Client。
+ * 必须复用 src/ai/index.js 统一 AI 入口，不得重复实现 API Client。
  *
  * 运行：node scripts/test-ai.js
  *  或：npm run test:ai

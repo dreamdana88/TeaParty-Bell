@@ -27,7 +27,7 @@ export function createAiProvider(config) {
    * @param {number} [options.maxTokens]
    * @param {{ type: "enabled"|"disabled" }} [options.thinking]
    * @returns {Promise<string>} 标准化最终文本
-   * @throws {DeepSeekError} 所有错误均以此类型（或其子类）抛出
+   * @throws {Error} 调用失败时抛出错误，错误含 code 属性标识类型
    */
   async function generateText(messages, options) {
     return provider.chat(messages, options);
