@@ -19,39 +19,47 @@
  */
 
 import { readFileSync } from "fs";
-import { resolve, dirname } from "path";
+import { dirname, resolve } from "path";
 import { fileURLToPath } from "url";
 
 import { createAiProvider } from "../../ai/index.js";
 
 // ---- 路径 ----
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const PROMPT_PATH = resolve(__dirname, "..", "..", "..", "data", "prompts", "boost-thanks.md");
+const PROMPT_PATH = resolve(
+  __dirname,
+  "..",
+  "..",
+  "..",
+  "data",
+  "prompts",
+  "boost-thanks.md",
+);
 
 // ---- 正文限制 ----
 const MAX_UNICODE_CHARS = 100;
 
 // ---- 禁用格式正则 ----
-const RE_USER_MENTION    = /<@!?\d+>/;
-const RE_ROLE_MENTION    = /<@&\d+>/;
+const RE_USER_MENTION = /<@!?\d+>/;
+const RE_ROLE_MENTION = /<@&\d+>/;
 const RE_CHANNEL_MENTION = /<#\d+>/;
-const RE_EVERYONE_HERE   = /@(everyone|here)\b/i;
-const RE_CUSTOM_EMOJI    = /<a?:\w+:\d+>/;
-const RE_MD_HEADING      = /^\s*#{1,6}\s/m;
+const RE_EVERYONE_HERE = /@(everyone|here)\b/i;
+const RE_CUSTOM_EMOJI = /<a?:\w+:\d+>/;
+const RE_MD_HEADING = /^\s*#{1,6}\s/m;
 
 // =========================================================================
 // 风格抽签系统
 // =========================================================================
 
 const STYLE_POOL = [
-  { key: "lifeBlessing",   weight: 20 },
-  { key: "fairyTale",      weight: 15 },
-  { key: "abstractChaos",  weight: 15 },
-  { key: "oneLiner",       weight: 15 },
+  { key: "lifeBlessing", weight: 20 },
+  { key: "fairyTale", weight: 15 },
+  { key: "abstractChaos", weight: 15 },
+  { key: "oneLiner", weight: 15 },
   { key: "gentleBlessing", weight: 10 },
-  { key: "antiRoutine",    weight: 10 },
-  { key: "lightTavern",    weight: 10 },
-  { key: "aiGamer",        weight:  5 },
+  { key: "antiRoutine", weight: 10 },
+  { key: "lightTavern", weight: 10 },
+  { key: "aiGamer", weight: 5 },
 ];
 
 const STYLE_HINTS = {
@@ -60,7 +68,7 @@ const STYLE_HINTS = {
     "允许一本正经地胡说八道。",
 
   fairyTale:
-    "本次风格方向：童话梦幻风。创造奇幻美丽的食物、天气、动物、植物或奇怪好运。" +
+    "本次风格方向：童话梦幻风。创造奇幻的法术、神奇的魔法生物、独特的食物、天气、动物、植物或奇怪好运。" +
     "可以天马行空，不要解释世界观。",
 
   abstractChaos:
@@ -77,12 +85,12 @@ const STYLE_HINTS = {
     "然后突然转成温暖真诚的祝福。",
 
   lightTavern:
-    "本次风格方向：轻度酒馆梗。允许使用 1 到 2 个 SillyTavern 玩家熟悉的梗（如酒馆、角色卡、模型、上下文等），" +
+    "本次风格方向：轻度酒馆梗。允许使用 1 到 2 个 SillyTavern 玩家熟悉的梗进行对用户RP人生的美好祝福，" +
     "但禁止术语堆砌。融入自然口语。",
 
   aiGamer:
     "本次风格方向：AI 玩家怪梗。可以玩模型、厂商、截断、复读等社区梗。" +
-    "优先创造新表达，避免机械重复已有固定梗（如'模型不炸显存''上下文永远塞得下'等）。" +
+    "优先创造新表达，避免机械重复已有固定梗（如'模型不炸显存''截断'等）。" +
     "可以自然使用少量技术术语。",
 };
 
@@ -146,7 +154,11 @@ export function createCopyGenerator(config, aiOverride) {
       userMessage += `\n\n${NON_TECH_RESTRICTION}`;
     }
 
-    if (context.interest && typeof context.interest === "string" && context.interest.trim()) {
+    if (
+      context.interest &&
+      typeof context.interest === "string" &&
+      context.interest.trim()
+    ) {
       userMessage += `\n兴趣：${context.interest.trim()}`;
     }
 
@@ -179,7 +191,7 @@ function _loadPrompt() {
     return readFileSync(PROMPT_PATH, "utf-8");
   } catch (err) {
     throw new Error(
-      `无法读取感谢文案 Prompt 文件：${PROMPT_PATH}（${err.message}）`
+      `无法读取感谢文案 Prompt 文件：${PROMPT_PATH}（${err.message}）`,
     );
   }
 }
@@ -192,7 +204,7 @@ function _validateCopy(text) {
   const charCount = Array.from(text).length;
   if (charCount > MAX_UNICODE_CHARS) {
     throw new Error(
-      `AI 生成的正文过长（${charCount} 个 Unicode 字符，上限 ${MAX_UNICODE_CHARS}），疑似失控`
+      `AI 生成的正文过长（${charCount} 个 Unicode 字符，上限 ${MAX_UNICODE_CHARS}），疑似失控`,
     );
   }
 
