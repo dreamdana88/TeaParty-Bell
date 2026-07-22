@@ -46,7 +46,7 @@ export function loadConfig() {
     // 应用行为
     testMode: stringToBool(process.env.TEST_MODE, false),
     logLevel: process.env.LOG_LEVEL || "info",
-    reactionCount: parseInt(process.env.REACTION_COUNT, 10) || 10,
+    reactionCount: normalizeReactionCount(process.env.REACTION_COUNT),
 
     // 聚合
     boostAggregationWindowMs: validatePositiveInt(
@@ -92,6 +92,36 @@ function validatePositiveInt(value, defaultValue) {
   const num = Number(value);
   if (!Number.isInteger(num) || num <= 0) {
     return defaultValue;
+  }
+  return num;
+}
+
+/**
+ * Reaction 数量归一化（Phase 7）。
+ *
+ * 业务规则：每条感谢消息 8～10 个 Reaction。
+ * 非法值均回退到默认值 10，再钳制到 [8, 10]。
+ *
+ * @param {string|undefined|null} value - 环境变量 REACTION_COUNT 原始值
+ * @returns {number} 8～10 之间的整数
+ */
+const REACTION_COUNT_DEFAULT = 10;
+const REACTION_COUNT_MIN = 8;
+const REACTION_COUNT_MAX = 10;
+
+function normalizeReactionCount(value) {
+  if (value === undefined || value === null || value === "") {
+    return REACTION_COUNT_DEFAULT;
+  }
+  const num = Number(value);
+  if (!Number.isInteger(num)) {
+    return REACTION_COUNT_DEFAULT;
+  }
+  if (num < REACTION_COUNT_MIN) {
+    return REACTION_COUNT_MIN;
+  }
+  if (num > REACTION_COUNT_MAX) {
+    return REACTION_COUNT_MAX;
   }
   return num;
 }

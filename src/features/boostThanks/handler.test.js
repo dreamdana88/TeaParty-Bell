@@ -646,6 +646,159 @@ console.log("\n=== 测试 21：小池（不足 8 个）→ 全部选择，不报
 }
 
 // ============================================================
+// Phase 7 Review Fix：REACTION_COUNT 边界测试
+// ============================================================
+
+console.log("\n=== 测试 22：REACTION_COUNT=8 → 确定性选择 8 个 ===\n");
+{
+  const mockSender = makeMockSender();
+  const mockLogger = makeMockLogger();
+  const pool = Array.from({ length: 20 }, (_, i) => ({ id: `e${i}`, name: `emoji${i}` }));
+  const mockProvider = makeMockEmojiProvider(pool);
+  const mockReactionSender = makeMockReactionSender();
+  const config8 = { ...TEST_CONFIG, reactionCount: 8 };
+
+  const handler = createBoostThanksHandler({
+    config: config8,
+    client: MOCK_CLIENT,
+    logger: mockLogger,
+    aiOverride: makeMockAi("正文"),
+    senderOverride: mockSender.sendMessage,
+    emojiProvider: mockProvider,
+    reactionSenderOverride: mockReactionSender.addReactions,
+  });
+
+  await handler.handleBoostEvent(TEST_EVENT);
+  // maxCount=min(8,20)=8, minCount=min(8,8)=8 → count 恒为 8
+  assertEqual(mockReactionSender.calls[0].emojiCount, 8, "REACTION_COUNT=8 → 选择 8 个");
+}
+
+console.log("\n=== 测试 23：REACTION_COUNT=9 → 选择 8～9 个 ===\n");
+{
+  const mockSender = makeMockSender();
+  const mockLogger = makeMockLogger();
+  const pool = Array.from({ length: 20 }, (_, i) => ({ id: `e${i}`, name: `emoji${i}` }));
+  const mockProvider = makeMockEmojiProvider(pool);
+  const mockReactionSender = makeMockReactionSender();
+  const config9 = { ...TEST_CONFIG, reactionCount: 9 };
+
+  const handler = createBoostThanksHandler({
+    config: config9,
+    client: MOCK_CLIENT,
+    logger: mockLogger,
+    aiOverride: makeMockAi("正文"),
+    senderOverride: mockSender.sendMessage,
+    emojiProvider: mockProvider,
+    reactionSenderOverride: mockReactionSender.addReactions,
+  });
+
+  await handler.handleBoostEvent(TEST_EVENT);
+  const count = mockReactionSender.calls[0].emojiCount;
+  assert(count >= 8, `REACTION_COUNT=9 → ≥ 8 (${count})`);
+  assert(count <= 9, `REACTION_COUNT=9 → ≤ 9 (${count})`);
+}
+
+console.log("\n=== 测试 24：REACTION_COUNT=20 → 钳制为 10 内 ===\n");
+{
+  const mockSender = makeMockSender();
+  const mockLogger = makeMockLogger();
+  const pool = Array.from({ length: 20 }, (_, i) => ({ id: `e${i}`, name: `emoji${i}` }));
+  const mockProvider = makeMockEmojiProvider(pool);
+  const mockReactionSender = makeMockReactionSender();
+  const configClamp = { ...TEST_CONFIG, reactionCount: 20 };
+
+  const handler = createBoostThanksHandler({
+    config: configClamp,
+    client: MOCK_CLIENT,
+    logger: mockLogger,
+    aiOverride: makeMockAi("正文"),
+    senderOverride: mockSender.sendMessage,
+    emojiProvider: mockProvider,
+    reactionSenderOverride: mockReactionSender.addReactions,
+  });
+
+  await handler.handleBoostEvent(TEST_EVENT);
+  const count = mockReactionSender.calls[0].emojiCount;
+  assert(count >= 8, `REACTION_COUNT=20 钳制后 ≥ 8 (${count})`);
+  assert(count <= 10, `REACTION_COUNT=20 钳制后 ≤ 10 (${count})`);
+}
+
+console.log("\n=== 测试 25：REACTION_COUNT=0 → 安全处理（钳制为 8）===\n");
+{
+  const mockSender = makeMockSender();
+  const mockLogger = makeMockLogger();
+  const pool = Array.from({ length: 20 }, (_, i) => ({ id: `e${i}`, name: `emoji${i}` }));
+  const mockProvider = makeMockEmojiProvider(pool);
+  const mockReactionSender = makeMockReactionSender();
+  const configZero = { ...TEST_CONFIG, reactionCount: 0 };
+
+  const handler = createBoostThanksHandler({
+    config: configZero,
+    client: MOCK_CLIENT,
+    logger: mockLogger,
+    aiOverride: makeMockAi("正文"),
+    senderOverride: mockSender.sendMessage,
+    emojiProvider: mockProvider,
+    reactionSenderOverride: mockReactionSender.addReactions,
+  });
+
+  await handler.handleBoostEvent(TEST_EVENT);
+  // 0 < 8 → 钳制为 8 → 确定性选择 8
+  assertEqual(mockReactionSender.calls[0].emojiCount, 8, "REACTION_COUNT=0 钳制为 8");
+}
+
+console.log("\n=== 测试 26：REACTION_COUNT=-5 → 安全处理 ===\n");
+{
+  const mockSender = makeMockSender();
+  const mockLogger = makeMockLogger();
+  const pool = Array.from({ length: 20 }, (_, i) => ({ id: `e${i}`, name: `emoji${i}` }));
+  const mockProvider = makeMockEmojiProvider(pool);
+  const mockReactionSender = makeMockReactionSender();
+  const configNeg = { ...TEST_CONFIG, reactionCount: -5 };
+
+  const handler = createBoostThanksHandler({
+    config: configNeg,
+    client: MOCK_CLIENT,
+    logger: mockLogger,
+    aiOverride: makeMockAi("正文"),
+    senderOverride: mockSender.sendMessage,
+    emojiProvider: mockProvider,
+    reactionSenderOverride: mockReactionSender.addReactions,
+  });
+
+  await handler.handleBoostEvent(TEST_EVENT);
+  const count = mockReactionSender.calls[0].emojiCount;
+  // -5 → 钳制为 8 → 确定性选择 8
+  assertEqual(count, 8, `REACTION_COUNT=-5 钳制为 8 (${count})`);
+}
+
+console.log("\n=== 测试 27：REACTION_COUNT 未设置（默认 10）===\n");
+{
+  const mockSender = makeMockSender();
+  const mockLogger = makeMockLogger();
+  const pool = Array.from({ length: 20 }, (_, i) => ({ id: `e${i}`, name: `emoji${i}` }));
+  const mockProvider = makeMockEmojiProvider(pool);
+  const mockReactionSender = makeMockReactionSender();
+  const configNoRC = { ...TEST_CONFIG };
+  delete configNoRC.reactionCount; // 模拟未设置
+
+  const handler = createBoostThanksHandler({
+    config: configNoRC,
+    client: MOCK_CLIENT,
+    logger: mockLogger,
+    aiOverride: makeMockAi("正文"),
+    senderOverride: mockSender.sendMessage,
+    emojiProvider: mockProvider,
+    reactionSenderOverride: mockReactionSender.addReactions,
+  });
+
+  await handler.handleBoostEvent(TEST_EVENT);
+  const count = mockReactionSender.calls[0].emojiCount;
+  assert(count >= 8, `未设置 → ≥ 8 (${count})`);
+  assert(count <= 10, `未设置 → ≤ 10 (${count})`);
+}
+
+// ============================================================
 console.log(`\n========================================`);
 console.log(`测试结果：${passed} passed, ${failed} failed`);
 console.log(`========================================\n`);

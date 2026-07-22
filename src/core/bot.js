@@ -38,7 +38,7 @@ export async function start() {
   const { client, login, destroy } = createClient();
 
   // ---- 3.5 注册 Feature 监听器 + 感谢发送链路（须在登录前完成）----
-  const emojiProvider = createApplicationEmojiProvider(client);
+  const emojiProvider = createApplicationEmojiProvider(client, logger);
   const thanksHandler = createBoostThanksHandler({ config, client, logger, emojiProvider });
   const observerCleanup = setupBoostObserver(
     client,

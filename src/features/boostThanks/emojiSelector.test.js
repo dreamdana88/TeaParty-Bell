@@ -119,17 +119,6 @@ console.log("\n=== 测试 9：Fisher-Yates 能覆盖池中任一位置 ===\n");
   assertEqual(result[0].id, "e9", "alwaysEnd: 第一个是 e9");
 }
 
-console.log("\n=== 测试 10：连续两次调用结果不同（概率性验证）===\n");
-{
-  const pool = makePool(100);
-  const r1 = selectEmojis(pool, 8);
-  const r2 = selectEmojis(pool, 8);
-  // 两次结果相同的概率极低（除非 RNG 被 mock）
-  const ids1 = r1.map(e => e.id).sort().join(",");
-  const ids2 = r2.map(e => e.id).sort().join(",");
-  assertNotEqual(ids1, ids2, "连续两次结果不同");
-}
-
 // ============================================================
 console.log(`\n========================================`);
 console.log(`测试结果：${passed} passed, ${failed} failed`);

@@ -1,22 +1,26 @@
 /**
- * 真实发送链路测试（Phase 6）。
+ * 真实发送链路测试（Phase 6–7）。
  *
  * 模拟一条聚合后的 BoostEvent，完整测试：
- * 真实 AI 生成 → 标题构造 → 消息拼装 → 发送到 DISCORD_THANKS_CHANNEL_ID。
+ * 真实 AI 生成 → 标题构造 → 消息拼装 → 发送到 DISCORD_THANKS_CHANNEL_ID
+ * → Application Emoji 获取 → 随机选择 → 添加 Reaction。
  *
  * ⚠️ 安全机制：
- *   必须设置 ALLOW_TEST_SEND=true 才会执行真实发送。
+ *   必须同时设置 ALLOW_TEST_SEND=true 和 SEND_TEST_USER_ID 才会执行真实发送。
  *   否则脚本立即退出。
  *
  * 运行：
- *   $env:ALLOW_TEST_SEND="true"; npm run test:send
+ *   $env:SEND_TEST_USER_ID="你的Discord用户ID"
+ *   $env:SEND_TEST_BOOST_COUNT="2"
+ *   $env:ALLOW_TEST_SEND="true"
+ *   npm run test:send
  */
 
 import { Client, GatewayIntentBits } from "discord.js";
 import { loadConfig } from "../src/config/index.js";
-import { logger } from "../src/utils/logger.js";
 import { createBoostThanksHandler } from "../src/features/boostThanks/handler.js";
-import { buildTitle, assembleMessage } from "../src/features/boostThanks/messageBuilder.js";
+import { buildTitle } from "../src/features/boostThanks/messageBuilder.js";
+import { createApplicationEmojiProvider } from "../src/resources/applicationEmojis.js";
 
 // ---- 安全检查 ----
 if (process.env.ALLOW_TEST_SEND !== "true") {
@@ -51,7 +55,8 @@ try {
   await client.login(config.discordBotToken);
   console.log(`已登录：${client.user.tag}\n`);
 
-  // 创建 Handler
+  // 创建 Handler（含 emojiProvider，完整覆盖 Reaction 链路）
+  const emojiProvider = createApplicationEmojiProvider(client);
   const handler = createBoostThanksHandler({
     config,
     client,
@@ -61,6 +66,7 @@ try {
       warn: (msg, data) => console.warn(`[WARN] ${msg}`, data ?? ""),
       debug: () => {},
     },
+    emojiProvider,
   });
 
   // 模拟 BoostEvent

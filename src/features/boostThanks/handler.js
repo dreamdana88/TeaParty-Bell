@@ -139,8 +139,12 @@ export function createBoostThanksHandler(opts) {
               emojiCount: allEmojis?.length ?? 0,
             });
           } else {
-            // 随机选择 8～min(10, poolSize) 个不重复 Emoji
-            const maxCount = Math.min(config.reactionCount ?? 10, allEmojis.length);
+            // 随机选择 8～10 个不重复 Emoji（reactionCount 钳制在 [8, 10]）
+            const rawCount = config.reactionCount ?? 10;
+            const clampedMax = Math.max(8, Math.min(10,
+              Number.isInteger(rawCount) ? rawCount : 10
+            ));
+            const maxCount = Math.min(clampedMax, allEmojis.length);
             const minCount = Math.min(8, maxCount);
             const count = minCount + Math.floor(Math.random() * (maxCount - minCount + 1));
             const selected = selectEmojis(allEmojis, count);

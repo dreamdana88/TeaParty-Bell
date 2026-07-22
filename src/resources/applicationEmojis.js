@@ -17,9 +17,10 @@
  * 创建 Application Emoji Provider。
  *
  * @param {import("discord.js").Client} client - 已就绪的 Discord Client
+ * @param {object} [logger] - Logger 实例（可选），用于记录 fetch 失败
  * @returns {{ fetchEmojis: Function, getCached: Function, clearCache: Function }}
  */
-export function createApplicationEmojiProvider(client) {
+export function createApplicationEmojiProvider(client, logger) {
   let cache = null;
 
   /**
@@ -42,6 +43,11 @@ export function createApplicationEmojiProvider(client) {
       return cache;
     } catch (err) {
       // 获取失败不缓存，下次调用重新尝试
+      if (logger) {
+        logger.error("[ApplicationEmojiProvider] 获取 Application Emoji 失败", {
+          error: err.message ?? String(err),
+        });
+      }
       return null;
     }
   }

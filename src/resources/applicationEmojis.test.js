@@ -19,8 +19,23 @@ function assertEqual(actual, expected, label) {
   if (actual === expected) { passed++; console.log(`  PASS: ${label} (${JSON.stringify(expected)})`); }
   else { failed++; console.error(`  FAIL: ${label} — expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`); }
 }
+function assertIncludes(haystack, needle, label) {
+  if (haystack.includes(needle)) { passed++; console.log(`  PASS: ${label}`); }
+  else { failed++; console.error(`  FAIL: ${label} — "${haystack}" does not include "${needle}"`); }
+}
 
 // ---- Mock 工具 ----
+
+function makeMockLogger() {
+  const calls = [];
+  return {
+    calls,
+    info: (msg, data) => calls.push({ level: "info", msg, data }),
+    warn: (msg, data) => calls.push({ level: "warn", msg, data }),
+    error: (msg, data) => calls.push({ level: "error", msg, data }),
+    debug: () => {},
+  };
+}
 
 function makeMockEmoji(id, name, animated = false) {
   return { id, name, animated };
@@ -144,6 +159,21 @@ console.log("\n=== 测试 7：空集合正常返回 [] ===\n");
   const result = await provider.fetchEmojis();
   assert(Array.isArray(result), "返回数组");
   assertEqual(result.length, 0, "空集合返回 []");
+}
+
+console.log("\n=== 测试 8：fetch 失败时记录错误日志 ===\n");
+{
+  const mockClient = makeMockClient([], true); // shouldThrow
+  const mockLogger = makeMockLogger();
+  const provider = createApplicationEmojiProvider(mockClient, mockLogger);
+
+  const result = await provider.fetchEmojis();
+  assertEqual(result, null, "返回 null");
+
+  const errLogs = mockLogger.calls.filter(c => c.level === "error");
+  const fetchErrLogs = errLogs.filter(c => (c.msg ?? "").includes("获取 Application Emoji 失败"));
+  assert(fetchErrLogs.length >= 1, "产生 fetch 失败错误日志");
+  assertIncludes(fetchErrLogs[0].data.error, "Discord API error", "错误日志含 error.message");
 }
 
 // ============================================================
