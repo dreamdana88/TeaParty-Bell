@@ -389,7 +389,7 @@ console.log("\n=== 测试 15：状态文件结构异常 → load() 抛出异常 
     const { writeFileSync, mkdirSync } = await import("fs");
     const { dirname } = await import("path");
     mkdirSync(dirname(filePath), { recursive: true });
-    // 有效 JSON 但结构不对（不是 { records: {} }）
+    // 有效 JSON 但结构不对（不是 { version, records: {} }）
     writeFileSync(filePath, JSON.stringify({ foo: "bar" }), "utf-8");
 
     const store = createBoostThanksStore({
@@ -402,7 +402,7 @@ console.log("\n=== 测试 15：状态文件结构异常 → load() 抛出异常 
       await store.load();
     } catch (err) {
       threw = true;
-      assert(err.message.includes("结构异常"), "错误信息提及结构异常");
+      assert(err.message.includes("version"), "错误信息提及 version 不匹配");
     }
     assert(threw, "结构异常文件 → load() 抛出异常");
   } finally {
@@ -410,7 +410,7 @@ console.log("\n=== 测试 15：状态文件结构异常 → load() 抛出异常 
   }
 }
 
-console.log("\n=== 测试 16：为空文件 → 正常空状态 ===\n");
+console.log("\n=== 测试 16：文件存在但为空 → 抛出异常（fail closed）===\n");
 {
   const dir = makeTempDir();
   try {
@@ -421,9 +421,143 @@ console.log("\n=== 测试 16：为空文件 → 正常空状态 ===\n");
     writeFileSync(filePath, "", "utf-8");
 
     const store = createBoostThanksStore({ filePath, logger: makeSilentLogger() });
-    await store.load();
-    const records = store.getAllRecords();
-    assertEqual(records.size, 0, "空文件 → 空状态");
+    let threw = false;
+    try {
+      await store.load();
+    } catch (err) {
+      threw = true;
+      assert(err.message.includes("为空"), "错误信息提及文件为空");
+    }
+    assert(threw, "空文件 → load() 抛出异常（fail closed）");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+console.log("\n=== 测试 16b：version 不匹配 → 抛出异常 ===\n");
+{
+  const dir = makeTempDir();
+  try {
+    const filePath = makeTempFilePath(dir);
+    const { writeFileSync, mkdirSync } = await import("fs");
+    const { dirname } = await import("path");
+    mkdirSync(dirname(filePath), { recursive: true });
+    writeFileSync(filePath, JSON.stringify({ version: 999, records: {} }), "utf-8");
+
+    const store = createBoostThanksStore({ filePath, logger: makeSilentLogger() });
+    let threw = false;
+    try {
+      await store.load();
+    } catch (err) {
+      threw = true;
+      assert(err.message.includes("version 不匹配"), "错误信息提及 version 不匹配");
+    }
+    assert(threw, "version 不匹配 → load() 抛出异常");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+console.log("\n=== 测试 16c：records 是数组 → 抛出异常 ===\n");
+{
+  const dir = makeTempDir();
+  try {
+    const filePath = makeTempFilePath(dir);
+    const { writeFileSync, mkdirSync } = await import("fs");
+    const { dirname } = await import("path");
+    mkdirSync(dirname(filePath), { recursive: true });
+    writeFileSync(filePath, JSON.stringify({ version: 1, records: [] }), "utf-8");
+
+    const store = createBoostThanksStore({ filePath, logger: makeSilentLogger() });
+    let threw = false;
+    try {
+      await store.load();
+    } catch (err) {
+      threw = true;
+      assert(err.message.includes("不能是数组"), "错误信息提及 records 不能是数组");
+    }
+    assert(threw, "records = [] → load() 抛出异常");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+console.log("\n=== 测试 16d：record.status 非法 → 抛出异常 ===\n");
+{
+  const dir = makeTempDir();
+  try {
+    const filePath = makeTempFilePath(dir);
+    const { writeFileSync, mkdirSync } = await import("fs");
+    const { dirname } = await import("path");
+    mkdirSync(dirname(filePath), { recursive: true });
+    writeFileSync(filePath, JSON.stringify({
+      version: 1,
+      records: { "abc": { aggregateKey: "abc", status: "invalid_status", eventIds: ["1"] } }
+    }), "utf-8");
+
+    const store = createBoostThanksStore({ filePath, logger: makeSilentLogger() });
+    let threw = false;
+    try {
+      await store.load();
+    } catch (err) {
+      threw = true;
+      assert(err.message.includes("状态非法"), "错误信息提及状态非法");
+    }
+    assert(threw, "非法 status → load() 抛出异常");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+console.log("\n=== 测试 16e：eventIds 不是数组 → 抛出异常 ===\n");
+{
+  const dir = makeTempDir();
+  try {
+    const filePath = makeTempFilePath(dir);
+    const { writeFileSync, mkdirSync } = await import("fs");
+    const { dirname } = await import("path");
+    mkdirSync(dirname(filePath), { recursive: true });
+    writeFileSync(filePath, JSON.stringify({
+      version: 1,
+      records: { "abc": { aggregateKey: "abc", status: "sent", eventIds: "not_array" } }
+    }), "utf-8");
+
+    const store = createBoostThanksStore({ filePath, logger: makeSilentLogger() });
+    let threw = false;
+    try {
+      await store.load();
+    } catch (err) {
+      threw = true;
+      assert(err.message.includes("eventIds"), "错误信息提及 eventIds");
+    }
+    assert(threw, "eventIds 非数组 → load() 抛出异常");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+console.log("\n=== 测试 16f：record 缺少 aggregateKey → 抛出异常 ===\n");
+{
+  const dir = makeTempDir();
+  try {
+    const filePath = makeTempFilePath(dir);
+    const { writeFileSync, mkdirSync } = await import("fs");
+    const { dirname } = await import("path");
+    mkdirSync(dirname(filePath), { recursive: true });
+    writeFileSync(filePath, JSON.stringify({
+      version: 1,
+      records: { "abc": { status: "sent", eventIds: ["1"] } }
+    }), "utf-8");
+
+    const store = createBoostThanksStore({ filePath, logger: makeSilentLogger() });
+    let threw = false;
+    try {
+      await store.load();
+    } catch (err) {
+      threw = true;
+      assert(err.message.includes("aggregateKey"), "错误信息提及 aggregateKey");
+    }
+    assert(threw, "缺少 aggregateKey → load() 抛出异常");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

@@ -96,9 +96,15 @@ export function createBoostThanksStore(options) {
   }
 
   /**
-   * 读取当前状态文件。
-   * @returns {object} 解析后的 JSON，文件不存在时返回空结构
-   * @throws {Error} 如果文件存在但 JSON 损坏
+   * 读取并校验当前状态文件。
+   *
+   * 文件不存在 → 正常首次启动，返回空结构。
+   * 文件存在但为空 → 损坏，抛错（fail closed）。
+   * JSON 语法错误 → 损坏，抛错（fail closed）。
+   * schema 校验失败 → 损坏，抛错（fail closed）。
+   *
+   * @returns {object} 校验通过的状态数据
+   * @throws {Error} 如果文件存在但损坏
    */
   function _readFile() {
     if (!existsSync(filePath)) {
@@ -114,8 +120,11 @@ export function createBoostThanksStore(options) {
       );
     }
 
+    // 文件存在但内容为空 → 磁盘损坏，拒绝启动（fail closed）
     if (raw.trim() === "") {
-      return { version: FILE_VERSION, records: {} };
+      throw new Error(
+        `BoostThanks 状态文件为空（可能磁盘损坏），拒绝启动：${filePath}。请手动检查或恢复备份。`
+      );
     }
 
     let data;
@@ -127,13 +136,66 @@ export function createBoostThanksStore(options) {
       );
     }
 
-    if (!data || typeof data !== "object" || !data.records || typeof data.records !== "object") {
+    _validateSchema(data);
+
+    return data;
+  }
+
+  /**
+   * 对加载后的状态数据进行 schema 校验。
+   * 任何不符 → 抛出异常（fail closed）。
+   */
+  function _validateSchema(data) {
+    // 1. 根对象必须是普通 object
+    if (!data || typeof data !== "object" || Array.isArray(data)) {
       throw new Error(
-        `BoostThanks 状态文件结构异常，拒绝启动：${filePath}。请手动检查文件内容。`
+        `BoostThanks 状态文件 schema 非法：根值必须是对象，拒绝启动：${filePath}`
       );
     }
 
-    return data;
+    // 2. version 必须匹配
+    if (data.version !== FILE_VERSION) {
+      throw new Error(
+        `BoostThanks 状态文件 version 不匹配（期望 ${FILE_VERSION}，实际 ${data.version}），拒绝启动：${filePath}`
+      );
+    }
+
+    // 3. records 必须是普通 object，不能是 Array
+    if (!data.records || typeof data.records !== "object" || Array.isArray(data.records)) {
+      throw new Error(
+        `BoostThanks 状态文件 schema 非法：records 必须是对象（不能是数组），拒绝启动：${filePath}`
+      );
+    }
+
+    // 4. 逐条校验 record
+    for (const [key, record] of Object.entries(data.records)) {
+      if (!record || typeof record !== "object" || Array.isArray(record)) {
+        throw new Error(
+          `BoostThanks 状态文件 schema 非法：record "${key}" 不是对象，拒绝启动：${filePath}`
+        );
+      }
+
+      // aggregateKey 必须存在且为 string
+      if (typeof record.aggregateKey !== "string" || record.aggregateKey === "") {
+        throw new Error(
+          `BoostThanks 状态文件 schema 非法：record "${key}" 缺少 aggregateKey，拒绝启动：${filePath}`
+        );
+      }
+
+      // status 必须属于允许状态集合
+      if (!ALL_STATUSES.has(record.status)) {
+        throw new Error(
+          `BoostThanks 状态文件 schema 非法：record "${key}" 状态非法（"${record.status}"），拒绝启动：${filePath}`
+        );
+      }
+
+      // eventIds 必须是 Array
+      if (!Array.isArray(record.eventIds)) {
+        throw new Error(
+          `BoostThanks 状态文件 schema 非法：record "${key}" 的 eventIds 不是数组，拒绝启动：${filePath}`
+        );
+      }
+    }
   }
 
   /**

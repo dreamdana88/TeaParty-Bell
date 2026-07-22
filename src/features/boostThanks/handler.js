@@ -68,9 +68,12 @@ export function createBoostThanksHandler(opts) {
    *
    * 所有错误内部捕获，不向上抛出导致进程崩溃。
    *
-   * Phase 8 状态机：
+   * Phase 8 状态机（Review Fix）：
    *   claimEvent → markProcessing → [AI/title] → markSending → [send] → markSent → [reactions]
-   *   任何前置失败 → markFailedPreSend；TEST_MODE → markTestSkipped
+   *   AI/title 失败 → failed_pre_send（安全重试）
+   *   send() 抛错 → uncertain（禁止重试）
+   *   markSent() 失败 → uncertain（禁止重试）
+   *   TEST_MODE → test_skipped
    *
    * @param {object} event - 聚合后的 BoostEvent
    * @param {string} event.userId
@@ -122,6 +125,11 @@ export function createBoostThanksHandler(opts) {
     if (store) {
       await store.markProcessing(aggregateKey);
     }
+
+    // Phase 8 Review Fix：跟踪是否已进入真实 send() 阶段。
+    // 一旦 sendAttempted = true，后续所有异常都必须标记为 uncertain，
+    // 绝不能退回到 failed_pre_send（会导致重复发送）。
+    let sendAttempted = false;
 
     try {
       // ---- 1. AI 生成正文 ----
@@ -186,39 +194,66 @@ export function createBoostThanksHandler(opts) {
         logger.info("[BoostThanks] 标记为 sending", { ...ctx, aggregateKey });
       }
 
+      // ============ 从此处开始，所有异常都必须标记为 uncertain ============
+      sendAttempted = true;
+
       // ---- 6. 发送到感谢频道 ----
       const channelId = config.discordThanksChannelId;
       let sentMessage;
       try {
         sentMessage = await doSend(client, channelId, content);
       } catch (err) {
-        logger.error("[BoostThanks] Discord 消息发送失败", {
+        // Review Fix：Discord send() 抛错时无法确认消息是否已抵达 Discord。
+        // 标记为 uncertain，绝不标记为 failed_pre_send（防止重复发送）。
+        logger.error("[BoostThanks] Discord 消息发送失败（结果不确定）", {
           ...ctx,
           aggregateKey,
           channelId,
           error: err.message,
         });
         if (store) {
-          await store.markFailedPreSend(aggregateKey, {
-            error: err.message,
-            errorStage: "send",
-          });
+          await store.markUncertain(aggregateKey, "discord_send_error");
         }
         return false;
       }
 
       // ---- 7. 立即持久化 sent（Phase 8：不等 Reaction 完成）----
       if (store) {
-        await store.markSent(aggregateKey, {
-          messageId: sentMessage.id ?? null,
-          channelId,
-        });
-        logger.info("[BoostThanks] 标记为 sent", {
-          ...ctx,
-          aggregateKey,
-          messageId: sentMessage.id ?? null,
-          channelId,
-        });
+        try {
+          await store.markSent(aggregateKey, {
+            messageId: sentMessage.id ?? null,
+            channelId,
+          });
+          logger.info("[BoostThanks] 标记为 sent", {
+            ...ctx,
+            aggregateKey,
+            messageId: sentMessage.id ?? null,
+            channelId,
+          });
+        } catch (err) {
+          // Review Fix：消息已确认发送到 Discord，markSent() 持久化失败
+          // 绝不能退回到 failed_pre_send。尝试标记 uncertain，
+          // 最坏情况下保持 sending 状态（启动时转为 uncertain）。
+          logger.error("[BoostThanks] sent 状态持久化失败（消息已真实发送）", {
+            ...ctx,
+            aggregateKey,
+            messageId: sentMessage.id ?? null,
+            channelId,
+            error: err.message,
+          });
+          if (store) {
+            try {
+              await store.markUncertain(aggregateKey, "mark_sent_persist_failure");
+            } catch (e2) {
+              logger.error("[BoostThanks] 连 uncertain 持久化也失败，保留 sending 状态", {
+                ...ctx,
+                aggregateKey,
+                error: e2.message,
+              });
+            }
+          }
+          // 消息已发送成功，返回 true 而非 false
+        }
       }
 
       // ---- 8. 添加 Reactions（Phase 7：best-effort，不影响 sent 状态）----
@@ -271,17 +306,25 @@ export function createBoostThanksHandler(opts) {
       });
       return true;
     } catch (err) {
-      // 未预期错误（如 event 字段缺失导致 buildTitle 抛异常等）
+      // 未预期错误。
+      // Review Fix：如果 sendAttempted 为 true，不能标记为 failed_pre_send。
       logger.error("[BoostThanks] 未预期的处理错误", {
         ...ctx,
         aggregateKey,
+        sendAttempted,
         error: err.message,
       });
       if (store) {
-        await store.markFailedPreSend(aggregateKey, {
-          error: err.message,
-          errorStage: "unexpected",
-        });
+        if (sendAttempted) {
+          // 已经进入真实发送阶段，无法确认结果 → uncertain
+          await store.markUncertain(aggregateKey, `unexpected_error:${err.message}`);
+        } else {
+          // 发送前阶段异常 → 可以安全重试
+          await store.markFailedPreSend(aggregateKey, {
+            error: err.message,
+            errorStage: "unexpected",
+          });
+        }
       }
       return false;
     }

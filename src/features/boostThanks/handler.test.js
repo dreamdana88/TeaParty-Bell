@@ -1062,7 +1062,7 @@ console.log("\n=== 测试 32：title 构造失败 → markFailedPreSend ===\n");
   assertEqual(failedCalls[0].data.errorStage, "title", "错误阶段 = title");
 }
 
-console.log("\n=== 测试 33：Discord send 失败 → markFailedPreSend → sender 未调用 sent ===\n");
+console.log("\n=== 测试 33：Discord send 失败 → markUncertain（非 failed_pre_send）===\n");
 {
   const mockLogger = makeMockLogger();
   const mockStore = makeMockStore();
@@ -1083,17 +1083,21 @@ console.log("\n=== 测试 33：Discord send 失败 → markFailedPreSend → sen
   const sendingCalls = mockStore.calls.filter((c) => c.method === "markSending");
   assertEqual(sendingCalls.length, 1, "markSending 调用 1 次（发送前）");
 
-  // 发送失败后标记 failed_pre_send
+  // 发送失败后标记 uncertain（非 failed_pre_send）——关键安全修复
+  const uncertainCalls = mockStore.calls.filter((c) => c.method === "markUncertain");
+  assertEqual(uncertainCalls.length, 1, "markUncertain 调用 1 次");
+  assert(uncertainCalls[0].data.includes("discord_send_error"), "reason 为 discord_send_error");
+
+  // markFailedPreSend 绝不应被调用
   const failedCalls = mockStore.calls.filter((c) => c.method === "markFailedPreSend");
-  assertEqual(failedCalls.length, 1, "markFailedPreSend 调用 1 次");
-  assertEqual(failedCalls[0].data.errorStage, "send", "错误阶段 = send");
+  assertEqual(failedCalls.length, 0, "markFailedPreSend 未被调用（send 后绝不回退）");
 
   // markSent 不应被调用
   assertEqual(mockStore.calls.filter((c) => c.method === "markSent").length, 0, "markSent 未调用");
 
   const agKey = generateAggregateKey(TEST_EVENT.eventIds);
   const record = mockStore.getRecord(agKey);
-  assertEqual(record.status, "failed_pre_send", "状态 = failed_pre_send");
+  assertEqual(record.status, "uncertain", "状态 = uncertain（不是 failed_pre_send）");
 }
 
 console.log("\n=== 测试 34：Reaction 失败 → 仍保持 sent（不重新发送）===\n");
@@ -1197,6 +1201,213 @@ console.log("\n=== 测试 36：eventIds 部分冲突 → 拒绝发送 ===\n");
   const result = await handler.handleBoostEvent(conflictEvent);
   assertEqual(result, true, "返回 true（静默跳过）");
   assertEqual(mockSender.calls.length, 0, "sender 未调用（拒绝发送）");
+}
+
+// ============================================================
+// Phase 8 Review Fix：状态机安全测试
+// ============================================================
+
+function makeThrowingMarkSentStore() {
+  const base = makeMockStore();
+  const origMarkSent = base.markSent;
+  base.markSent = async (aggregateKey, opts) => {
+    base.calls.push({ method: "markSent", aggregateKey, data: opts });
+    throw new Error("disk full");
+  };
+  return base;
+}
+
+function makeStoreThatThrowsOnBoth(throwOnMarkSent) {
+  // Returns a store where markSent throws; markUncertain may or may not throw
+  const base = makeMockStore();
+  const origMarkSent = base.markSent;
+  base.markSent = async (aggregateKey, opts) => {
+    base.calls.push({ method: "markSent", aggregateKey, data: opts });
+    throw new Error("disk full");
+  };
+  if (throwOnMarkSent) {
+    const origMarkUncertain = base.markUncertain;
+    base.markUncertain = async (aggregateKey, reason) => {
+      base.calls.push({ method: "markUncertain", aggregateKey, data: reason });
+      throw new Error("disk completely dead");
+    };
+  }
+  return base;
+}
+
+console.log("\n=== 测试 38：send() 抛错 → 标记 uncertain（不是 failed_pre_send）===\n");
+{
+  const mockLogger = makeMockLogger();
+  const mockStore = makeMockStore();
+
+  const handler = createBoostThanksHandler({
+    config: TEST_CONFIG,
+    client: MOCK_CLIENT,
+    logger: mockLogger,
+    aiOverride: makeMockAi("正文"),
+    senderOverride: makeThrowingSender("Network Error").sendMessage,
+    store: mockStore,
+  });
+
+  const result = await handler.handleBoostEvent(TEST_EVENT);
+  assertEqual(result, false, "返回 false");
+
+  // markSending 在 send() 前被调用
+  const sendingCalls = mockStore.calls.filter((c) => c.method === "markSending");
+  assertEqual(sendingCalls.length, 1, "markSending 调用 1 次");
+
+  // 关键断言：send() 失败后标记为 uncertain
+  const uncertainCalls = mockStore.calls.filter((c) => c.method === "markUncertain");
+  assertEqual(uncertainCalls.length, 1, "markUncertain 调用 1 次");
+
+  // 关键断言：绝不能标记为 failed_pre_send
+  const failedPreSendCalls = mockStore.calls.filter((c) => c.method === "markFailedPreSend");
+  assertEqual(failedPreSendCalls.length, 0, "markFailedPreSend 未调用（send 后绝不回退）");
+
+  // markSent 也未被调用
+  const sentCalls = mockStore.calls.filter((c) => c.method === "markSent");
+  assertEqual(sentCalls.length, 0, "markSent 未调用");
+
+  // sender 只调用一次
+  const agKey = generateAggregateKey(TEST_EVENT.eventIds);
+  const record = mockStore.getRecord(agKey);
+  assertEqual(record.status, "uncertain", "最终状态 = uncertain");
+}
+
+console.log("\n=== 测试 39：send() 成功但 markSent 持久化失败 → uncertain（绝不回退 failed_pre_send）===\n");
+{
+  const mockSender = makeMockSender();
+  const mockLogger = makeMockLogger();
+  const mockStore = makeThrowingMarkSentStore();
+
+  const handler = createBoostThanksHandler({
+    config: TEST_CONFIG,
+    client: MOCK_CLIENT,
+    logger: mockLogger,
+    aiOverride: makeMockAi("正文"),
+    senderOverride: mockSender.sendMessage,
+    store: mockStore,
+  });
+
+  const result = await handler.handleBoostEvent(TEST_EVENT);
+  // 消息已发送成功，即使 markSent 失败也返回 true
+  assertEqual(result, true, "消息已发送 → 返回 true");
+
+  // sender 被调用了
+  assertEqual(mockSender.calls.length, 1, "sender 调用 1 次（消息已真实发送）");
+
+  // markSent 被尝试调用
+  const sentCalls = mockStore.calls.filter((c) => c.method === "markSent");
+  assertEqual(sentCalls.length, 1, "markSent 被尝试调用");
+
+  // 关键断言：markSent 失败后尝试 markUncertain
+  const uncertainCalls = mockStore.calls.filter((c) => c.method === "markUncertain");
+  assert(uncertainCalls.length >= 1, "markSent 失败后尝试 markUncertain");
+
+  // 关键断言：绝不标记为 failed_pre_send
+  const failedPreSendCalls = mockStore.calls.filter((c) => c.method === "markFailedPreSend");
+  assertEqual(failedPreSendCalls.length, 0, "markFailedPreSend 未调用");
+
+  const agKey = generateAggregateKey(TEST_EVENT.eventIds);
+  const record = mockStore.getRecord(agKey);
+  assert(record.status !== "failed_pre_send", "状态不是 failed_pre_send");
+}
+
+console.log("\n=== 测试 40：send() 成功 markSent 和 markUncertain 都失败 → 保留 sending（不崩溃）===\n");
+{
+  const mockSender = makeMockSender();
+  const mockLogger = makeMockLogger();
+  const mockStore = makeStoreThatThrowsOnBoth(true);
+
+  const handler = createBoostThanksHandler({
+    config: TEST_CONFIG,
+    client: MOCK_CLIENT,
+    logger: mockLogger,
+    aiOverride: makeMockAi("正文"),
+    senderOverride: mockSender.sendMessage,
+    store: mockStore,
+  });
+
+  // 不应崩溃
+  const result = await handler.handleBoostEvent(TEST_EVENT);
+  assertEqual(result, true, "不崩溃，返回 true");
+
+  // 产生严重错误日志
+  const errorLogs = mockLogger.calls.filter((c) => c.level === "error");
+  const persistErrors = errorLogs.filter((c) => (c.msg ?? "").includes("连 uncertain 持久化也失败"));
+  assert(persistErrors.length >= 1, "产生 uncertain 持久化也失败的严重错误日志");
+}
+
+console.log("\n=== 测试 41：outer catch 中 sendAttempted=true → 标记 uncertain（非 failed_pre_send）===\n");
+{
+  const mockLogger = makeMockLogger();
+  const mockStore = makeMockStore();
+
+  // 用特殊 sender：调用 send 成功后立即抛出一个意外异常，模拟 send 后的 outer catch
+  let sendCalled = false;
+  const trickySender = {
+    sendMessage: async (client, channelId, content) => {
+      sendCalled = true;
+      const msg = { id: "msg_x", content };
+      // 模拟 send 成功后发生意外异常（如内存中的引用错误）
+      throw new Error("Unexpected post-send crash");
+    },
+  };
+
+  const handler = createBoostThanksHandler({
+    config: TEST_CONFIG,
+    client: MOCK_CLIENT,
+    logger: mockLogger,
+    aiOverride: makeMockAi("正文"),
+    senderOverride: trickySender.sendMessage,
+    store: mockStore,
+  });
+
+  const result = await handler.handleBoostEvent(TEST_EVENT);
+  assertEqual(result, false, "返回 false");
+  assert(sendCalled, "sender 被调用");
+
+  // 关键：标记为 uncertain 而不是 failed_pre_send
+  const uncertainCalls = mockStore.calls.filter((c) => c.method === "markUncertain");
+  assertEqual(uncertainCalls.length, 1, "markUncertain 调用 1 次（outer catch sendAttempted=true）");
+
+  const failedPreSendCalls = mockStore.calls.filter((c) => c.method === "markFailedPreSend");
+  assertEqual(failedPreSendCalls.length, 0, "markFailedPreSend 未调用（sendAttempted=true 不回退）");
+
+  const agKey = generateAggregateKey(TEST_EVENT.eventIds);
+  const record = mockStore.getRecord(agKey);
+  assertEqual(record.status, "uncertain", "状态 = uncertain");
+}
+
+console.log("\n=== 测试 42：AI 失败（sendAttempted=false）→ 仍标记 failed_pre_send（可安全重试）===\n");
+{
+  const mockSender = makeMockSender();
+  const mockLogger = makeMockLogger();
+  const mockStore = makeMockStore();
+
+  const handler = createBoostThanksHandler({
+    config: TEST_CONFIG,
+    client: MOCK_CLIENT,
+    logger: mockLogger,
+    aiOverride: makeThrowingAi("AI 500"),
+    senderOverride: mockSender.sendMessage,
+    store: mockStore,
+  });
+
+  const result = await handler.handleBoostEvent(TEST_EVENT);
+  assertEqual(result, false, "返回 false");
+  assertEqual(mockSender.calls.length, 0, "sender 未调用（sendAttempted 未设）");
+
+  // 发送前失败 → 标记 failed_pre_send（可安全重试）
+  const failedPreSendCalls = mockStore.calls.filter((c) => c.method === "markFailedPreSend");
+  assertEqual(failedPreSendCalls.length, 1, "markFailedPreSend 调用 1 次（发送前可重试）");
+
+  const uncertainCalls = mockStore.calls.filter((c) => c.method === "markUncertain");
+  assertEqual(uncertainCalls.length, 0, "markUncertain 未调用");
+
+  const agKey = generateAggregateKey(TEST_EVENT.eventIds);
+  const record = mockStore.getRecord(agKey);
+  assertEqual(record.status, "failed_pre_send", "状态 = failed_pre_send");
 }
 
 console.log("\n=== 测试 37：无 store → handleBoostEvent 仍正常工作（向后兼容）===\n");
