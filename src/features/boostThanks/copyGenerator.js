@@ -54,11 +54,11 @@ const RE_MD_HEADING = /^\s*#{1,6}\s/m;
 const STYLE_POOL = [
   { key: "lifeBlessing", weight: 20 },
   { key: "fairyTale", weight: 15 },
-  { key: "abstractChaos", weight: 15 },
+  { key: "abstractChaos", weight: 10 },
   { key: "oneLiner", weight: 15 },
-  { key: "gentleBlessing", weight: 10 },
+  { key: "gentleBlessing", weight: 25 },
   { key: "antiRoutine", weight: 10 },
-  { key: "lightTavern", weight: 10 },
+  { key: "lightTavern", weight: 5 },
   { key: "aiGamer", weight: 5 },
 ];
 
@@ -78,7 +78,7 @@ const STYLE_HINTS = {
     "本次风格方向：一句话突然搞笑。保持简短。可以前半句正常，后半句突然拐弯，措手不及。",
 
   gentleBlessing:
-    "本次风格方向：温柔祝福。真诚、自然、有生命力。避免鸡汤、宏大叙事和万能成功学。",
+    "本次风格方向：温柔祝福。真诚向上、自然温暖、有生命力。避免鸡汤、宏大叙事和万能成功学。",
 
   antiRoutine:
     "本次风格方向：反套路戏精。可以模仿霸总、广告、天气预报、新闻播报、系统通知等语气，" +
