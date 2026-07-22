@@ -32,7 +32,12 @@ if (!config.discordBotToken) {
   process.exit(1);
 }
 
-const TEST_USER_ID = process.env.SEND_TEST_USER_ID || "1047079087413411870";
+if (!process.env.SEND_TEST_USER_ID) {
+  console.error("❌ SEND_TEST_USER_ID 未设置。请设置环境变量 SEND_TEST_USER_ID 后重试。");
+  console.error("   示例：$env:SEND_TEST_USER_ID=\"你的Discord用户ID\"");
+  process.exit(1);
+}
+const TEST_USER_ID = process.env.SEND_TEST_USER_ID;
 const TEST_BOOST_COUNT = Math.max(1, parseInt(process.env.SEND_TEST_BOOST_COUNT, 10) || 2);
 
 // ---- 创建临时 Client（仅本次测试）----

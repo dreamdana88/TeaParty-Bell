@@ -3,6 +3,7 @@ import { setLogLevel, logger } from "../utils/logger.js";
 import { createClient } from "../discord/client.js";
 import { setupBoostObserver } from "../features/boostThanks/observer.js";
 import { createBoostThanksHandler } from "../features/boostThanks/handler.js";
+import { createApplicationEmojiProvider } from "../resources/applicationEmojis.js";
 
 /**
  * TeaParty-Bell 主生命周期管理。
@@ -37,7 +38,8 @@ export async function start() {
   const { client, login, destroy } = createClient();
 
   // ---- 3.5 注册 Feature 监听器 + 感谢发送链路（须在登录前完成）----
-  const thanksHandler = createBoostThanksHandler({ config, client, logger });
+  const emojiProvider = createApplicationEmojiProvider(client);
+  const thanksHandler = createBoostThanksHandler({ config, client, logger, emojiProvider });
   const observerCleanup = setupBoostObserver(
     client,
     logger,

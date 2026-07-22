@@ -323,6 +323,329 @@ console.log("\n=== 测试 11：TEST_MODE=false → 正常发送路径继续成�
 }
 
 // ============================================================
+// Phase 7：Reaction 集成测试
+// ============================================================
+
+// ---- Phase 7 Mock 工具 ----
+function makeMockEmojiProvider(emojis) {
+  let fetchCount = 0;
+  return {
+    fetchCount: () => fetchCount,
+    fetchEmojis: async () => { fetchCount++; return emojis; },
+  };
+}
+function makeThrowingEmojiProvider(msg) {
+  return { fetchEmojis: async () => { throw new Error(msg); } };
+}
+function makeMockReactionSender() {
+  const calls = [];
+  return {
+    calls,
+    addReactions: async (message, emojis, logger) => {
+      calls.push({ messageId: message.id, emojiCount: emojis.length, emojis });
+      return { successCount: emojis.length, failCount: 0, failures: [] };
+    },
+  };
+}
+function makePartialFailingReactionSender(failIndexes) {
+  const calls = [];
+  const failSet = new Set(failIndexes);
+  return {
+    calls,
+    addReactions: async (message, emojis, logger) => {
+      let successCount = 0;
+      let failCount = 0;
+      const failures = [];
+      for (let i = 0; i < emojis.length; i++) {
+        if (failSet.has(i)) {
+          failCount++;
+          failures.push({ emojiId: emojis[i].id, emojiName: emojis[i].name, error: "mock fail" });
+        } else {
+          successCount++;
+        }
+      }
+      calls.push({ messageId: message.id, emojiCount: emojis.length });
+      return { successCount, failCount, failures };
+    },
+  };
+}
+
+console.log("\n=== 测试 12：消息发送成功 + Reactions 全部成功 ===\n");
+{
+  const mockSender = makeMockSender();
+  const mockLogger = makeMockLogger();
+  const pool = Array.from({ length: 20 }, (_, i) => ({ id: `e${i}`, name: `emoji${i}` }));
+  const mockProvider = makeMockEmojiProvider(pool);
+  const mockReactionSender = makeMockReactionSender();
+
+  const handler = createBoostThanksHandler({
+    config: TEST_CONFIG,
+    client: MOCK_CLIENT,
+    logger: mockLogger,
+    aiOverride: makeMockAi("正文"),
+    senderOverride: mockSender.sendMessage,
+    emojiProvider: mockProvider,
+    reactionSenderOverride: mockReactionSender.addReactions,
+  });
+
+  const result = await handler.handleBoostEvent(TEST_EVENT);
+  assertEqual(result, true, "返回 true");
+  assertEqual(mockSender.calls.length, 1, "sender 调用 1 次");
+  assertEqual(mockProvider.fetchCount(), 1, "emojiProvider.fetchEmojis 调用 1 次");
+  assertEqual(mockReactionSender.calls.length, 1, "reactionSender 调用 1 次");
+
+  // 验证选择了 8～10 个 Emoji
+  const emojiCount = mockReactionSender.calls[0].emojiCount;
+  assert(emojiCount >= 8, `选择数 ≥ 8 (${emojiCount})`);
+  assert(emojiCount <= 10, `选择数 ≤ 10 (${emojiCount})`);
+
+  // 验证 Reaction 完成日志
+  const reactionLogs = mockLogger.calls.filter(c => c.msg && c.msg.includes("Reactions 添加完成"));
+  assertEqual(reactionLogs.length, 1, "产生 Reaction 完成日志");
+  assertEqual(reactionLogs[0].data.reactionSuccess, emojiCount, "successCount 正确");
+  assertEqual(reactionLogs[0].data.reactionFail, 0, "failCount = 0");
+
+  // 成功发送日志仍然存在
+  const successLogs = mockLogger.calls.filter(c => c.msg && c.msg.includes("已发送"));
+  assertEqual(successLogs.length, 1, "消息发送成功日志仍存在");
+}
+
+console.log("\n=== 测试 13：消息发送成功 + Emoji 获取失败 → 消息仍视为成功 ===\n");
+{
+  const mockSender = makeMockSender();
+  const mockLogger = makeMockLogger();
+  const mockReactionSender = makeMockReactionSender();
+
+  const handler = createBoostThanksHandler({
+    config: TEST_CONFIG,
+    client: MOCK_CLIENT,
+    logger: mockLogger,
+    aiOverride: makeMockAi("正文"),
+    senderOverride: mockSender.sendMessage,
+    emojiProvider: makeThrowingEmojiProvider("Emoji API 故障"),
+    reactionSenderOverride: mockReactionSender.addReactions,
+  });
+
+  const result = await handler.handleBoostEvent(TEST_EVENT);
+  assertEqual(result, true, "返回 true（消息发送成功）");
+  assertEqual(mockSender.calls.length, 1, "sender 调用 1 次");
+  assertEqual(mockReactionSender.calls.length, 0, "reactionSender 未调用");
+
+  // 产生 Reaction 异常日志
+  const errLogs = mockLogger.calls.filter(c => c.level === "error");
+  const reactionErrLogs = errLogs.filter(c => (c.msg ?? "").includes("Reaction 流程异常"));
+  assert(reactionErrLogs.length >= 1, "产生 Reaction 异常日志（消息已正常发送）");
+
+  // 成功发送日志仍然存在
+  const successLogs = mockLogger.calls.filter(c => c.msg && c.msg.includes("已发送"));
+  assertEqual(successLogs.length, 1, "消息发送成功日志仍存在");
+}
+
+console.log("\n=== 测试 14：消息发送成功 + Emoji 池为空 → 跳过 Reaction ===\n");
+{
+  const mockSender = makeMockSender();
+  const mockLogger = makeMockLogger();
+  const mockReactionSender = makeMockReactionSender();
+
+  const handler = createBoostThanksHandler({
+    config: TEST_CONFIG,
+    client: MOCK_CLIENT,
+    logger: mockLogger,
+    aiOverride: makeMockAi("正文"),
+    senderOverride: mockSender.sendMessage,
+    emojiProvider: makeMockEmojiProvider([]),
+    reactionSenderOverride: mockReactionSender.addReactions,
+  });
+
+  const result = await handler.handleBoostEvent(TEST_EVENT);
+  assertEqual(result, true, "返回 true");
+  assertEqual(mockSender.calls.length, 1, "sender 调用 1 次");
+  assertEqual(mockReactionSender.calls.length, 0, "reactionSender 未调用");
+
+  // 产生 Emoji 为空警告
+  const warns = mockLogger.calls.filter(c => c.level === "warn");
+  const emptyWarn = warns.filter(c => (c.msg ?? "").includes("Emoji 为空"));
+  assert(emptyWarn.length >= 1, "产生 Emoji 为空警告");
+}
+
+console.log("\n=== 测试 15：消息发送成功 + 部分 Reaction 失败 → 不重新发送 ===\n");
+{
+  const mockSender = makeMockSender();
+  const mockLogger = makeMockLogger();
+  const pool = Array.from({ length: 20 }, (_, i) => ({ id: `e${i}`, name: `emoji${i}` }));
+  const mockProvider = makeMockEmojiProvider(pool);
+  const mockReactionSender = makePartialFailingReactionSender([2, 5]);
+
+  const handler = createBoostThanksHandler({
+    config: TEST_CONFIG,
+    client: MOCK_CLIENT,
+    logger: mockLogger,
+    aiOverride: makeMockAi("正文"),
+    senderOverride: mockSender.sendMessage,
+    emojiProvider: mockProvider,
+    reactionSenderOverride: mockReactionSender.addReactions,
+  });
+
+  const result = await handler.handleBoostEvent(TEST_EVENT);
+  assertEqual(result, true, "返回 true（消息发送成功）");
+  assertEqual(mockSender.calls.length, 1, "sender 仍只调用 1 次（无重新发送）");
+
+  // Reaction 完成日志含失败数
+  const reactionLogs = mockLogger.calls.filter(c => c.msg && c.msg.includes("Reactions 添加完成"));
+  assertEqual(reactionLogs.length, 1, "产生 Reaction 完成日志");
+  assert(reactionLogs[0].data.reactionFail >= 2, "failCount ≥ 2");
+}
+
+console.log("\n=== 测试 16：消息发送成功 + 全部 Reaction 失败 → 仍返回 true ===\n");
+{
+  const mockSender = makeMockSender();
+  const mockLogger = makeMockLogger();
+  const pool = Array.from({ length: 20 }, (_, i) => ({ id: `e${i}`, name: `emoji${i}` }));
+  const mockProvider = makeMockEmojiProvider(pool);
+  const allFailing = makePartialFailingReactionSender([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+
+  const handler = createBoostThanksHandler({
+    config: TEST_CONFIG,
+    client: MOCK_CLIENT,
+    logger: mockLogger,
+    aiOverride: makeMockAi("正文"),
+    senderOverride: mockSender.sendMessage,
+    emojiProvider: mockProvider,
+    reactionSenderOverride: allFailing.addReactions,
+  });
+
+  const result = await handler.handleBoostEvent(TEST_EVENT);
+  assertEqual(result, true, "返回 true（消息发送成功）");
+  assertEqual(mockSender.calls.length, 1, "sender 调用 1 次（无重复发送）");
+}
+
+console.log("\n=== 测试 17：AI 失败 → 不发送消息 → 不添加 Reaction ===\n");
+{
+  const mockSender = makeMockSender();
+  const mockLogger = makeMockLogger();
+  const pool = Array.from({ length: 20 }, (_, i) => ({ id: `e${i}`, name: `emoji${i}` }));
+  const mockProvider = makeMockEmojiProvider(pool);
+  const mockReactionSender = makeMockReactionSender();
+
+  const handler = createBoostThanksHandler({
+    config: TEST_CONFIG,
+    client: MOCK_CLIENT,
+    logger: mockLogger,
+    aiOverride: makeThrowingAi("AI fail"),
+    senderOverride: mockSender.sendMessage,
+    emojiProvider: mockProvider,
+    reactionSenderOverride: mockReactionSender.addReactions,
+  });
+
+  const result = await handler.handleBoostEvent(TEST_EVENT);
+  assertEqual(result, false, "返回 false");
+  assertEqual(mockSender.calls.length, 0, "sender 未调用");
+  assertEqual(mockProvider.fetchCount(), 0, "emojiProvider 未调用");
+  assertEqual(mockReactionSender.calls.length, 0, "reactionSender 未调用");
+}
+
+console.log("\n=== 测试 18：消息发送失败 → 不添加 Reaction ===\n");
+{
+  const mockLogger = makeMockLogger();
+  const pool = Array.from({ length: 20 }, (_, i) => ({ id: `e${i}`, name: `emoji${i}` }));
+  const mockProvider = makeMockEmojiProvider(pool);
+  const mockReactionSender = makeMockReactionSender();
+
+  const handler = createBoostThanksHandler({
+    config: TEST_CONFIG,
+    client: MOCK_CLIENT,
+    logger: mockLogger,
+    aiOverride: makeMockAi("正文"),
+    senderOverride: makeThrowingSender("send fail").sendMessage,
+    emojiProvider: mockProvider,
+    reactionSenderOverride: mockReactionSender.addReactions,
+  });
+
+  const result = await handler.handleBoostEvent(TEST_EVENT);
+  assertEqual(result, false, "返回 false");
+  assertEqual(mockReactionSender.calls.length, 0, "reactionSender 未调用");
+}
+
+console.log("\n=== 测试 19：TEST_MODE=true → sender=0 + reaction=0 ===\n");
+{
+  const mockSender = makeMockSender();
+  const mockLogger = makeMockLogger();
+  const pool = Array.from({ length: 20 }, (_, i) => ({ id: `e${i}`, name: `emoji${i}` }));
+  const mockProvider = makeMockEmojiProvider(pool);
+  const mockReactionSender = makeMockReactionSender();
+  const testModeConfig = { ...TEST_CONFIG, testMode: true };
+
+  const handler = createBoostThanksHandler({
+    config: testModeConfig,
+    client: MOCK_CLIENT,
+    logger: mockLogger,
+    aiOverride: makeMockAi("TEST_MODE 正文"),
+    senderOverride: mockSender.sendMessage,
+    emojiProvider: mockProvider,
+    reactionSenderOverride: mockReactionSender.addReactions,
+  });
+
+  const result = await handler.handleBoostEvent(TEST_EVENT);
+  assertEqual(result, true, "返回 true");
+  assertEqual(mockSender.calls.length, 0, "sender 未调用");
+  assertEqual(mockReactionSender.calls.length, 0, "reactionSender 未调用");
+
+  // 验证 TEST_MODE 预览日志含正文
+  const testModeLogs = mockLogger.calls.filter(c => c.msg && c.msg.includes("TEST_MODE"));
+  assert(testModeLogs.length >= 1, "TEST_MODE 日志存在");
+  assertIncludes(testModeLogs[0].data.content, "TEST_MODE 正文", "预览含 AI 正文");
+}
+
+console.log("\n=== 测试 20：无 emojiProvider → Reaction 静默跳过（向后兼容）===\n");
+{
+  const mockSender = makeMockSender();
+  const mockLogger = makeMockLogger();
+
+  const handler = createBoostThanksHandler({
+    config: TEST_CONFIG,
+    client: MOCK_CLIENT,
+    logger: mockLogger,
+    aiOverride: makeMockAi("正文"),
+    senderOverride: mockSender.sendMessage,
+    // 不传 emojiProvider
+  });
+
+  const result = await handler.handleBoostEvent(TEST_EVENT);
+  assertEqual(result, true, "返回 true");
+  assertEqual(mockSender.calls.length, 1, "sender 调用 1 次");
+  // 无 Reaction 相关日志
+  const reactionLogs = mockLogger.calls.filter(c => (c.msg ?? "").includes("Reaction"));
+  assertEqual(reactionLogs.length, 0, "无 Reaction 相关日志（静默跳过）");
+}
+
+console.log("\n=== 测试 21：小池（不足 8 个）→ 全部选择，不报错 ===\n");
+{
+  const mockSender = makeMockSender();
+  const mockLogger = makeMockLogger();
+  const pool = [{ id: "a", name: "aa" }, { id: "b", name: "bb" }, { id: "c", name: "cc" }];
+  const mockProvider = makeMockEmojiProvider(pool);
+  const mockReactionSender = makeMockReactionSender();
+
+  const handler = createBoostThanksHandler({
+    config: TEST_CONFIG,
+    client: MOCK_CLIENT,
+    logger: mockLogger,
+    aiOverride: makeMockAi("正文"),
+    senderOverride: mockSender.sendMessage,
+    emojiProvider: mockProvider,
+    reactionSenderOverride: mockReactionSender.addReactions,
+  });
+
+  const result = await handler.handleBoostEvent(TEST_EVENT);
+  assertEqual(result, true, "返回 true");
+  assertEqual(mockReactionSender.calls[0].emojiCount, 3, "全部选择（3 个）");
+  // 无警告
+  const warns = mockLogger.calls.filter(c => c.level === "warn");
+  const emptyWarns = warns.filter(c => (c.msg ?? "").includes("Emoji 为空"));
+  assertEqual(emptyWarns.length, 0, "池虽小但不为空，无空池警告");
+}
+
+// ============================================================
 console.log(`\n========================================`);
 console.log(`测试结果：${passed} passed, ${failed} failed`);
 console.log(`========================================\n`);
