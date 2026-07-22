@@ -189,7 +189,7 @@ console.log("\n=== 测试 29：非 tech → 含 NON_TECH_RESTRICTION ===\n");
   const capture = {};
   await createCopyGenerator(TEST_CONFIG, makeCapturingMockAi("ok", capture))
     .generateCopy({ styleHint: "lifeBlessing" });
-  assertIncludes(capture.messages[1].content, "无需使用 SillyTavern", "含统一限制");
+  assertIncludes(capture.messages[1].content, "女性始终为社区第一性", "含统一限制");
 }
 
 console.log("\n=== 测试 30：lightTavern → 不含 NON_TECH_RESTRICTION ===\n");

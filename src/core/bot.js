@@ -4,6 +4,12 @@ import { createClient } from "../discord/client.js";
 import { setupBoostObserver } from "../features/boostThanks/observer.js";
 import { createBoostThanksHandler } from "../features/boostThanks/handler.js";
 import { createApplicationEmojiProvider } from "../resources/applicationEmojis.js";
+import { createBoostThanksStore } from "../storage/boostThanksStore.js";
+import { resolve, dirname } from "path";
+import { fileURLToPath } from "url";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const projectRoot = resolve(__dirname, "..", "..");
 
 /**
  * TeaParty-Bell 主生命周期管理。
@@ -11,6 +17,8 @@ import { createApplicationEmojiProvider } from "../resources/applicationEmojis.j
  * 职责：
  * - 加载配置
  * - 初始化日志
+ * - 创建 BoostThanks 持久化 Store（Phase 8）
+ * - 启动时恢复扫描（Phase 8）
  * - 创建 Discord Client
  * - 登录
  * - 处理进程退出信号
@@ -34,12 +42,60 @@ export async function start() {
     logger.info("⚡ 测试模式已启用 — 不会发送真实消息");
   }
 
+  // ---- 2.5 初始化持久化 Store 并执行启动恢复扫描（Phase 8）----
+  const store = createBoostThanksStore({
+    filePath: resolve(projectRoot, "data", "runtime", "boost-thanks-state.json"),
+    logger,
+  });
+
+  try {
+    await store.load();
+  } catch (err) {
+    logger.error("BoostThanks 状态文件加载失败，Bot 拒绝启动（fail closed）", {
+      error: err.message,
+    });
+    process.exit(1);
+  }
+
+  // 恢复扫描：sending → uncertain，记录可恢复候选
+  const allRecords = store.getAllRecords();
+  let sendingCount = 0;
+  for (const [key, record] of allRecords) {
+    if (record.status === "sending") {
+      await store.markUncertain(key, "bot_restart_after_sending");
+      sendingCount++;
+      logger.error("[BoostThanks] 发现 sending 状态残留（可能已发送），已标记为 uncertain", {
+        aggregateKey: key,
+        eventIds: record.eventIds,
+        guildId: record.guildId,
+        userId: record.userId,
+      });
+    }
+  }
+  if (sendingCount > 0) {
+    logger.warn("[BoostThanks] 共转换 sending → uncertain", { count: sendingCount });
+  }
+
+  const recoverable = store.listRecoverable();
+  if (recoverable.length > 0) {
+    logger.warn("[BoostThanks] 发现可恢复的未完成事件（Phase 8 不自动重试）", {
+      count: recoverable.length,
+      statuses: [...new Set(recoverable.map((r) => r.status))],
+    });
+  }
+
   // ---- 3. 创建 Discord Client ----
   const { client, login, destroy } = createClient();
 
   // ---- 3.5 注册 Feature 监听器 + 感谢发送链路（须在登录前完成）----
   const emojiProvider = createApplicationEmojiProvider(client, logger);
-  const thanksHandler = createBoostThanksHandler({ config, client, logger, emojiProvider });
+  const thanksHandler = createBoostThanksHandler({
+    config,
+    client,
+    logger,
+    emojiProvider,
+    store,
+  });
   const observerCleanup = setupBoostObserver(
     client,
     logger,
@@ -65,6 +121,11 @@ export async function start() {
       if (observerCleanup) observerCleanup.destroy();
     } catch (err) {
       logger.error("Observer 清理时发生异常", { message: err.message });
+    }
+    try {
+      await store.close();
+    } catch (err) {
+      logger.error("Store 关闭时发生异常", { message: err.message });
     }
     try {
       await destroy();

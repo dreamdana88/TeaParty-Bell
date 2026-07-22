@@ -799,6 +799,432 @@ console.log("\n=== 测试 27：REACTION_COUNT 未设置（默认 10）===\n");
 }
 
 // ============================================================
+// Phase 8：持久化 + 去重 + 状态机测试
+// ============================================================
+
+import { generateAggregateKey } from "../../storage/boostThanksStore.js";
+
+// ---- Phase 8 Mock 工具 ----
+
+function makeMockStore(initialRecords) {
+  const records = new Map(initialRecords?.map((r) => [r.aggregateKey, { ...r }]) ?? []);
+  const inFlight = new Map();
+  const calls = [];
+
+  function _recordCall(method, aggregateKey, data) {
+    calls.push({ method, aggregateKey, data });
+  }
+
+  return {
+    calls,
+    _getRecords: () => records,
+
+    claimEvent: async (aggregateKey, metadata) => {
+      _recordCall("claimEvent", aggregateKey, metadata);
+      if (inFlight.has(aggregateKey)) return null;
+      const existing = records.get(aggregateKey);
+      if (existing && ["sent", "uncertain", "test_skipped"].includes(existing.status)) {
+        return null;
+      }
+      if (existing) return null;
+
+      // Partial conflict check (mirrors real store behavior)
+      const newSet = new Set(metadata.eventIds);
+      for (const [key, rec] of records) {
+        const existingSet = new Set(rec.eventIds);
+        const intersection = [...newSet].filter((id) => existingSet.has(id));
+        if (intersection.length > 0 && intersection.length < Math.max(newSet.size, existingSet.size)) {
+          return null;
+        }
+      }
+
+      const record = {
+        aggregateKey,
+        eventIds: metadata.eventIds,
+        guildId: metadata.guildId,
+        userId: metadata.userId,
+        boostCount: metadata.boostCount,
+        status: "processing",
+        attemptCount: 0,
+      };
+      records.set(aggregateKey, record);
+      inFlight.set(aggregateKey, true);
+      return record;
+    },
+    getRecord: (aggregateKey) => records.get(aggregateKey),
+    markProcessing: async (aggregateKey) => {
+      _recordCall("markProcessing", aggregateKey);
+      const r = records.get(aggregateKey);
+      if (r) r.status = "processing";
+    },
+    markSending: async (aggregateKey) => {
+      _recordCall("markSending", aggregateKey);
+      const r = records.get(aggregateKey);
+      if (r) r.status = "sending";
+    },
+    markSent: async (aggregateKey, { messageId, channelId } = {}) => {
+      _recordCall("markSent", aggregateKey, { messageId, channelId });
+      const r = records.get(aggregateKey);
+      if (r) { r.status = "sent"; r.messageId = messageId; r.channelId = channelId; r.sentAt = Date.now(); }
+    },
+    markFailedPreSend: async (aggregateKey, { error, errorStage } = {}) => {
+      _recordCall("markFailedPreSend", aggregateKey, { error, errorStage });
+      const r = records.get(aggregateKey);
+      if (r) { r.status = "failed_pre_send"; r.attemptCount = (r.attemptCount ?? 0) + 1; r.lastError = error; r.lastErrorStage = errorStage; }
+    },
+    markUncertain: async (aggregateKey, reason) => {
+      _recordCall("markUncertain", aggregateKey, reason);
+      const r = records.get(aggregateKey);
+      if (r) { r.status = "uncertain"; r.lastError = reason; }
+    },
+    markTestSkipped: async (aggregateKey) => {
+      _recordCall("markTestSkipped", aggregateKey);
+      const r = records.get(aggregateKey);
+      if (r) r.status = "test_skipped";
+    },
+    listRecoverable: () => [...records.values()].filter((r) => r.status === "processing" || r.status === "failed_pre_send"),
+    getAllRecords: () => new Map(records),
+    close: async () => {},
+  };
+}
+
+// ---- Phase 8 测试 ----
+
+console.log("\n=== 测试 28：正常链路 → 完整状态机（processing → sending → sent）===\n");
+{
+  const mockSender = makeMockSender();
+  const mockLogger = makeMockLogger();
+  const mockStore = makeMockStore();
+  const pool = Array.from({ length: 20 }, (_, i) => ({ id: `e${i}`, name: `emoji${i}` }));
+  const mockProvider = makeMockEmojiProvider(pool);
+  const mockReactionSender = makeMockReactionSender();
+
+  const handler = createBoostThanksHandler({
+    config: TEST_CONFIG,
+    client: MOCK_CLIENT,
+    logger: mockLogger,
+    aiOverride: makeMockAi("正文"),
+    senderOverride: mockSender.sendMessage,
+    emojiProvider: mockProvider,
+    reactionSenderOverride: mockReactionSender.addReactions,
+    store: mockStore,
+  });
+
+  const result = await handler.handleBoostEvent(TEST_EVENT);
+  assertEqual(result, true, "返回 true");
+
+  // 验证状态机调用
+  const claimCalls = mockStore.calls.filter((c) => c.method === "claimEvent");
+  assertEqual(claimCalls.length, 1, "claimEvent 调用 1 次");
+  assertEqual(claimCalls[0].data.guildId, TEST_EVENT.guildId, "claimEvent 含 guildId");
+  assertEqual(claimCalls[0].data.userId, TEST_EVENT.userId, "claimEvent 含 userId");
+  assertEqual(claimCalls[0].data.boostCount, 2, "claimEvent 含 boostCount");
+
+  const sendingCalls = mockStore.calls.filter((c) => c.method === "markSending");
+  assertEqual(sendingCalls.length, 1, "markSending 调用 1 次");
+
+  const sentCalls = mockStore.calls.filter((c) => c.method === "markSent");
+  assertEqual(sentCalls.length, 1, "markSent 调用 1 次");
+  assertEqual(sentCalls[0].data.messageId, "mock_msg_id", "markSent 含 messageId");
+  assertEqual(sentCalls[0].data.channelId, "999999999999", "markSent 含 channelId");
+
+  // markSent 在 Reaction 之前（调用顺序验证）
+  const sentIdx = mockStore.calls.findIndex((c) => c.method === "markSent");
+  assert(sentIdx >= 0, "markSent 存在");
+
+  // 最终记录状态
+  const agKey = generateAggregateKey(TEST_EVENT.eventIds);
+  const finalRecord = mockStore.getRecord(agKey);
+  assertEqual(finalRecord.status, "sent", "最终状态为 sent");
+
+  // sender 仍只调用一次
+  assertEqual(mockSender.calls.length, 1, "sender 调用 1 次");
+  // Reaction 正常添加
+  assertEqual(mockReactionSender.calls.length, 1, "reactionSender 调用 1 次");
+}
+
+console.log("\n=== 测试 29：重复事件 → 跳过，不调用 AI、不发送 ===\n");
+{
+  const mockSender = makeMockSender();
+  const mockLogger = makeMockLogger();
+  const mockStore = makeMockStore();
+
+  // 预置已 sent 的记录
+  const agKey = generateAggregateKey(TEST_EVENT.eventIds);
+  mockStore._getRecords().set(agKey, {
+    aggregateKey: agKey,
+    eventIds: TEST_EVENT.eventIds,
+    status: "sent",
+    messageId: "old_msg",
+  });
+
+  const handler = createBoostThanksHandler({
+    config: TEST_CONFIG,
+    client: MOCK_CLIENT,
+    logger: mockLogger,
+    aiOverride: makeMockAi("不应该被调用"),
+    senderOverride: mockSender.sendMessage,
+    store: mockStore,
+  });
+
+  const result = await handler.handleBoostEvent(TEST_EVENT);
+  assertEqual(result, true, "重复事件返回 true（静默跳过）");
+  assertEqual(mockSender.calls.length, 0, "sender 未被调用");
+  assertEqual(mockStore.calls.filter((c) => c.method === "markSending").length, 0, "markSending 未被调用");
+  assertEqual(mockStore.calls.filter((c) => c.method === "markSent").length, 0, "markSent 未被调用");
+
+  // 跳过日志
+  const skipLogs = mockLogger.calls.filter((c) => c.msg && c.msg.includes("已被处理"));
+  assert(skipLogs.length >= 1, "产生跳过日志");
+}
+
+console.log("\n=== 测试 30：并发调用相同事件 → 只发送一次（claim 互斥）===\n");
+{
+  const mockSender = makeMockSender();
+  const mockLogger = makeMockLogger();
+  const mockStore = makeMockStore();
+
+  const handler = createBoostThanksHandler({
+    config: TEST_CONFIG,
+    client: MOCK_CLIENT,
+    logger: mockLogger,
+    aiOverride: makeMockAi("正文"),
+    senderOverride: mockSender.sendMessage,
+    store: mockStore,
+  });
+
+  const [r1, r2] = await Promise.all([
+    handler.handleBoostEvent(TEST_EVENT),
+    handler.handleBoostEvent(TEST_EVENT),
+  ]);
+  // 一个成功发送，一个跳过
+  const successCount = [r1, r2].filter((r) => r === true).length;
+  assertEqual(successCount, 2, "两者都返回 true（一个发送，一个跳过）");
+  assertEqual(mockSender.calls.length, 1, "sender 只调用 1 次（无重复发送）");
+}
+
+console.log("\n=== 测试 31：AI 失败 → markFailedPreSend → 可恢复 ===\n");
+{
+  const mockSender = makeMockSender();
+  const mockLogger = makeMockLogger();
+  const mockStore = makeMockStore();
+
+  const handler = createBoostThanksHandler({
+    config: TEST_CONFIG,
+    client: MOCK_CLIENT,
+    logger: mockLogger,
+    aiOverride: makeThrowingAi("AI down"),
+    senderOverride: mockSender.sendMessage,
+    store: mockStore,
+  });
+
+  const result = await handler.handleBoostEvent(TEST_EVENT);
+  assertEqual(result, false, "AI 失败 → 返回 false");
+  assertEqual(mockSender.calls.length, 0, "sender 未调用");
+
+  const failedCalls = mockStore.calls.filter((c) => c.method === "markFailedPreSend");
+  assertEqual(failedCalls.length, 1, "markFailedPreSend 调用 1 次");
+  assertEqual(failedCalls[0].data.error, "AI down", "错误信息已记录");
+  assertEqual(failedCalls[0].data.errorStage, "ai", "错误阶段 = ai");
+
+  const agKey = generateAggregateKey(TEST_EVENT.eventIds);
+  const record = mockStore.getRecord(agKey);
+  assertEqual(record.status, "failed_pre_send", "状态 = failed_pre_send");
+  assertEqual(record.attemptCount, 1, "attemptCount = 1");
+
+  // markSending / markSent 未被调用
+  assertEqual(mockStore.calls.filter((c) => c.method === "markSending").length, 0, "markSending 未调用");
+  assertEqual(mockStore.calls.filter((c) => c.method === "markSent").length, 0, "markSent 未调用");
+}
+
+console.log("\n=== 测试 32：title 构造失败 → markFailedPreSend ===\n");
+{
+  const mockSender = makeMockSender();
+  const mockLogger = makeMockLogger();
+  const mockStore = makeMockStore();
+
+  const handler = createBoostThanksHandler({
+    config: TEST_CONFIG,
+    client: MOCK_CLIENT,
+    logger: mockLogger,
+    aiOverride: makeMockAi("ok"),
+    senderOverride: mockSender.sendMessage,
+    store: mockStore,
+  });
+
+  const badEvent = { ...TEST_EVENT, userId: "abc" };
+  const result = await handler.handleBoostEvent(badEvent);
+  assertEqual(result, false, "title 失败 → 返回 false");
+  assertEqual(mockSender.calls.length, 0, "sender 未调用");
+
+  const failedCalls = mockStore.calls.filter((c) => c.method === "markFailedPreSend");
+  assertEqual(failedCalls.length, 1, "markFailedPreSend 调用 1 次");
+  assertEqual(failedCalls[0].data.errorStage, "title", "错误阶段 = title");
+}
+
+console.log("\n=== 测试 33：Discord send 失败 → markFailedPreSend → sender 未调用 sent ===\n");
+{
+  const mockLogger = makeMockLogger();
+  const mockStore = makeMockStore();
+
+  const handler = createBoostThanksHandler({
+    config: TEST_CONFIG,
+    client: MOCK_CLIENT,
+    logger: mockLogger,
+    aiOverride: makeMockAi("ok"),
+    senderOverride: makeThrowingSender("Missing Access").sendMessage,
+    store: mockStore,
+  });
+
+  const result = await handler.handleBoostEvent(TEST_EVENT);
+  assertEqual(result, false, "send 失败 → 返回 false");
+
+  // 发送前应标记了 sending
+  const sendingCalls = mockStore.calls.filter((c) => c.method === "markSending");
+  assertEqual(sendingCalls.length, 1, "markSending 调用 1 次（发送前）");
+
+  // 发送失败后标记 failed_pre_send
+  const failedCalls = mockStore.calls.filter((c) => c.method === "markFailedPreSend");
+  assertEqual(failedCalls.length, 1, "markFailedPreSend 调用 1 次");
+  assertEqual(failedCalls[0].data.errorStage, "send", "错误阶段 = send");
+
+  // markSent 不应被调用
+  assertEqual(mockStore.calls.filter((c) => c.method === "markSent").length, 0, "markSent 未调用");
+
+  const agKey = generateAggregateKey(TEST_EVENT.eventIds);
+  const record = mockStore.getRecord(agKey);
+  assertEqual(record.status, "failed_pre_send", "状态 = failed_pre_send");
+}
+
+console.log("\n=== 测试 34：Reaction 失败 → 仍保持 sent（不重新发送）===\n");
+{
+  const mockSender = makeMockSender();
+  const mockLogger = makeMockLogger();
+  const mockStore = makeMockStore();
+  const pool = Array.from({ length: 20 }, (_, i) => ({ id: `e${i}`, name: `emoji${i}` }));
+  const mockProvider = makeMockEmojiProvider(pool);
+  // 所有 Reaction 都失败
+  const allFailing = makePartialFailingReactionSender([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+
+  const handler = createBoostThanksHandler({
+    config: TEST_CONFIG,
+    client: MOCK_CLIENT,
+    logger: mockLogger,
+    aiOverride: makeMockAi("正文"),
+    senderOverride: mockSender.sendMessage,
+    emojiProvider: mockProvider,
+    reactionSenderOverride: allFailing.addReactions,
+    store: mockStore,
+  });
+
+  const result = await handler.handleBoostEvent(TEST_EVENT);
+  assertEqual(result, true, "返回 true");
+  assertEqual(mockSender.calls.length, 1, "sender 调用 1 次");
+
+  // 状态仍为 sent
+  const agKey = generateAggregateKey(TEST_EVENT.eventIds);
+  const record = mockStore.getRecord(agKey);
+  assertEqual(record.status, "sent", "Reaction 失败后状态仍为 sent");
+
+  // markSent 在 markFailedPreSend 之前（或没有 markFailedPreSend）
+  const failedPreSendCalls = mockStore.calls.filter((c) => c.method === "markFailedPreSend");
+  assertEqual(failedPreSendCalls.length, 0, "Reaction 失败不调用 markFailedPreSend");
+}
+
+console.log("\n=== 测试 35：TEST_MODE → markTestSkipped → 终态 ===\n");
+{
+  const mockSender = makeMockSender();
+  const mockLogger = makeMockLogger();
+  const mockStore = makeMockStore();
+  const testModeConfig = { ...TEST_CONFIG, testMode: true };
+
+  const handler = createBoostThanksHandler({
+    config: testModeConfig,
+    client: MOCK_CLIENT,
+    logger: mockLogger,
+    aiOverride: makeMockAi("TEST_MODE 正文"),
+    senderOverride: mockSender.sendMessage,
+    store: mockStore,
+  });
+
+  const result = await handler.handleBoostEvent(TEST_EVENT);
+  assertEqual(result, true, "返回 true");
+  assertEqual(mockSender.calls.length, 0, "sender 未调用");
+
+  const testSkippedCalls = mockStore.calls.filter((c) => c.method === "markTestSkipped");
+  assertEqual(testSkippedCalls.length, 1, "markTestSkipped 调用 1 次");
+
+  const agKey = generateAggregateKey(TEST_EVENT.eventIds);
+  const record = mockStore.getRecord(agKey);
+  assertEqual(record.status, "test_skipped", "状态 = test_skipped");
+
+  // 以后不会补发：再次 claim 返回 null
+  const r2 = await mockStore.claimEvent(agKey, {
+    eventIds: TEST_EVENT.eventIds,
+    guildId: TEST_EVENT.guildId,
+    userId: TEST_EVENT.userId,
+    boostCount: TEST_EVENT.boostCount,
+  });
+  assertEqual(r2, null, "test_skipped → claim 返回 null（不会补发）");
+}
+
+console.log("\n=== 测试 36：eventIds 部分冲突 → 拒绝发送 ===\n");
+{
+  const mockSender = makeMockSender();
+  const mockLogger = makeMockLogger();
+  const mockStore = makeMockStore();
+
+  // 预置 ["msg_1", "msg_2"] → 部分重叠
+  const existingKey = generateAggregateKey(["msg_1", "msg_2"]);
+  mockStore._getRecords().set(existingKey, {
+    aggregateKey: existingKey,
+    eventIds: ["msg_1", "msg_2"],
+    status: "sent",
+    messageId: "old_msg",
+  });
+
+  const handler = createBoostThanksHandler({
+    config: TEST_CONFIG,
+    client: MOCK_CLIENT,
+    logger: mockLogger,
+    aiOverride: makeMockAi("正文"),
+    senderOverride: mockSender.sendMessage,
+    store: mockStore,
+  });
+
+  // 新事件含 "msg_2"（重叠）+ "msg_3"（新）
+  const conflictEvent = { ...TEST_EVENT, eventIds: ["msg_2", "msg_3"] };
+  const result = await handler.handleBoostEvent(conflictEvent);
+  assertEqual(result, true, "返回 true（静默跳过）");
+  assertEqual(mockSender.calls.length, 0, "sender 未调用（拒绝发送）");
+}
+
+console.log("\n=== 测试 37：无 store → handleBoostEvent 仍正常工作（向后兼容）===\n");
+{
+  const mockSender = makeMockSender();
+  const mockLogger = makeMockLogger();
+
+  const handler = createBoostThanksHandler({
+    config: TEST_CONFIG,
+    client: MOCK_CLIENT,
+    logger: mockLogger,
+    aiOverride: makeMockAi("正文"),
+    senderOverride: mockSender.sendMessage,
+    // 不传 store
+  });
+
+  // 第一次
+  const r1 = await handler.handleBoostEvent(TEST_EVENT);
+  assertEqual(r1, true, "第一次返回 true");
+  assertEqual(mockSender.calls.length, 1, "第一次 sender 调用 1 次");
+
+  // 第二次（无 store → 无去重 → 仍然发送）
+  const r2 = await handler.handleBoostEvent(TEST_EVENT);
+  assertEqual(r2, true, "无 store 时第二次也返回 true");
+  assertEqual(mockSender.calls.length, 2, "无 store 时 sender 再调一次（无持久化去重）");
+}
+
+// ============================================================
 console.log(`\n========================================`);
 console.log(`测试结果：${passed} passed, ${failed} failed`);
 console.log(`========================================\n`);

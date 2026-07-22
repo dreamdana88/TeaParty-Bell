@@ -26,5 +26,8 @@ logs/
 data/history/*.json
 !data/history/.gitkeep
 
+# Runtime state (do NOT commit)
+data/runtime/
+
 # Emoji backup (local asset export — do NOT commit)
 data/exported-emojis/
