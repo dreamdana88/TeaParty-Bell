@@ -33,8 +33,8 @@ export async function addReactions(message, emojis, logger) {
   for (const emoji of emojis) {
     try {
       // discord.js v14: message.react() 接受 EmojiIdentifierResolvable
-      // ApplicationEmoji 对象可直接传入，也可传入 emoji.id
-      await message.react(emoji.id ?? emoji);
+      // 优先传入完整 ApplicationEmoji 对象（非纯 id 字符串）
+      await message.react(emoji);
       successCount++;
     } catch (err) {
       failCount++;

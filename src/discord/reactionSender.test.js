@@ -58,6 +58,10 @@ console.log("\n=== 测试 1：所有 Reaction 成功 ===\n");
   assertEqual(result.failCount, 0, "0 个失败");
   assertEqual(result.failures.length, 0, "failures 为空");
   assertEqual(message.reactCalls.length, 3, "react 被调用 3 次");
+  // 验证传入的是完整 emoji 对象，而非单独 id
+  assert(message.reactCalls[0].emoji === emojis[0], "react 收到完整 emoji 对象（引用相同）");
+  assertEqual(message.reactCalls[0].emoji.id, "1", "对象含 id 字段");
+  assertEqual(message.reactCalls[0].emoji.name, "a", "对象含 name 字段");
 }
 
 console.log("\n=== 测试 2：部分 Reaction 失败后继续 ===\n");
@@ -65,10 +69,10 @@ console.log("\n=== 测试 2：部分 Reaction 失败后继续 ===\n");
   const reactCalls = [];
   const message = {
     reactCalls,
-    react: async (emojiId) => {
-      reactCalls.push({ emojiId });
-      // addReactions 传入 emoji.id（字符串），不是 emoji 对象
-      if (emojiId === "fail_me") throw new Error("reaction failed");
+    react: async (emoji) => {
+      reactCalls.push({ emoji });
+      // addReactions 现在传入完整 emoji 对象
+      if (emoji.id === "fail_me") throw new Error("reaction failed");
       return {};
     },
   };
@@ -108,8 +112,8 @@ console.log("\n=== 测试 4：顺序执行（非并发）===\n");
   const order = [];
   const message = {
     reactCalls: [],
-    react: async (emojiId) => {
-      order.push(emojiId);
+    react: async (emoji) => {
+      order.push(emoji.id);
       return {};
     },
   };

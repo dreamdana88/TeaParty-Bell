@@ -56,16 +56,17 @@ try {
   console.log(`已登录：${client.user.tag}\n`);
 
   // 创建 Handler（含 emojiProvider，完整覆盖 Reaction 链路）
-  const emojiProvider = createApplicationEmojiProvider(client);
+  const testLogger = {
+    info: (msg, data) => console.log(`[INFO] ${msg}`, data ?? ""),
+    error: (msg, data) => console.error(`[ERROR] ${msg}`, data ?? ""),
+    warn: (msg, data) => console.warn(`[WARN] ${msg}`, data ?? ""),
+    debug: () => {},
+  };
+  const emojiProvider = createApplicationEmojiProvider(client, testLogger);
   const handler = createBoostThanksHandler({
     config,
     client,
-    logger: {
-      info: (msg, data) => console.log(`[INFO] ${msg}`, data ?? ""),
-      error: (msg, data) => console.error(`[ERROR] ${msg}`, data ?? ""),
-      warn: (msg, data) => console.warn(`[WARN] ${msg}`, data ?? ""),
-      debug: () => {},
-    },
+    logger: testLogger,
     emojiProvider,
   });
 
