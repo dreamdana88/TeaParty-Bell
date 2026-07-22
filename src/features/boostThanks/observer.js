@@ -60,9 +60,10 @@ export function extractBoostObservation(message) {
  * @param {object} logger - Logger 实例
  * @param {object} config - 完整配置对象（含 boostAggregationWindowMs）
  * @param {Function} [onAggregated] - Phase 6：聚合完成回调 (event) => void
+ * @param {string} [targetGuildId] - Phase 9：目标 Guild 白名单，仅处理该 Guild 的 Boost 事件
  * @returns {{ destroy: Function }} 返回清理函数供 shutdown 使用
  */
-export function setupBoostObserver(client, logger, config, onAggregated) {
+export function setupBoostObserver(client, logger, config, onAggregated, targetGuildId) {
   const aggregator = createAggregator(config);
 
   // 聚合完成回调
@@ -100,7 +101,13 @@ export function setupBoostObserver(client, logger, config, onAggregated) {
       return;
     }
 
-    // 4. 按消息类型路由
+    // 4. Guild 白名单过滤（Phase 9）：仅处理目标 Guild 的 Boost 事件，
+    //    非目标 Guild 的任何 Boost/Tier 系统消息均直接忽略。
+    if (targetGuildId && observation.guildId !== targetGuildId) {
+      return;
+    }
+
+    // 5. 按消息类型路由
     if (isCountableBoostType(observation.messageType)) {
       // 可计数 Boost（type 8）：标准化 → 聚合
       const boostEvent = normalizeObservation(observation);

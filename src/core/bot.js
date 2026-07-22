@@ -100,7 +100,8 @@ export async function start() {
     client,
     logger,
     config,
-    (event) => thanksHandler.handleBoostEvent(event)
+    (event) => thanksHandler.handleBoostEvent(event),
+    config.discordGuildId
   );
 
   // ---- 4. 登录 ----

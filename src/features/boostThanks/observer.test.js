@@ -764,6 +764,175 @@ console.log("\n=== 测试 13c：onAggregated 回调抛错不中断 observer 主�
 }
 
 // ============================================================
+// 测试 14：Guild 白名单过滤（Phase 9）
+// ============================================================
+
+console.log("\n=== 测试 14：Guild 白名单过滤 ===\n");
+
+const TARGET_GUILD = "target_guild_123";
+const OTHER_GUILD = "other_guild_456";
+
+// --- 14a: 目标 Guild type 8 → 正常进入处理（observer + aggregator）---
+{
+  const mockClient = new MockClient();
+  const mockLogger = makeMockLogger();
+  const cleanup = setupBoostObserver(mockClient, mockLogger, SHORT_WINDOW, undefined, TARGET_GUILD);
+
+  mockClient.emit(Events.MessageCreate, makeMockMessage({
+    type: 8, system: true, guildId: TARGET_GUILD
+  }));
+
+  const boostLogs = mockLogger.calls.filter(
+    c => c.level === "info" && c.msg?.includes("[BoostObserver] 收到可计数 Boost")
+  );
+  assertEqual(boostLogs.length, 1, "14a: 目标 Guild type 8 → 触发可计数日志");
+  assertEqual(boostLogs[0].data.guildId, TARGET_GUILD, "14a: guildId 正确");
+
+  await new Promise(r => setTimeout(r, 30));
+  const aggLogs = mockLogger.calls.filter(
+    c => c.level === "info" && c.msg?.includes("[BoostAggregator]")
+  );
+  assert(aggLogs.length >= 1, "14a: 目标 Guild → 触发聚合");
+  cleanup.destroy();
+}
+
+// --- 14b: 非目标 Guild type 8 → 完全忽略 ---
+{
+  const mockClient = new MockClient();
+  const mockLogger = makeMockLogger();
+  const cleanup = setupBoostObserver(mockClient, mockLogger, SHORT_WINDOW, undefined, TARGET_GUILD);
+
+  mockClient.emit(Events.MessageCreate, makeMockMessage({
+    type: 8, system: true, guildId: OTHER_GUILD
+  }));
+
+  const allBoostLogs = mockLogger.calls.filter(
+    c => c.level === "info" && c.msg?.includes("[BoostObserver]")
+  );
+  assertEqual(allBoostLogs.length, 0, "14b: 非目标 Guild type 8 → 无 BoostObserver 日志");
+
+  await new Promise(r => setTimeout(r, 30));
+  const aggLogs = mockLogger.calls.filter(
+    c => c.level === "info" && c.msg?.includes("[BoostAggregator]")
+  );
+  assertEqual(aggLogs.length, 0, "14b: 非目标 Guild type 8 → 不触发聚合");
+  cleanup.destroy();
+}
+
+// --- 14c: 非目标 Guild type 9 → 完全忽略（不记录 Tier 通知）---
+{
+  const mockClient = new MockClient();
+  const mockLogger = makeMockLogger();
+  const cleanup = setupBoostObserver(mockClient, mockLogger, SHORT_WINDOW, undefined, TARGET_GUILD);
+
+  mockClient.emit(Events.MessageCreate, makeMockMessage({
+    type: 9, system: true, guildId: OTHER_GUILD
+  }));
+
+  const tierLogs = mockLogger.calls.filter(
+    c => c.level === "info" && c.msg?.includes("收到 Tier 通知")
+  );
+  assertEqual(tierLogs.length, 0, "14c: 非目标 Guild type 9 → 无 Tier 通知日志");
+
+  const allBoostLogs = mockLogger.calls.filter(
+    c => c.msg?.includes("[BoostObserver]")
+  );
+  assertEqual(allBoostLogs.length, 0, "14c: 非目标 Guild type 9 → 完全无 BoostObserver 日志");
+  cleanup.destroy();
+}
+
+// --- 14d: 非目标 Guild type 10 → 完全忽略 ---
+{
+  const mockClient = new MockClient();
+  const mockLogger = makeMockLogger();
+  const cleanup = setupBoostObserver(mockClient, mockLogger, SHORT_WINDOW, undefined, TARGET_GUILD);
+
+  mockClient.emit(Events.MessageCreate, makeMockMessage({
+    type: 10, system: true, guildId: OTHER_GUILD
+  }));
+
+  const allBoostLogs = mockLogger.calls.filter(
+    c => c.msg?.includes("[BoostObserver]")
+  );
+  assertEqual(allBoostLogs.length, 0, "14d: 非目标 Guild type 10 → 完全忽略");
+  cleanup.destroy();
+}
+
+// --- 14e: 非目标 Guild type 11 → 完全忽略 ---
+{
+  const mockClient = new MockClient();
+  const mockLogger = makeMockLogger();
+  const cleanup = setupBoostObserver(mockClient, mockLogger, SHORT_WINDOW, undefined, TARGET_GUILD);
+
+  mockClient.emit(Events.MessageCreate, makeMockMessage({
+    type: 11, system: true, guildId: OTHER_GUILD
+  }));
+
+  const allBoostLogs = mockLogger.calls.filter(
+    c => c.msg?.includes("[BoostObserver]")
+  );
+  assertEqual(allBoostLogs.length, 0, "14e: 非目标 Guild type 11 → 完全忽略");
+  cleanup.destroy();
+}
+
+// --- 14f: 非目标 Guild → 不调用 onAggregated 回调 ---
+{
+  const mockClient = new MockClient();
+  const mockLogger = makeMockLogger();
+  let callbackCalled = false;
+  const onAggregated = () => { callbackCalled = true; };
+  const cleanup = setupBoostObserver(mockClient, mockLogger, SHORT_WINDOW, onAggregated, TARGET_GUILD);
+
+  mockClient.emit(Events.MessageCreate, makeMockMessage({
+    type: 8, system: true, guildId: OTHER_GUILD
+  }));
+
+  await new Promise(r => setTimeout(r, 30));
+  assert(!callbackCalled, "14f: 非目标 Guild → onAggregated 未被调用");
+  cleanup.destroy();
+}
+
+// --- 14g: 目标 Guild type 8 → onAggregated 正常调用 ---
+{
+  const mockClient = new MockClient();
+  const mockLogger = makeMockLogger();
+  let callbackCalled = false;
+  const onAggregated = () => { callbackCalled = true; };
+  const cleanup = setupBoostObserver(mockClient, mockLogger, SHORT_WINDOW, onAggregated, TARGET_GUILD);
+
+  mockClient.emit(Events.MessageCreate, makeMockMessage({
+    type: 8, system: true, guildId: TARGET_GUILD
+  }));
+
+  await new Promise(r => setTimeout(r, 30));
+  assert(callbackCalled, "14g: 目标 Guild type 8 → onAggregated 正常调用");
+  cleanup.destroy();
+}
+
+// --- 14h: 不传 targetGuildId → 向后兼容（所有 Guild 都处理）---
+{
+  const mockClient = new MockClient();
+  const mockLogger = makeMockLogger();
+  const cleanup = setupBoostObserver(mockClient, mockLogger, SHORT_WINDOW);
+
+  mockClient.emit(Events.MessageCreate, makeMockMessage({
+    type: 8, system: true, guildId: OTHER_GUILD
+  }));
+
+  const boostLogs = mockLogger.calls.filter(
+    c => c.level === "info" && c.msg?.includes("[BoostObserver] 收到可计数 Boost")
+  );
+  assertEqual(boostLogs.length, 1, "14h: 无 targetGuildId → 非目标 Guild 也处理（向后兼容）");
+
+  await new Promise(r => setTimeout(r, 30));
+  const aggLogs = mockLogger.calls.filter(
+    c => c.level === "info" && c.msg?.includes("[BoostAggregator]")
+  );
+  assert(aggLogs.length >= 1, "14h: 无 targetGuildId → 聚合正常");
+  cleanup.destroy();
+}
+
+// ============================================================
 // Summary
 // ============================================================
 
