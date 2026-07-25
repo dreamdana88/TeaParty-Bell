@@ -69,6 +69,7 @@ export function createGatewayHealthMonitor(options) {
     startupGraceMs = DEFAULT_STARTUP_GRACE_MS,
     unhealthyThresholdMs = DEFAULT_UNHEALTHY_THRESHOLD_MS,
     healthySummaryIntervalMs = DEFAULT_HEALTHY_SUMMARY_INTERVAL_MS,
+    alertPersistenceFailureExitCode = 78,
   } = options;
 
   // ========================
@@ -165,7 +166,7 @@ export function createGatewayHealthMonitor(options) {
             });
           }
 
-          // fire-and-forget 告警
+          // fire-and-forget 告警；持久化成功 → exit 1，失败 → exit 78
           Promise.resolve()
             .then(() =>
               notifyFailure("gateway_startup_timeout", "Gateway 启动超时：宽限期内未能 Ready", {
@@ -175,16 +176,11 @@ export function createGatewayHealthMonitor(options) {
               })
             )
             .then(() => {
-              if (!_hasExited) {
-                _hasExited = true;
-                exitFn(1);
-              }
+              if (!_hasExited) { _hasExited = true; exitFn(1); }
             })
-            .catch(() => {
-              if (!_hasExited) {
-                _hasExited = true;
-                exitFn(1);
-              }
+            .catch((err) => {
+              if (logger) logger.error("[GatewayHealth] 启动超时告警持久化失败，放弃重启循环", { error: err.message });
+              if (!_hasExited) { _hasExited = true; exitFn(alertPersistenceFailureExitCode); }
             });
         }
       } else {
@@ -285,16 +281,11 @@ export function createGatewayHealthMonitor(options) {
                 })
               )
               .then(() => {
-                if (!_hasExited) {
-                  _hasExited = true;
-                  exitFn(1);
-                }
+                if (!_hasExited) { _hasExited = true; exitFn(1); }
               })
-              .catch(() => {
-                if (!_hasExited) {
-                  _hasExited = true;
-                  exitFn(1);
-                }
+              .catch((err) => {
+                if (logger) logger.error("[GatewayHealth] 不健康告警持久化失败，放弃重启循环", { error: err.message });
+                if (!_hasExited) { _hasExited = true; exitFn(alertPersistenceFailureExitCode); }
               });
           }
         } else {

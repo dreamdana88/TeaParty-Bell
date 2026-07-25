@@ -406,7 +406,9 @@ export function createStartupPreflight(options) {
             `启动自检遇到可恢复错误：${recoverable[0].message}`,
             { guildId: config.discordGuildId, details: { recoverable } });
         } catch (err) {
-          if (logger) logger.error("[StartupPreflight] 无法写入 recoverable 告警", { error: err.message });
+          if (logger) logger.error("[StartupPreflight] 无法写入 recoverable 告警，放弃重启循环", { error: err.message });
+          exitFn(78);
+          return { passed: false, fatal: [], recoverable, warnings, all: _results };
         }
       }
       exitFn(1);

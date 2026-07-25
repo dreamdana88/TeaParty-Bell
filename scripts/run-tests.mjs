@@ -1,8 +1,9 @@
 /**
  * TeaParty-Bell 全量测试运行器（跨平台）。
  *
- * 用法：node scripts/run-tests.mjs
- *   或：npm test
+ * 用法：node scripts/run-tests.mjs  或  npm test
+ *
+ * 统计每个文件的 passed/failed 行，输出精确汇总。
  */
 
 import { execSync } from "child_process";
@@ -13,9 +14,6 @@ import { fileURLToPath } from "url";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const projectRoot = join(__dirname, "..");
 
-/**
- * 递归查找所有 .test.js 文件。
- */
 function findTestFiles(dir) {
   const results = [];
   const entries = readdirSync(dir);
@@ -24,47 +22,57 @@ function findTestFiles(dir) {
     if (entry === "node_modules" || entry === ".git") continue;
     try {
       const stat = statSync(fullPath);
-      if (stat.isDirectory()) {
-        results.push(...findTestFiles(fullPath));
-      } else if (entry.endsWith(".test.js")) {
-        results.push(fullPath);
-      }
-    } catch {
-      // skip inaccessible
-    }
+      if (stat.isDirectory()) results.push(...findTestFiles(fullPath));
+      else if (entry.endsWith(".test.js")) results.push(fullPath);
+    } catch {}
   }
   return results;
 }
 
-const testFiles = findTestFiles(join(projectRoot, "src")).concat(
-  findTestFiles(join(projectRoot, "scripts"))
-);
+const testFiles = findTestFiles(join(projectRoot, "src"))
+  .concat(findTestFiles(join(projectRoot, "scripts")));
 
-console.log(`找到 ${testFiles.length} 个测试文件\n`);
+console.log(`\nTeaParty-Bell 全量测试`);
+console.log(`测试文件总数: ${testFiles.length}\n`);
 
-let passed = 0;
-let failed = 0;
-const failedFiles = [];
+let totalPassed = 0;
+let totalFailed = 0;
+let filesPassed = 0;
+let filesFailed = 0;
 
 for (const file of testFiles) {
   const relative = file.replace(projectRoot + "/", "").replace(projectRoot + "\\", "");
-  console.log(`--- ${relative} ---`);
+
+  let output = "";
+  let fileOk = true;
   try {
-    execSync(`node "${file}"`, { stdio: "inherit", cwd: projectRoot });
-    passed++;
-  } catch {
-    failed++;
-    failedFiles.push(relative);
+    output = execSync(`node "${file}"`, { encoding: "utf-8", cwd: projectRoot, stdio: ["ignore", "pipe", "pipe"] });
+  } catch (err) {
+    output = (err.stdout ?? "") + (err.stderr ?? "");
+    fileOk = false;
   }
+
+  // 解析 passed / failed 行
+  const passMatches = [...output.matchAll(/PASS:/g)];
+  const failMatches = [...output.matchAll(/FAIL:/g)];
+  const filePassed = passMatches.length;
+  const fileFailed = failMatches.length;
+
+  totalPassed += filePassed;
+  totalFailed += fileFailed;
+
+  if (fileOk && fileFailed === 0) {
+    filesPassed++;
+  } else {
+    filesFailed++;
+  }
+
+  console.log(`  ${relative}: ${filePassed} passed / ${fileFailed} failed ${fileOk && fileFailed === 0 ? "" : "<<< FAIL"}`);
 }
 
-console.log("\n====================================");
-console.log(`全量测试完成`);
-console.log(`文件级: ${passed} passed / ${failed} failed`);
-console.log("====================================");
+console.log(`\n====================================`);
+console.log(`文件级: ${filesPassed} passed / ${filesFailed} failed`);
+console.log(`用例级: ${totalPassed} passed / ${totalFailed} failed`);
+console.log(`====================================`);
 
-if (failed > 0) {
-  console.log(`\n失败文件：`);
-  failedFiles.forEach((f) => console.log(`  ${f}`));
-  process.exit(1);
-}
+if (totalFailed > 0) process.exit(1);

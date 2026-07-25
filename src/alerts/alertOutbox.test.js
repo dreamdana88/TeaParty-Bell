@@ -32,6 +32,7 @@ function makeMockLogger() {
 function tmpDir() { return mkdtempSync(join(tmpdir(), "alertOutbox-test-")); }
 
 function makeAlert(overrides = {}) {
+  const now = Date.now();
   return {
     id: generateAlertId("gateway_unhealthy"),
     incidentKey: "gateway_unhealthy",
@@ -42,8 +43,10 @@ function makeAlert(overrides = {}) {
     severity: "fatal",
     deliveryStatus: "pending",
     incidentStatus: "open",
-    startedAt: Date.now(),
-    occurredAt: Date.now(),
+    startedAt: now,
+    occurredAt: now,
+    updatedAt: now,
+    recoveryAt: null,
     durationMs: 0,
     guildId: "123",
     wsStatus: "1",
@@ -310,6 +313,63 @@ console.log(`[alertOutbox.test] 临时目录：${testDir}`);
   const ids = new Set();
   for (let i = 0; i < 100; i++) ids.add(generateAlertId("test"));
   assertEqual(ids.size, 100, "100 次 generateAlertId 全部唯一");
+}
+
+// ======================
+// v2 Schema validation tests (Fix 4)
+// ======================
+
+{
+  const dir2 = tmpDir();
+  const outbox2 = createAlertOutbox({ alertsDir: dir2 });
+  const now = Date.now();
+  const base = { id:"sv1", incidentKey:"gw", dedupeKey:"gw", event:"failure", service:"t", type:"gw",
+    severity:"fatal", deliveryStatus:"pending", incidentStatus:"open",
+    startedAt:now, occurredAt:now, updatedAt:now, recoveryAt:null,
+    durationMs:0, guildId:null, wsStatus:null, ping:null, message:"test", details:{}, version:2 };
+
+  // 缺失 dedupeKey
+  assertThrows(() => outbox2.writeAlert({...base, id:generateAlertId("s"), dedupeKey:""}), "空 dedupeKey → schema_invalid");
+
+  // 缺失 updatedAt
+  assertThrows(() => outbox2.writeAlert({...base, id:generateAlertId("s"), updatedAt:0}), "updatedAt≤0 → schema_invalid");
+
+  // 非法 recoveryAt
+  assertThrows(() => outbox2.writeAlert({...base, id:generateAlertId("s"), recoveryAt:-1}), "recoveryAt=-1 → schema_invalid");
+
+  // details 为数组
+  assertThrows(() => outbox2.writeAlert({...base, id:generateAlertId("s"), details:[]}), "details=[] → schema_invalid");
+
+  // 非法 durationMs
+  assertThrows(() => outbox2.writeAlert({...base, id:generateAlertId("s"), durationMs:-1}), "durationMs=-1 → schema_invalid");
+  assertThrows(() => outbox2.writeAlert({...base, id:generateAlertId("s"), durationMs:Infinity}), "durationMs=Infinity → schema_invalid");
+
+  // 非法 ping
+  assertThrows(() => outbox2.writeAlert({...base, id:generateAlertId("s"), ping:-1}), "ping=-1 → schema_invalid");
+  assertThrows(() => outbox2.writeAlert({...base, id:generateAlertId("s"), ping:Infinity}), "ping=Infinity → schema_invalid");
+
+  await outbox2.close();
+  rmSync(dir2, { recursive: true, force: true });
+}
+
+// ======================
+// verifyWritable probe test (Fix 5)
+// ======================
+
+{
+  // 正常目录 → probe 成功
+  const dir2 = tmpDir();
+  const outbox2 = createAlertOutbox({ alertsDir: dir2 });
+  outbox2.verifyWritable(); // 不应抛错
+  passed++; console.log("  PASS: verifyWritable probe 正常目录成功");
+
+  // 验证 probe 文件未残留
+  const { readdirSync } = await import("fs");
+  const files = readdirSync(dir2);
+  assert(!files.some(f => f.startsWith("_probe_")), "probe 文件未残留");
+
+  await outbox2.close();
+  rmSync(dir2, { recursive: true, force: true });
 }
 
 // ======================

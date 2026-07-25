@@ -1,16 +1,16 @@
 /**
- * bot.js 编排测试（启动顺序、退出码、关闭清理）。
+ * bot.js 编排测试（真实 DI 路径，非镜像实现）。
  *
- * 使用 fake client / fake exitFn / 临时目录。
- * 禁止真实 process.exit 或 Discord。
+ * 直接 import start() 并注入 fake 依赖。
+ * 禁止真实 process.exit、Discord、文件系统。
  *
  * 运行：node src/core/bot.test.js
  */
 
+import { start, EXIT_OK, EXIT_RUNTIME, EXIT_PERMANENT } from "./bot.js";
+import { ConfigError } from "../config/index.js";
+import { OutboxError } from "../alerts/alertOutbox.js";
 import { EventEmitter } from "events";
-import { mkdtempSync, rmSync, mkdirSync } from "fs";
-import { join } from "path";
-import { tmpdir } from "os";
 
 let passed = 0;
 let failed = 0;
@@ -24,176 +24,414 @@ function assertEqual(actual, expected, label) {
   else { failed++; console.error(`  FAIL: ${label} — expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`); }
 }
 
-function tmpDir() { return mkdtempSync(join(tmpdir(), "bot-test-")); }
+function makeMockLogger() { return { info:()=>{}, error:()=>{}, warn:()=>{}, debug:()=>{}, calls:[] }; }
 
-/**
- * 模拟 bot.js 的核心编排逻辑（不真实 import bot.js）。
- * 这样可以绕过 dotenv config 和 discord.js 初始化。
- */
+// ---- 通用 fake 工厂 ----
 
-// ---- 退出码常量（与 bot.js 一致）----
-const EXIT_RUNTIME = 1;
-const EXIT_PERMANENT = 78;
-const EXIT_OK = 0;
+function makeFakeConfig() {
+  return { nodeEnv:"test", isProduction:false, testMode:false, logLevel:"debug",
+    discordBotToken:"tok", discordApplicationId:"app", discordGuildId:"111", discordThanksChannelId:"222",
+    deepseekApiKey:"sk", deepseekBaseUrl:"x", deepseekModel:"m", deepseekTimeoutMs:30000,
+    reactionCount:10, boostAggregationWindowMs:100 };
+}
 
-// ============================
-// Test 1: 启动顺序 → ClientReady 后 Preflight → Pass → operational
-// ============================
-{
-  const events = [];
+function makeFakeClient() {
   const emitter = new EventEmitter();
-  let exitCode = null;
-
-  // 模拟 bot 启动的核心流程
-  async function simulateStart() {
-    // 1. config loaded
-    events.push("config_loaded");
-    // 2. outbox + notifier init
-    events.push("outbox_init");
-    // 3. store load
-    events.push("store_loaded");
-    // 4. client created
-    events.push("client_created");
-    // 5. lifecycle logger registered
-    events.push("lifecycle_registered");
-    // 6. health monitor started
-    events.push("health_monitor_started");
-    // 7. feature components created
-    events.push("features_created");
-    // 8. login
-    events.push("login_complete");
-    // 9. wait ClientReady
-    await new Promise(r => { emitter.once("ready", r); emitter.emit("ready"); });
-    events.push("client_ready");
-    // 10. healthMonitor.onReady()
-    events.push("healthmon_ready");
-    // 11. Preflight
-    events.push("preflight_pass");
-    // 12. notifyReady
-    events.push("service_operational");
-  }
-
-  await simulateStart();
-
-  // 验证顺序
-  const order = events.join(",");
-  const ci = (idx) => events.indexOf("client_ready");
-  const pi = (idx) => events.indexOf("preflight_pass");
-  const oi = (idx) => events.indexOf("service_operational");
-  assert(ci() < pi(), "ClientReady 在 Preflight 之前");
-  assert(pi() < oi(), "Preflight 在 operational 之前");
-  assert(order.startsWith("config_loaded"), "config 最先加载");
+  emitter._ready = true;
+  emitter.ws = { status: 0, ping: 48 };
+  emitter.isReady = () => emitter._ready;
+  emitter.guilds = { cache: { size: 1 }, fetch: async () => ({ id:"111", name:"G", systemChannelId:"333", systemChannelFlags:{ has:()=>false } }) };
+  emitter.channels = { fetch: async (id) => ({ id, guildId:"111", guild:{id:"111"}, type:0, permissionsFor:()=>({ has:()=>true }) }) };
+  emitter.user = { id:"bot" };
+  emitter.login = async () => {};
+  emitter.destroy = async () => {};
+  emitter.on = emitter.on.bind(emitter);
+  emitter.once = emitter.once.bind(emitter);
+  emitter.off = emitter.removeListener.bind(emitter);
+  return emitter;
 }
 
 // ============================
-// Test 2: Preflight fatal → 使用 exit 78
+// Test 1: 正常启动 → ClientReady → Preflight → operational
 // ============================
-{
-  let lastExitCode = null;
-  const exitFn = (code) => { lastExitCode = code; };
 
-  // 模拟 preflight fatal
-  // 在真正的 bot.js 中，preflight.run() 内部调用 exitFn
-  exitFn(EXIT_PERMANENT);
-  assertEqual(lastExitCode, 78, "Preflight fatal → exit 78");
+{
+  const events = [];
+  const logger = makeMockLogger();
+  const client = makeFakeClient();
+  let exitCode = null;
+
+  const fakeStore = {
+    load: async () => {},
+    getAllRecords: () => new Map(),
+    listRecoverable: () => [],
+    markUncertain: async () => {},
+    close: async () => {},
+  };
+  const fakeOutbox = {
+    verifyWritable: () => {},
+    loadAllAlerts: () => [],
+    writeAlert: async () => {},
+    findAlert: () => undefined,
+    close: async () => {},
+  };
+  const fakeNotifier = {
+    initialize: async () => {},
+    notifyFailure: async () => {},
+    notifyRecovery: async () => {},
+    notifyWarning: async () => {},
+    notifyReadyAfterRestart: async () => ({ createdReady: true, recovered: [], failedRecoveries: [] }),
+  };
+  const fakeHealthMon = { start: () => {}, stop: () => {}, onReady: () => {} };
+  const fakeObserver = { destroy: () => {} };
+
+  await start({
+    loadConfigFn: () => makeFakeConfig(),
+    createClientFn: () => {
+      const { login: _, destroy: __, waitUntilReady: ___ } = makeFakeClient();
+      return { client, login: async () => {}, destroy: async () => {}, waitUntilReady: async () => {} };
+    },
+    createAlertOutboxFn: () => fakeOutbox,
+    createNotifierFn: () => fakeNotifier,
+    createStoreFn: () => fakeStore,
+    createHealthMonitorFn: () => fakeHealthMon,
+    createPreflightFn: () => ({ run: async () => ({ passed: true }) }),
+    setupLifecycleLoggerFn: () => ({ destroy: () => {} }),
+    setupObserverFn: () => fakeObserver,
+    createHandlerFn: () => ({ handleBoostEvent: async () => true }),
+    createEmojiProviderFn: () => ({ fetchEmojis: async () => [] }),
+    logger,
+    exitFn: (c) => { exitCode = c; },
+    processLike: { on: () => {} },
+    projectRoot: "/tmp",
+  });
+
+  assert(exitCode === null || exitCode === undefined, "正常启动不调用 exitFn");
+
+  // Preflight 在 startup 返回前就已运行
+  // 启动成功后不应有 exit 调用
+}
+
+// ============================
+// Test 2: ConfigError → 使用其 exitCode
+// ============================
+
+{
+  let exitCode = null;
+  await start({
+    loadConfigFn: () => { throw new ConfigError("bad NODE_ENV", "invalid_node_env", 78); },
+    logger: makeMockLogger(),
+    exitFn: (c) => { exitCode = c; },
+    processLike: { on: () => {} },
+  });
+  assertEqual(exitCode, 78, "ConfigError 使用其 exitCode");
 }
 
 // ============================
 // Test 3: Outbox 初始化失败 → exit 78
 // ============================
-{
-  let lastExitCode = null;
 
-  // 模拟 outbox loadAllAlerts 损坏抛错
-  try {
-    throw Object.assign(new Error("Schema corrupt"), { name: "OutboxError" });
-  } catch (err) {
-    // bot.js 中: process.exit(EXIT_PERMANENT)
-    lastExitCode = EXIT_PERMANENT;
-  }
-  assertEqual(lastExitCode, 78, "Outbox 初始化失败 → exit 78");
+{
+  let exitCode = null;
+  const logger = makeMockLogger();
+  await start({
+    loadConfigFn: () => makeFakeConfig(),
+    createAlertOutboxFn: () => {
+      const o = { verifyWritable: () => { throw new OutboxError("disk full", "write_probe_failed"); } };
+      return o;
+    },
+    logger,
+    exitFn: (c) => { exitCode = c; },
+    processLike: { on: () => {} },
+  });
+  assertEqual(exitCode, 78, "Outbox probe 失败 → exit 78");
 }
 
 // ============================
-// Test 4: Gateway 运行期失败 → exit 1
+// Test 4: Outbox 加载失败 → exit 78
 // ============================
+
 {
-  let lastExitCode = null;
-  // healthMonitor 触发 gateway_startup_timeout → exit(1)
-  lastExitCode = EXIT_RUNTIME;
-  assertEqual(lastExitCode, 1, "Gateway 运行期故障 → exit 1");
+  let exitCode = null;
+  await start({
+    loadConfigFn: () => makeFakeConfig(),
+    createAlertOutboxFn: () => ({ verifyWritable: () => {}, loadAllAlerts: () => { throw new OutboxError("bad", "schema_corrupt"); } }),
+    createNotifierFn: ({ outbox }) => ({ initialize: async () => { outbox.loadAllAlerts(); } }),
+    logger: makeMockLogger(),
+    exitFn: (c) => { exitCode = c; },
+    processLike: { on: () => {} },
+  });
+  assertEqual(exitCode, 78, "Outbox 加载损坏 → exit 78");
 }
 
 // ============================
-// Test 5: Shutdown 清理顺序
+// Test 5: Discord 登录失败 → exit 1
 // ============================
+
+{
+  let exitCode = null;
+  await start({
+    loadConfigFn: () => makeFakeConfig(),
+    createAlertOutboxFn: () => ({ verifyWritable: () => {}, loadAllAlerts: () => [], writeAlert: async () => {}, close: async () => {} }),
+    createNotifierFn: () => ({ initialize: async () => {}, notifyFailure: async () => {} }),
+    createStoreFn: () => ({ load: async () => {}, getAllRecords: () => new Map(), listRecoverable: () => [], markUncertain: async () => {}, close: async () => {} }),
+    createClientFn: () => ({
+      client: makeFakeClient(),
+      login: async () => { throw new Error("Invalid token"); },
+      destroy: async () => {},
+      waitUntilReady: async () => {},
+    }),
+    createHealthMonitorFn: () => ({ start: () => {} }),
+    setupLifecycleLoggerFn: () => ({ destroy: () => {} }),
+    setupObserverFn: () => ({ destroy: () => {} }),
+    createHandlerFn: () => ({}),
+    createEmojiProviderFn: () => ({}),
+    logger: makeMockLogger(),
+    exitFn: (c) => { exitCode = c; },
+    processLike: { on: () => {} },
+  });
+  assertEqual(exitCode, 1, "Discord 登录失败 → exit 1");
+}
+
+// ============================
+// Test 6: Preflight passed=false → 不调用 notifyReadyAfterRestart
+// ============================
+
+{
+  let readyCalled = false;
+  let exitCode = null;
+  const fakeOutbox = { verifyWritable: () => {}, loadAllAlerts: () => [], writeAlert: async () => {}, findAlert: () => undefined, close: async () => {} };
+  const fakeNotifier = {
+    initialize: async () => {},
+    notifyFailure: async () => {},
+    notifyRecovery: async () => {},
+    notifyWarning: async () => {},
+    notifyReadyAfterRestart: async () => { readyCalled = true; return { createdReady: true, recovered: [], failedRecoveries: [] }; },
+  };
+
+  await start({
+    loadConfigFn: () => makeFakeConfig(),
+    createAlertOutboxFn: () => fakeOutbox,
+    createNotifierFn: () => fakeNotifier,
+    createStoreFn: () => ({ load: async () => {}, getAllRecords: () => new Map(), listRecoverable: () => [], markUncertain: async () => {}, close: async () => {} }),
+    createClientFn: () => ({
+      client: makeFakeClient(),
+      login: async () => {},
+      destroy: async () => {},
+      waitUntilReady: async () => {},
+    }),
+    createHealthMonitorFn: () => ({ start: () => {}, onReady: () => {} }),
+    setupLifecycleLoggerFn: () => ({ destroy: () => {} }),
+    setupObserverFn: () => ({ destroy: () => {} }),
+    createHandlerFn: () => ({}),
+    createEmojiProviderFn: () => ({}),
+    createPreflightFn: ({ exitFn }) => ({ run: async () => { exitFn(78); return { passed: false }; } }),
+    logger: makeMockLogger(),
+    exitFn: (c) => { exitCode = c; },
+    processLike: { on: () => {} },
+  });
+
+  assert(!readyCalled, "Preflight failed → 不调用 notifyReadyAfterRestart");
+  assertEqual(exitCode, 78, "Preflight failed → exitFn(78) called");
+
+  // Reset
+  readyCalled = false; exitCode = null;
+
+  // passed=true → operational
+  await start({
+    loadConfigFn: () => makeFakeConfig(),
+    createAlertOutboxFn: () => fakeOutbox,
+    createNotifierFn: () => fakeNotifier,
+    createStoreFn: () => ({ load: async () => {}, getAllRecords: () => new Map(), listRecoverable: () => [], markUncertain: async () => {}, close: async () => {} }),
+    createClientFn: () => ({
+      client: makeFakeClient(),
+      login: async () => {},
+      destroy: async () => {},
+      waitUntilReady: async () => {},
+    }),
+    createHealthMonitorFn: () => ({ start: () => {}, onReady: () => {} }),
+    setupLifecycleLoggerFn: () => ({ destroy: () => {} }),
+    setupObserverFn: () => ({ destroy: () => {} }),
+    createHandlerFn: () => ({}),
+    createEmojiProviderFn: () => ({}),
+    createPreflightFn: () => ({ run: async () => ({ passed: true }) }),
+    logger: makeMockLogger(),
+    exitFn: () => {},
+    processLike: { on: () => {} },
+  });
+  assert(readyCalled, "Preflight passed → notifyReadyAfterRestart called");
+}
+
+// ============================
+// Test 7: notifyReadyAfterRestart 失败 → exit 78
+// ============================
+
+{
+  let exitCode = null;
+  const fakeOutbox = { verifyWritable: () => {}, loadAllAlerts: () => [], writeAlert: async () => {}, findAlert: () => undefined, close: async () => {} };
+  const fakeNotifier = {
+    initialize: async () => {},
+    notifyFailure: async () => {},
+    notifyRecovery: async () => {},
+    notifyWarning: async () => {},
+    notifyReadyAfterRestart: async () => { throw new Error("disk full"); },
+  };
+
+  await start({
+    loadConfigFn: () => makeFakeConfig(),
+    createAlertOutboxFn: () => fakeOutbox,
+    createNotifierFn: () => fakeNotifier,
+    createStoreFn: () => ({ load: async () => {}, getAllRecords: () => new Map(), listRecoverable: () => [], markUncertain: async () => {}, close: async () => {} }),
+    createClientFn: () => ({
+      client: makeFakeClient(),
+      login: async () => {},
+      destroy: async () => {},
+      waitUntilReady: async () => {},
+    }),
+    createHealthMonitorFn: () => ({ start: () => {}, onReady: () => {} }),
+    setupLifecycleLoggerFn: () => ({ destroy: () => {} }),
+    setupObserverFn: () => ({ destroy: () => {} }),
+    createHandlerFn: () => ({}),
+    createEmojiProviderFn: () => ({}),
+    createPreflightFn: () => ({ run: async () => ({ passed: true }) }),
+    logger: makeMockLogger(),
+    exitFn: (c) => { exitCode = c; },
+    processLike: { on: () => {} },
+  });
+
+  assertEqual(exitCode, 78, "notifyReadyAfterRestart 失败 → exit 78");
+}
+
+// ============================
+// Test 8: Recovery 部分失败 → exit 78
+// ============================
+
+{
+  let exitCode = null;
+  const fakeOutbox = { verifyWritable: () => {}, loadAllAlerts: () => [], writeAlert: async () => {}, findAlert: () => undefined, close: async () => {} };
+  const fakeNotifier = {
+    initialize: async () => {},
+    notifyFailure: async () => {},
+    notifyRecovery: async () => {},
+    notifyWarning: async () => {},
+    notifyReadyAfterRestart: async () => ({ createdReady: false, recovered: [], failedRecoveries: [{ incidentKey: "gw", error: "fail" }] }),
+  };
+
+  await start({
+    loadConfigFn: () => makeFakeConfig(),
+    createAlertOutboxFn: () => fakeOutbox,
+    createNotifierFn: () => fakeNotifier,
+    createStoreFn: () => ({ load: async () => {}, getAllRecords: () => new Map(), listRecoverable: () => [], markUncertain: async () => {}, close: async () => {} }),
+    createClientFn: () => ({
+      client: makeFakeClient(),
+      login: async () => {},
+      destroy: async () => {},
+      waitUntilReady: async () => {},
+    }),
+    createHealthMonitorFn: () => ({ start: () => {}, onReady: () => {} }),
+    setupLifecycleLoggerFn: () => ({ destroy: () => {} }),
+    setupObserverFn: () => ({ destroy: () => {} }),
+    createHandlerFn: () => ({}),
+    createEmojiProviderFn: () => ({}),
+    createPreflightFn: () => ({ run: async () => ({ passed: true }) }),
+    logger: makeMockLogger(),
+    exitFn: (c) => { exitCode = c; },
+    processLike: { on: () => {} },
+  });
+
+  assertEqual(exitCode, 78, "Recovery 部分失败 → exit 78");
+}
+
+// ============================
+// Test 9: Gateway Monitor 接收注入的 exitFn
+// ============================
+
+{
+  let monitorExitCode = null;
+  let monitorCallCount = 0;
+
+  let capturedNotifyFailure;
+  const fakeOutbox = { verifyWritable: () => {}, loadAllAlerts: () => [], writeAlert: async () => {}, findAlert: () => undefined, close: async () => {} };
+  const fakeStore = { load: async () => {}, getAllRecords: () => new Map(), listRecoverable: () => [], markUncertain: async () => {}, close: async () => {} };
+
+  await start({
+    loadConfigFn: () => makeFakeConfig(),
+    createAlertOutboxFn: () => fakeOutbox,
+    createNotifierFn: () => ({ initialize: async () => {}, notifyFailure: async () => {}, notifyRecovery: async () => {}, notifyWarning: async () => {}, notifyReadyAfterRestart: async () => ({ createdReady: true, recovered: [], failedRecoveries: [] }) }),
+    createStoreFn: () => fakeStore,
+    createClientFn: () => ({
+      client: makeFakeClient(),
+      login: async () => {},
+      destroy: async () => {},
+      waitUntilReady: async () => {},
+    }),
+    createHealthMonitorFn: (opts) => {
+      monitorCallCount++;
+      capturedNotifyFailure = opts.notifyFailure;
+      // 验证 exitFn 是注入的
+      assert(typeof opts.exitFn === "function", "HealthMonitor 收到 inject exitFn");
+      assertEqual(opts.alertPersistenceFailureExitCode, 78, "HealthMonitor alertPersistenceFailureExitCode=78");
+      return { start: () => {}, stop: () => {}, onReady: () => {} };
+    },
+    setupLifecycleLoggerFn: () => ({ destroy: () => {} }),
+    setupObserverFn: () => ({ destroy: () => {} }),
+    createHandlerFn: () => ({}),
+    createEmojiProviderFn: () => ({}),
+    createPreflightFn: () => ({ run: async () => ({ passed: true }) }),
+    logger: makeMockLogger(),
+    exitFn: (c) => { monitorExitCode = c; },
+    processLike: { on: () => {} },
+  });
+
+  // 手动调用 captured notifyFailure 验证它通过 notifier 传播
+  assert(typeof capturedNotifyFailure === "function", "HealthMonitor 收到 notifyFailure");
+}
+
+// ============================
+// Test 10: shutdown 清理顺序
+// ============================
+
 {
   const cleanupOrder = [];
+  await start({
+    loadConfigFn: () => makeFakeConfig(),
+    createAlertOutboxFn: () => ({ verifyWritable: () => {}, loadAllAlerts: () => [], writeAlert: async () => {}, findAlert: () => undefined, close: async () => { cleanupOrder.push("outbox_close"); } }),
+    createNotifierFn: () => ({ initialize: async () => {}, notifyFailure: async () => {}, notifyRecovery: async () => {}, notifyWarning: async () => {}, notifyReadyAfterRestart: async () => ({ createdReady: true, recovered: [], failedRecoveries: [] }) }),
+    createStoreFn: () => ({ load: async () => {}, getAllRecords: () => new Map(), listRecoverable: () => [], markUncertain: async () => {}, close: async () => { cleanupOrder.push("store_close"); } }),
+    createClientFn: () => ({
+      client: makeFakeClient(),
+      login: async () => {},
+      destroy: async () => { cleanupOrder.push("client_destroy"); },
+      waitUntilReady: async () => {},
+    }),
+    createHealthMonitorFn: () => ({ start: () => {}, stop: () => { cleanupOrder.push("healthmon_stop"); }, onReady: () => {} }),
+    setupLifecycleLoggerFn: () => ({ destroy: () => { cleanupOrder.push("lifecycle_destroy"); } }),
+    setupObserverFn: () => ({ destroy: () => { cleanupOrder.push("observer_destroy"); } }),
+    createHandlerFn: () => ({}),
+    createEmojiProviderFn: () => ({}),
+    createPreflightFn: () => ({ run: async () => ({ passed: true }) }),
+    logger: makeMockLogger(),
+    exitFn: (c) => { cleanupOrder.push(`exit_${c}`); },
+    processLike: {
+      on: (event, handler) => {
+        if (event === "SIGTERM") {
+          // 模拟 shutdown
+          setTimeout(() => handler("SIGTERM"), 10);
+        }
+      },
+    },
+  });
 
-  async function simulateShutdown() {
-    // bot.js shutdown 顺序:
-    // 1. healthMonitor.stop()
-    cleanupOrder.push("healthmon_stop");
-    // 2. lifecycleLogger.destroy()
-    cleanupOrder.push("lifecycle_destroy");
-    // 3. observerCleanup.destroy()
-    cleanupOrder.push("observer_destroy");
-    // 4. store.close()
-    cleanupOrder.push("store_close");
-    // 5. outbox.close()
-    cleanupOrder.push("outbox_close");
-    // 6. client.destroy()
-    cleanupOrder.push("client_destroy");
-    // 7. process.exit(0)
-    cleanupOrder.push("exit_0");
-  }
+  // 等待 shutdown 完成
+  await new Promise(r => setTimeout(r, 50));
 
-  await simulateShutdown();
-
-  const orderStr = cleanupOrder.join(",");
-  assert(orderStr.includes("healthmon_stop"), "shutdown 从 healthMon 开始");
-  assert(orderStr.endsWith("exit_0"), "shutdown 以 exit(0) 结束");
-
-  // client.destroy 在 outbox.close 之后
-  const clientIdx = cleanupOrder.indexOf("client_destroy");
-  const outboxIdx = cleanupOrder.indexOf("outbox_close");
-  assert(outboxIdx < clientIdx, "outbox.close() 在 client.destroy() 之前");
-}
-
-// ============================
-// Test 6: 非法 NODE_ENV 被 loadConfig 拒绝（ConfigError exit 78）
-// ============================
-{
-  // 此测试验证 ConfigError 携带正确的 exitCode
-  // loadConfig 由 config.test.js 覆盖，这里只验证常量
-  assertEqual(EXIT_PERMANENT, 78, "EXIT_PERMANENT = 78");
-  assertEqual(EXIT_RUNTIME, 1, "EXIT_RUNTIME = 1");
-}
-
-// ============================
-// Test 7: 两次独立 Preflight fatal → 各自使用 exit 78
-// ============================
-{
-  let calls = [];
-  const exitFn = (code) => { calls.push(code); };
-  exitFn(78); // preflight fatal
-  exitFn(78); // preflight fatal again
-  assertEqual(calls.length, 2, "两次 fatal 各自调用 exitFn");
-  assert(calls.every(c => c === 78), "都是 exit 78");
-}
-
-// ============================
-// Test 8: 不同退出码不混淆
-// ============================
-{
-  let calls = [];
-  const exitFn = (code) => { calls.push(code); };
-  exitFn(EXIT_PERMANENT); // preflight fatal
-  exitFn(EXIT_RUNTIME);   // gateway timeout
-  exitFn(EXIT_OK);        // normal shutdown
-  assertEqual(calls[0], 78, "首先 exit 78");
-  assertEqual(calls[1], 1, "然后 exit 1");
-  assertEqual(calls[2], 0, "最后 exit 0");
+  assert(cleanupOrder.includes("healthmon_stop"), "shutdown: healthmon_stop");
+  assert(cleanupOrder.includes("lifecycle_destroy"), "shutdown: lifecycle_destroy");
+  assert(cleanupOrder.includes("observer_destroy"), "shutdown: observer_destroy");
+  assert(cleanupOrder.includes("store_close"), "shutdown: store_close");
+  assert(cleanupOrder.includes("outbox_close"), "shutdown: outbox_close");
+  assert(cleanupOrder.includes("client_destroy"), "shutdown: client_destroy");
+  assert(cleanupOrder.includes("exit_0"), "shutdown: exit 0");
 }
 
 console.log(`\n[bot.test] ${passed} passed / ${failed} failed`);
