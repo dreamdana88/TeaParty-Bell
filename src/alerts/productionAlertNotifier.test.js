@@ -121,7 +121,7 @@ function makeFakeOutbox() {
     dedupeKey: "gateway_unhealthy_recovery",
     event: "recovery",
     service: "TeaParty-Bell",
-    type: "gateway_recovered",
+    type: "incident_recovered",
     severity: "info",
     deliveryStatus: "pending",
     incidentStatus: "resolved",
@@ -292,6 +292,40 @@ function makeFakeOutbox() {
   const a = await notifier.notifyFailure("gw","test");
   const j = JSON.stringify(a);
   assert(!j.includes("token"), "no token"); assert(!j.includes("apiKey"), "no apiKey");
+}
+
+// ============================
+// Recovery type 固定为 incident_recovered + details.originalType 正确
+// ============================
+
+// gateway_unhealthy → recovery
+{
+  const dir = tmpDir();
+  const outbox = makeFakeOutbox();
+  const notifier = createProductionAlertNotifier({ outbox, logger: makeMockLogger() });
+  await notifier.initialize();
+  await notifier.notifyFailure("gateway_unhealthy", "gw failed");
+  const rec = await notifier.notifyRecovery("gateway_unhealthy", "gw recovered");
+  const recoveryFile = outbox.alerts.find(a => a.id === rec.recoveryAlertId);
+  assertEqual(recoveryFile.type, "incident_recovered", "gateway_unhealthy recovery → type=incident_recovered");
+  assertEqual(recoveryFile.event, "recovery", "event=recovery");
+  assertEqual(recoveryFile.details.originalType, "gateway_unhealthy", "details.originalType=gateway_unhealthy");
+  rmSync(dir, { recursive: true, force: true });
+}
+
+// startup_preflight_failed → recovery
+{
+  const dir = tmpDir();
+  const outbox = makeFakeOutbox();
+  const notifier = createProductionAlertNotifier({ outbox, logger: makeMockLogger() });
+  await notifier.initialize();
+  await notifier.notifyFailure("startup_preflight_failed", "preflight failed");
+  const rec = await notifier.notifyRecovery("startup_preflight_failed", "preflight fixed");
+  const recoveryFile = outbox.alerts.find(a => a.id === rec.recoveryAlertId);
+  assertEqual(recoveryFile.type, "incident_recovered", "startup_preflight_failed recovery → type=incident_recovered");
+  assertEqual(recoveryFile.event, "recovery", "event=recovery");
+  assertEqual(recoveryFile.details.originalType, "startup_preflight_failed", "details.originalType=startup_preflight_failed");
+  rmSync(dir, { recursive: true, force: true });
 }
 
 console.log(`\n[productionAlertNotifier.test] ${passed} passed / ${failed} failed`);

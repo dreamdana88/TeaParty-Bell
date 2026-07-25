@@ -157,7 +157,7 @@ export function createProductionAlertNotifier(options) {
         dedupeKey: `${dedupeKey}_recovery`,
         event: "recovery",
         service: "TeaParty-Bell",
-        type: "gateway_recovered",
+        type: "incident_recovered",
         severity: "info",
         deliveryStatus: "pending",
         incidentStatus: "resolved",
