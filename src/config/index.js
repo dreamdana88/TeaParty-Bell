@@ -2,17 +2,10 @@ import dotenv from "dotenv";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 
-// 从项目根目录加载 .env
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(__dirname, "..", "..");
 dotenv.config({ path: resolve(projectRoot, ".env") });
 
-/**
- * Phase 1 必填配置项（Discord 核心）。任何一项缺失都将导致启动失败。
- *
- * DEEPSEEK_API_KEY 不在此列：缺少时 Discord BOT 仍可正常启动，
- * 仅 AI 功能不可用（调用时抛出明确错误）。
- */
 const REQUIRED_CONFIG = [
   "DISCORD_BOT_TOKEN",
   "DISCORD_APPLICATION_ID",
@@ -20,31 +13,45 @@ const REQUIRED_CONFIG = [
   "DISCORD_THANKS_CHANNEL_ID",
 ];
 
-/**
- * 合法的 NODE_ENV 值。
- * 未设置时默认 "development"。
- */
 const VALID_NODE_ENVS = new Set(["development", "test", "production"]);
 
 /**
- * 读取配置并校验必填项。
- *
- * @returns {object} 完整配置对象
- * @throws {Error} 如有必填配置缺失
+ * 配置错误类型，携带建议退出码。
  */
+export class ConfigError extends Error {
+  /**
+   * @param {string} message
+   * @param {string} code
+   * @param {number} [exitCode=1]
+   */
+  constructor(message, code, exitCode = 1) {
+    super(message);
+    this.name = "ConfigError";
+    this.code = code;
+    this.exitCode = exitCode;
+  }
+}
+
 export function loadConfig() {
   // ---- NODE_ENV ----
   const rawNodeEnv = (process.env.NODE_ENV || "").trim().toLowerCase();
-  const nodeEnv = VALID_NODE_ENVS.has(rawNodeEnv) ? rawNodeEnv : "development";
 
-  if (rawNodeEnv && !VALID_NODE_ENVS.has(rawNodeEnv)) {
-    console.warn(
-      `无效的 NODE_ENV "${rawNodeEnv}"，已回退为 "development"。合法值：development | test | production`
+  let nodeEnv;
+  if (!rawNodeEnv) {
+    // 完全未设置 → 默认 development
+    nodeEnv = "development";
+  } else if (VALID_NODE_ENVS.has(rawNodeEnv)) {
+    nodeEnv = rawNodeEnv;
+  } else {
+    // 显式设置了非法值 → 永久配置错误 (exit 78)
+    throw new ConfigError(
+      `非法的 NODE_ENV "${rawNodeEnv}"。合法值：development | test | production`,
+      "invalid_node_env",
+      78
     );
   }
 
   const config = {
-    // ---- 运行环境 ----
     nodeEnv,
     isProduction: nodeEnv === "production",
 
@@ -80,31 +87,21 @@ export function loadConfig() {
   );
 
   if (missing.length > 0) {
-    throw new Error(
-      `缺少必要的环境变量（请检查 .env）：${missing.join(", ")}`
+    throw new ConfigError(
+      `缺少必要的环境变量（请检查 .env）：${missing.join(", ")}`,
+      "missing_required_config",
+      78
     );
   }
 
   return config;
 }
 
-/**
- * 安全地将字符串解析为布尔值。
- * 仅 "true" / "1" 视为 true，其余视为 false。
- */
 function stringToBool(value, defaultValue) {
   if (value === undefined || value === null) return defaultValue;
   return value === "true" || value === "1";
 }
 
-/**
- * 正整数校验。
- * 非数字、0、负数、非整数均回退到 defaultValue。
- *
- * @param {string|undefined|null} value - 环境变量原始值
- * @param {number} defaultValue - 默认值
- * @returns {number} 有效的正整数
- */
 function validatePositiveInt(value, defaultValue) {
   if (value === undefined || value === null || value === "") {
     return defaultValue;
@@ -116,15 +113,6 @@ function validatePositiveInt(value, defaultValue) {
   return num;
 }
 
-/**
- * Reaction 数量归一化（Phase 7）。
- *
- * 业务规则：每条感谢消息 8～10 个 Reaction。
- * 非法值均回退到默认值 10，再钳制到 [8, 10]。
- *
- * @param {string|undefined|null} value - 环境变量 REACTION_COUNT 原始值
- * @returns {number} 8～10 之间的整数
- */
 const REACTION_COUNT_DEFAULT = 10;
 const REACTION_COUNT_MIN = 8;
 const REACTION_COUNT_MAX = 10;

@@ -1,85 +1,68 @@
 /**
  * Production Alert Notifier（TeaParty-Bell 告警通知抽象）。
  *
- * 职责：
- * - 提供 notifyFailure / notifyRecovery / notifyWarning 接口
- * - 防重复告警：同一轮故障只产生一次 failure alert
- * - 恢复告警：只有已产生 failure alert 的 incident 才配套 recovery alert
- * - 生成稳定 alertId（基于告警类型），方便跨重启识别
- * - 通过 Alert Outbox 持久化告警
+ * 拆分 deliveryStatus（pending|delivered|delivery_failed）
+ * 和 incidentStatus（open|resolved），互不干扰。
  *
- * 不依赖：
- * - Discord
- * - AI
- * - Boost Feature
- * - Hermes（完全解耦）
+ * 防重复：
+ * - 同一 dedupeKey 的 open incident 只创建一次 failure
+ * - 持续异常 → 只更新现有文件的 duration
+ * - 新轮次（上一轮已 resolved）→ 新文件
+ * - warning 不进入 _openIncidents，不触发 hasOpenFatalIncident
+ *
+ * 不依赖：Discord / AI / Boost / Hermes。
  */
 
-/**
- * 创建 Production Alert Notifier。
- *
- * @param {{ outbox: object, logger?: object }} options
- * @returns {object} Notifier 实例
- */
+import { generateAlertId } from "./alertOutbox.js";
+
 export function createProductionAlertNotifier(options) {
   const { outbox, logger } = options;
 
   /**
-   * 跟踪已打开但尚未解决的事故 ID。
-   * key: alertType, value: { alertId, startedAt }
-   *
-   * 进程重启后从 outbox 重新加载。
+   * _openIncidents: Map<dedupeKey, { alertId, startedAt, incidentKey }>
+   * 只收录 incidentStatus=open 的 fatal failure incident。
+   * warning / recovery / ready 不进入此 Map。
    */
   const _openIncidents = new Map();
 
-  /** @type {object[]} 从 outbox 加载的告警缓存 */
   let _loadedAlerts = [];
 
   // ========================
   // 内部
   // ========================
 
-  /**
-   * 是否为已打开（未解决）的 incident。
-   */
-  function _isOpen(alertType) {
-    return _openIncidents.has(alertType);
+  function _isOpen(dedupeKey) {
+    return _openIncidents.has(dedupeKey);
   }
 
-  /**
-   * 记录一个新打开的 incident。
-   */
-  function _markOpen(alertType, alertId) {
-    _openIncidents.set(alertType, { alertId, startedAt: Date.now() });
+  function _markOpen(dedupeKey, alertId, incidentKey, startedAt) {
+    _openIncidents.set(dedupeKey, { alertId, startedAt, incidentKey });
   }
 
-  /**
-   * 关闭一个 incident（恢复后）。
-   */
-  function _markClosed(alertType) {
-    _openIncidents.delete(alertType);
+  function _markClosed(dedupeKey) {
+    _openIncidents.delete(dedupeKey);
   }
 
-  /**
-   * 构建标准告警结构。
-   */
-  function _buildAlert(type, severity, message, details = {}) {
+  function _buildBase(incidentKey, event, severity, dedupeKey, message, overrides = {}) {
     const now = Date.now();
-    // alertId 使用 type 作为稳定标识，跨重启同一类故障可识别
     return {
-      id: type,
+      id: generateAlertId(incidentKey),
+      incidentKey,
+      dedupeKey: dedupeKey ?? incidentKey,
+      event,
       service: "TeaParty-Bell",
-      type,
+      type: incidentKey,
       severity,
-      status: "pending",
-      startedAt: now,
+      deliveryStatus: "pending",
+      incidentStatus: event === "failure" ? "open" : "resolved",
+      startedAt: overrides.startedAt ?? now,
       occurredAt: now,
-      durationMs: 0,
-      guildId: details.guildId ?? null,
-      wsStatus: details.wsStatus ?? null,
-      ping: details.ping ?? null,
+      durationMs: overrides.durationMs ?? 0,
+      guildId: overrides.guildId ?? null,
+      wsStatus: overrides.wsStatus ?? null,
+      ping: overrides.ping ?? null,
       message,
-      details: details.details ?? {},
+      details: overrides.details ?? {},
     };
   }
 
@@ -88,24 +71,27 @@ export function createProductionAlertNotifier(options) {
   // ========================
 
   /**
-   * 从 outbox 加载已有告警，重建内存中的 incident 状态。
-   *
-   * 必须在 bot 启动时调用一次。
-   *
-   * @returns {Promise<void>}
+   * 从 outbox 加载已有告警，重建 _openIncidents。
+   * 只有 event=failure + severity=fatal + incidentStatus=open 才进入。
+   * delivered + open 的 failure 跨重启后仍保留为 open。
    */
   async function initialize() {
     _loadedAlerts = outbox.loadAllAlerts();
     _openIncidents.clear();
 
     for (const alert of _loadedAlerts) {
-      if (alert.status === "pending" || alert.status === "delivery_failed") {
-        _markOpen(alert.type, alert.id);
+      if (
+        alert.event === "failure" &&
+        alert.severity === "fatal" &&
+        alert.incidentStatus === "open"
+      ) {
+        _markOpen(alert.dedupeKey, alert.id, alert.incidentKey, alert.startedAt);
         if (logger) {
-          logger.warn("[AlertNotifier] 发现未解决的历史告警", {
+          logger.warn("[AlertNotifier] 发现未解决的历史 fatal incident", {
             alertId: alert.id,
-            type: alert.type,
-            severity: alert.severity,
+            incidentKey: alert.incidentKey,
+            dedupeKey: alert.dedupeKey,
+            deliveryStatus: alert.deliveryStatus,
             startedAt: alert.startedAt,
           });
         }
@@ -116,21 +102,18 @@ export function createProductionAlertNotifier(options) {
   /**
    * 通知致命故障。
    *
-   * 同一类型的故障只产生一次告警。
-   * 如果同一类型已有未解决的 incident，只更新 duration 不创建新告警。
-   *
-   * @param {string} type - 告警类型（如 "gateway_unhealthy"）
-   * @param {string} message - 人类可读消息
-   * @param {object} [details] - 额外诊断信息
-   * @returns {Promise<object|null>} 新创建的告警对象，或 null（已存在同类告警）
+   * 同 dedupeKey + incidentStatus=open → 只更新 duration。
+   * 上一轮已 resolved → 创建新文件（不同 id）。
+   * 写入失败 → 向上抛错，不静默返回 null。
    */
-  async function notifyFailure(type, message, details = {}) {
-    if (_isOpen(type)) {
+  async function notifyFailure(incidentKey, message, details = {}) {
+    const dedupeKey = incidentKey;
+
+    if (_isOpen(dedupeKey)) {
       if (logger) {
-        logger.info("[AlertNotifier] 同类告警已存在，跳过重复通知", { type });
+        logger.info("[AlertNotifier] 同类故障已 open，跳过重复通知", { incidentKey, dedupeKey });
       }
-      // 更新 duration
-      const existing = _openIncidents.get(type);
+      const existing = _openIncidents.get(dedupeKey);
       try {
         await outbox.updateAlert(existing.alertId, {
           occurredAt: Date.now(),
@@ -140,190 +123,164 @@ export function createProductionAlertNotifier(options) {
         });
       } catch (err) {
         if (logger) {
-          logger.error("[AlertNotifier] 更新告警 duration 失败", {
+          logger.error("[AlertNotifier] 更新 duration 失败", {
             alertId: existing.alertId,
             error: err.message,
           });
         }
+        // 更新失败不删除内存状态，不影响后续通知
       }
-      return null;
+      return null; // 未创建新告警
     }
 
-    const alert = _buildAlert(type, "fatal", message, details);
+    const alert = _buildBase(incidentKey, "failure", "fatal", dedupeKey, message, details);
 
-    try {
-      await outbox.writeAlert(alert);
-      _markOpen(type, alert.id);
-      if (logger) {
-        logger.error("[AlertNotifier] 故障告警已创建", {
-          alertId: alert.id,
-          type,
-          message,
-        });
-      }
-      return alert;
-    } catch (err) {
-      if (logger) {
-        logger.error("[AlertNotifier] 故障告警写入 outbox 失败", {
-          type,
-          error: err.message,
-        });
-      }
-      return null;
+    // 写入失败 → 向上抛，让调用方决定策略
+    await outbox.writeAlert(alert);
+    _markOpen(dedupeKey, alert.id, incidentKey, alert.startedAt);
+
+    if (logger) {
+      logger.error("[AlertNotifier] 故障告警已创建", {
+        alertId: alert.id,
+        incidentKey,
+        dedupeKey,
+        message,
+      });
     }
+    return alert;
   }
 
   /**
    * 通知恢复。
    *
-   * 只有此前已产生 failure alert 的 incident 才创建 recovery alert。
-   * 短暂断线未产生 failure alert 时，不发送 recovery。
-   *
-   * @param {string} type - 对应的故障类型
-   * @param {string} message - 恢复消息
-   * @returns {Promise<object|null>} 恢复告警，或 null
+   * 只有 _openIncidents 中有对应 dedupeKey 才创建。
+   * Recovery 使用 severity="info"（不使用 fatal），
+   * deliveryStatus="pending"（待 Hermes 投递），
+   * incidentStatus="resolved"。
+   * 同时将原 failure 的 incidentStatus 标记为 resolved。
    */
-  async function notifyRecovery(type, message) {
-    if (!_isOpen(type)) {
+  async function notifyRecovery(incidentKey, message) {
+    const dedupeKey = incidentKey;
+
+    if (!_isOpen(dedupeKey)) {
       if (logger) {
-        logger.info("[AlertNotifier] 无对应未解决故障，跳过 recovery", { type });
+        logger.info("[AlertNotifier] 无对应 open incident，跳过 recovery", { incidentKey });
       }
       return null;
     }
 
-    const existing = _openIncidents.get(type);
-    const recoveryAlert = {
-      id: `${type}_recovery`,
-      service: "TeaParty-Bell",
-      type: "gateway_recovered",
-      severity: "fatal",
-      status: "resolved",
-      startedAt: Date.now(),
-      occurredAt: Date.now(),
-      durationMs: Date.now() - existing.startedAt,
-      guildId: null,
-      wsStatus: null,
-      ping: null,
+    const existing = _openIncidents.get(dedupeKey);
+    const durationMs = Date.now() - existing.startedAt;
+
+    const recoveryAlert = _buildBase(
+      `${incidentKey}_recovery`, "recovery", "info", dedupeKey,
       message,
-      details: { originalType: type, originalAlertId: existing.alertId },
-    };
+      { durationMs, details: { originalAlertId: existing.alertId } }
+    );
+
+    // Recovery 的 incidentStatus 强制为 resolved
+    recoveryAlert.incidentStatus = "resolved";
 
     try {
       await outbox.writeAlert(recoveryAlert);
       await outbox.markResolved(existing.alertId);
-      _markClosed(type);
+      _markClosed(dedupeKey);
 
       if (logger) {
         logger.info("[AlertNotifier] 恢复告警已创建", {
           alertId: recoveryAlert.id,
-          originalType: type,
+          incidentKey,
           originalAlertId: existing.alertId,
+          durationMs,
         });
       }
       return recoveryAlert;
     } catch (err) {
       if (logger) {
-        logger.error("[AlertNotifier] 恢复告警写入 outbox 失败", {
-          type,
-          error: err.message,
-        });
+        logger.error("[AlertNotifier] 恢复告警写入失败", { incidentKey, error: err.message });
       }
-      return null;
+      throw err;
     }
   }
 
   /**
-   * 通知非致命警告。
+   * 通知非致命 warning。
    *
-   * 重复警告不防重复（每次都可以创建），但使用稳定 alertId，
-   * 因此同类型警告会覆盖之前的 pending 文件。
-   *
-   * @param {string} type - 告警类型
-   * @param {string} message - 人类可读消息
-   * @param {object} [details] - 额外信息
-   * @returns {Promise<object|null>}
+   * 不进入 _openIncidents（不影响 hasOpenFatalIncident）。
+   * 使用独立 incidentKey/dedupeKey，不覆盖历史 warning 文件。
+   * 每次独立创建新文件。
    */
-  async function notifyWarning(type, message, details = {}) {
-    // 警告不进入 _openIncidents 防重复，每次独立记录
-    const alert = _buildAlert(type, "warning", message, details);
+  async function notifyWarning(incidentKey, message, details = {}) {
+    const dedupeKey = incidentKey + "_warning";
+    const alert = _buildBase(incidentKey, "warning", "warning", dedupeKey, message, details);
+    // warning 不视为 open incident
+    alert.incidentStatus = "resolved";
 
     try {
       await outbox.writeAlert(alert);
       if (logger) {
         logger.warn("[AlertNotifier] 警告已创建", {
           alertId: alert.id,
-          type,
+          incidentKey,
           message,
         });
       }
       return alert;
     } catch (err) {
       if (logger) {
-        logger.error("[AlertNotifier] 警告写入 outbox 失败", {
-          type,
-          error: err.message,
-        });
+        logger.error("[AlertNotifier] 警告写入失败", { incidentKey, error: err.message });
       }
-      return null;
+      throw err;
     }
   }
 
   /**
-   * 发送 service_ready_after_restart 通知。
+   * notifyReady：服务正常运行通知。
    *
-   * 仅在进程重启后没有任何未解决 fatal 告警时发送。
-   * 如果有未解决 fatal 告警，改为发送 gateway_recovered。
+   * 策略：
+   * - 有上一轮未解决 fatal incident → 对其逐个发送 recovery
+   * - 无未解决 incident → 发送独立 service_operational 通知
    *
-   * @returns {Promise<void>}
+   * 使用 severity="info"，deliveryStatus="pending"。
    */
   async function notifyReadyAfterRestart() {
-    const hasOpenFatal = [..._openIncidents.keys()].some(
-      (type) => type !== "application_emoji_unavailable" // 非致命降级不算
-    );
-
-    if (hasOpenFatal) {
-      // 之前的故障在重启后解决了 → 发送恢复
-      for (const [type, incident] of _openIncidents) {
-        await notifyRecovery(type, "服务重启后 Gateway 已恢复 Ready 且 Preflight 通过");
+    if (_openIncidents.size > 0) {
+      // 存在上一轮未关闭的 incident → 发送 recovery
+      for (const [dedupeKey, incident] of _openIncidents) {
+        try {
+          await notifyRecovery(incident.incidentKey, "服务重启后 Gateway 已恢复 Ready 且 Preflight 通过");
+        } catch (err) {
+          if (logger) {
+            logger.error("[AlertNotifier] Ready 后发送 recovery 失败", {
+              dedupeKey, error: err.message,
+            });
+          }
+        }
       }
     } else {
-      // 干净启动
-      const alert = _buildAlert(
-        "service_ready_after_restart",
-        "fatal", // 使用 fatal severity 以确保 Hermes 关注
-        "TeaParty-Bell 服务已正常启动，Preflight 通过",
-        {}
+      // 干净启动 → service_operational
+      const alert = _buildBase(
+        "service_operational", "ready", "info", "service_operational",
+        "TeaParty-Bell 服务已正常启动，Preflight 通过", {}
       );
-      alert.status = "resolved"; // 直接标记为已解决——仅用于通知
-      alert.id = "service_ready_after_restart";
-
       try {
         await outbox.writeAlert(alert);
         if (logger) {
-          logger.info("[AlertNotifier] 服务就绪通知已创建", {
-            alertId: alert.id,
-          });
+          logger.info("[AlertNotifier] service_operational 已创建", { alertId: alert.id });
         }
       } catch (err) {
         if (logger) {
-          logger.error("[AlertNotifier] 服务就绪通知写入失败", {
-            error: err.message,
-          });
+          logger.error("[AlertNotifier] service_operational 写入失败", { error: err.message });
         }
+        throw err;
       }
     }
   }
 
-  /**
-   * 查询是否有未解决的 fatal 告警。
-   */
   function hasOpenFatalIncident() {
     return _openIncidents.size > 0;
   }
 
-  /**
-   * 获取当前所有打开 incident 的列表。
-   */
   function getOpenIncidents() {
     return new Map(_openIncidents);
   }
@@ -337,19 +294,4 @@ export function createProductionAlertNotifier(options) {
     hasOpenFatalIncident,
     getOpenIncidents,
   };
-}
-
-/**
- * 生成告警 alertId 的辅助函数。
- * 基于 type + 可选唯一后缀生成稳定 ID。
- *
- * 用于调用方在构造告警前预知 alertId。
- */
-export function makeAlertId(type, suffix) {
-  const base = type.replace(/[^a-zA-Z0-9_-]/g, "_");
-  if (suffix) {
-    const safeSuffix = String(suffix).replace(/[^a-zA-Z0-9_-]/g, "_");
-    return `${base}_${safeSuffix}`;
-  }
-  return base;
 }

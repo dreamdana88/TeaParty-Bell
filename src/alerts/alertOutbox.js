@@ -1,60 +1,72 @@
 /**
  * Alert Outbox（TeaParty-Bell 生产告警持久化信箱）。
  *
- * 职责：
- * - 每条告警独立一个 JSON 文件，存储在 data/runtime/alerts/
- * - atomic write（tmp → rename）
- * - 串行化写操作
- * - schema 校验（加载时 fail closed）
- * - 按 alertId 查找、更新、标记 resolved/delivered
- * - 支持跨重启识别未解决 incident
+ * Alert file schema (v2):
+ *   id              — unique per incident file
+ *   incidentKey     — stable key for cross-restart dedup
+ *   dedupeKey       — dedup within same incident round
+ *   event           — failure | warning | recovery | ready | integration_test
+ *   deliveryStatus  — pending | delivered | delivery_failed
+ *   incidentStatus  — open | resolved
  *
- * 不依赖：
- * - Discord
- * - AI
- * - Boost Feature
- * - Hermes
+ * 每条告警独立一个 JSON 文件，存储在 data/runtime/alerts/
+ * atomic write（tmp → rename） + 串行化写队列。
+ * 加载时 fail closed（空文件 / JSON 损坏 / schema 非法 → 抛错）。
  */
 
-import { readFileSync, writeFileSync, renameSync, existsSync, unlinkSync, mkdirSync, readdirSync } from "fs";
-import { join, dirname, basename } from "path";
+import { readFileSync, writeFileSync, renameSync, existsSync, mkdirSync, readdirSync, accessSync, constants } from "fs";
+import { join } from "path";
 
 // ---- 常量 ----
 
-const FILE_VERSION = 1;
+const FILE_VERSION = 2;
 
-const VALID_SEVERITIES = new Set(["fatal", "warning"]);
-const VALID_STATUSES = new Set(["pending", "delivered", "resolved", "delivery_failed"]);
+const VALID_EVENTS = new Set([
+  "failure", "warning", "recovery", "ready", "integration_test",
+]);
+
+const VALID_DELIVERY_STATUSES = new Set([
+  "pending", "delivered", "delivery_failed",
+]);
+
+const VALID_INCIDENT_STATUSES = new Set([
+  "open", "resolved",
+]);
+
+const VALID_SEVERITIES = new Set(["fatal", "warning", "info"]);
 
 const ALERT_FILE_EXT = ".json";
 
-// ---- 工具：alertId 安全校验 ----
+// ---- 错误类型 ----
 
-/**
- * 校验 alertId 是否安全作为文件名使用。
- * 只允许字母、数字、连字符和下划线。
- * 防止目录遍历和特殊字符注入。
- */
+export class OutboxError extends Error {
+  constructor(message, code, opts = {}) {
+    super(message);
+    this.name = "OutboxError";
+    this.code = code;
+    this.cause = opts.cause ?? null;
+  }
+}
+
+// ---- 工具 ----
+
 function validateAlertId(id) {
   if (typeof id !== "string" || id.length === 0) {
-    throw new Error("alertId 必须为非空字符串");
+    throw new OutboxError("alertId 必须为非空字符串", "invalid_id");
   }
   if (!/^[a-zA-Z0-9_-]+$/.test(id)) {
-    throw new Error(`alertId 包含非法字符（仅允许 a-z A-Z 0-9 _ -）：${id}`);
+    throw new OutboxError(
+      `alertId 包含非法字符（仅允许 a-z A-Z 0-9 _ -）：${id}`,
+      "invalid_id"
+    );
   }
   if (id.length > 128) {
-    throw new Error(`alertId 过长（最大 128 字符）：${id.length}`);
+    throw new OutboxError(`alertId 过长（最大 128 字符）：${id.length}`, "invalid_id");
   }
 }
 
 // ---- 工厂 ----
 
-/**
- * 创建 Alert Outbox 实例。
- *
- * @param {{ alertsDir: string, logger?: object }} options
- * @returns {object} Outbox 实例
- */
 export function createAlertOutbox(options) {
   const { alertsDir, logger } = options;
 
@@ -76,25 +88,51 @@ export function createAlertOutbox(options) {
   }
 
   /**
+   * 验证目录可写性。
+   * 抛错 → 调用方应走 exit 78。
+   */
+  function verifyWritable() {
+    _ensureDir();
+    try {
+      accessSync(alertsDir, constants.R_OK | constants.W_OK);
+    } catch (err) {
+      throw new OutboxError(
+        `告警目录不可读写：${alertsDir}（${err.message}）`,
+        "dir_not_accessible",
+        { cause: err }
+      );
+    }
+  }
+
+  /**
    * 原子写入单条告警文件。
-   * 调用方必须通过 _enqueueWrite 串行化。
+   * version 在此处注入，调用方无法覆盖。
    */
   function _saveAlertFile(alert) {
     _ensureDir();
     const filePath = _filePath(alert.id);
     const tmpPath = filePath + ".tmp";
-    const json = JSON.stringify(alert, null, 2);
-    writeFileSync(tmpPath, json, "utf-8");
-    renameSync(tmpPath, filePath);
+
+    // 强制注入 version（防止调用方覆盖）
+    const toSave = { ...alert, version: FILE_VERSION };
+    const json = JSON.stringify(toSave, null, 2);
+
+    try {
+      writeFileSync(tmpPath, json, "utf-8");
+      renameSync(tmpPath, filePath);
+    } catch (err) {
+      throw new OutboxError(
+        `告警文件写入失败：${filePath}（${err.message}）`,
+        "write_failed",
+        { cause: err }
+      );
+    }
   }
 
-  /**
-   * 将一次写操作排入队列。
-   */
   function _enqueueWrite(operation) {
     const task = _writeQueue.then(operation);
     _writeQueue = task.catch(() => {
-      // 错误已由 operation 内部记录，防止队列断裂
+      // 错误已由 operation 内部传播；防止队列断裂
     });
     return task;
   }
@@ -103,95 +141,98 @@ export function createAlertOutbox(options) {
   // Schema 校验
   // ========================
 
-  /**
-   * 校验单条告警的结构。
-   * 任何不符 → 抛出异常（fail closed）。
-   */
   function _validateAlert(alert, filePath) {
     const context = filePath ? `（文件：${filePath}）` : "";
 
     if (!alert || typeof alert !== "object" || Array.isArray(alert)) {
-      throw new Error(`告警记录必须为对象${context}`);
+      throw new OutboxError(`告警记录必须为对象${context}`, "schema_invalid");
     }
-
-    // id
     if (typeof alert.id !== "string" || alert.id.length === 0) {
-      throw new Error(`告警缺少有效 id${context}`);
+      throw new OutboxError(`告警缺少有效 id${context}`, "schema_invalid");
     }
-
-    // service
+    if (typeof alert.incidentKey !== "string" || alert.incidentKey.length === 0) {
+      throw new OutboxError(`告警缺少有效 incidentKey${context}`, "schema_invalid");
+    }
     if (typeof alert.service !== "string" || alert.service.length === 0) {
-      throw new Error(`告警缺少有效 service${context}`);
+      throw new OutboxError(`告警缺少有效 service${context}`, "schema_invalid");
     }
-
-    // type
     if (typeof alert.type !== "string" || alert.type.length === 0) {
-      throw new Error(`告警缺少有效 type${context}`);
+      throw new OutboxError(`告警缺少有效 type${context}`, "schema_invalid");
     }
-
-    // severity
+    if (!VALID_EVENTS.has(alert.event)) {
+      throw new OutboxError(
+        `告警 event 非法："${alert.event}"${context}`, "schema_invalid"
+      );
+    }
     if (!VALID_SEVERITIES.has(alert.severity)) {
-      throw new Error(
-        `告警 severity 非法："${alert.severity}"，合法值：${[...VALID_SEVERITIES].join(" | ")}${context}`
+      throw new OutboxError(
+        `告警 severity 非法："${alert.severity}"${context}`, "schema_invalid"
       );
     }
-
-    // status
-    if (!VALID_STATUSES.has(alert.status)) {
-      throw new Error(
-        `告警 status 非法："${alert.status}"，合法值：${[...VALID_STATUSES].join(" | ")}${context}`
+    if (!VALID_DELIVERY_STATUSES.has(alert.deliveryStatus)) {
+      throw new OutboxError(
+        `告警 deliveryStatus 非法："${alert.deliveryStatus}"${context}`, "schema_invalid"
       );
     }
-
-    // startedAt
+    if (!VALID_INCIDENT_STATUSES.has(alert.incidentStatus)) {
+      throw new OutboxError(
+        `告警 incidentStatus 非法："${alert.incidentStatus}"${context}`, "schema_invalid"
+      );
+    }
     if (typeof alert.startedAt !== "number" || alert.startedAt <= 0) {
-      throw new Error(`告警缺少有效 startedAt${context}`);
+      throw new OutboxError(`告警缺少有效 startedAt${context}`, "schema_invalid");
     }
-
-    // occurredAt
     if (typeof alert.occurredAt !== "number" || alert.occurredAt <= 0) {
-      throw new Error(`告警缺少有效 occurredAt${context}`);
+      throw new OutboxError(`告警缺少有效 occurredAt${context}`, "schema_invalid");
     }
-
-    // message
     if (typeof alert.message !== "string" || alert.message.length === 0) {
-      throw new Error(`告警缺少有效 message${context}`);
+      throw new OutboxError(`告警缺少有效 message${context}`, "schema_invalid");
     }
-  }
-
-  /**
-   * 校验 version 字段。
-   */
-  function _validateVersion(alert, filePath) {
-    const context = filePath ? `（文件：${filePath}）` : "";
-    if (alert.version !== FILE_VERSION) {
-      throw new Error(
-        `告警 version 不匹配（期望 ${FILE_VERSION}，实际 ${alert.version}）${context}`
+    // version 由 outbox 注入，必须在顶层
+    if (typeof alert.version !== "number" || alert.version !== FILE_VERSION) {
+      throw new OutboxError(
+        `告警 version 不匹配（期望 ${FILE_VERSION}，实际 ${alert.version}）${context}`,
+        "schema_invalid"
       );
     }
   }
 
+  // ========================
+  // 文件加载（区分错误类型）
+  // ========================
+
   /**
-   * 从文件加载并校验单条告警。
-   *
-   * @param {string} filePath
-   * @returns {object} 校验通过的告警对象
-   * @throws {Error} 文件损坏或 schema 非法
+   * 读取原始文件内容。文件不存在返回 null。
    */
-  function _loadAlertFile(filePath) {
-    let raw;
+  function _readRaw(filePath) {
     try {
-      raw = readFileSync(filePath, "utf-8");
+      return readFileSync(filePath, "utf-8");
     } catch (err) {
-      throw new Error(
-        `无法读取告警文件：${filePath}（${err.message}）`
+      if (err.code === "ENOENT") return null;
+      throw new OutboxError(
+        `无法读取告警文件：${filePath}（${err.message}）`,
+        "read_error",
+        { cause: err }
+      );
+    }
+  }
+
+  function _loadAlertFile(filePath) {
+    const raw = _readRaw(filePath);
+
+    // 文件不存在
+    if (raw === null) {
+      throw new OutboxError(
+        `告警文件不存在：${filePath}`,
+        "file_not_found"
       );
     }
 
     // 空文件 → 损坏
     if (raw.trim() === "") {
-      throw new Error(
-        `告警文件为空（可能磁盘损坏）：${filePath}。请手动检查。`
+      throw new OutboxError(
+        `告警文件为空（可能磁盘损坏）：${filePath}。请手动检查。`,
+        "schema_corrupt"
       );
     }
 
@@ -199,14 +240,14 @@ export function createAlertOutbox(options) {
     try {
       alert = JSON.parse(raw);
     } catch (err) {
-      throw new Error(
-        `告警文件 JSON 损坏：${filePath}（${err.message}）。请手动检查。`
+      throw new OutboxError(
+        `告警文件 JSON 损坏：${filePath}（${err.message}）。请手动检查。`,
+        "schema_corrupt",
+        { cause: err }
       );
     }
 
-    _validateVersion(alert, filePath);
     _validateAlert(alert, filePath);
-
     return alert;
   }
 
@@ -214,14 +255,6 @@ export function createAlertOutbox(options) {
   // 公开 API
   // ========================
 
-  /**
-   * 列出 data/runtime/alerts/ 目录下所有告警文件。
-   *
-   * 文件损坏时抛出异常（fail closed），不静默跳过。
-   *
-   * @returns {object[]} 校验通过的所有告警数组
-   * @throws {Error} 任何文件损坏
-   */
   function loadAllAlerts() {
     _ensureDir();
     const files = readdirSync(alertsDir).filter((f) => f.endsWith(ALERT_FILE_EXT));
@@ -237,48 +270,57 @@ export function createAlertOutbox(options) {
     return alerts;
   }
 
-  /**
-   * 查找一条告警（同步，不读文件——只在内存中查找已加载的告警）。
-   * 如需从文件加载，先调用 loadAllAlerts()。
-   *
-   * @param {string} alertId
-   * @param {object[]} loadedAlerts - 由 loadAllAlerts() 返回的告警数组
-   * @returns {object|undefined}
-   */
   function findAlert(alertId, loadedAlerts) {
     return loadedAlerts.find((a) => a.id === alertId);
   }
 
   /**
-   * 查找状态为 open（pending）的告警。
-   *
-   * @param {object[]} loadedAlerts
-   * @returns {object[]}
+   * 查找 incidentStatus=open 的告警（用于跨重启恢复）。
    */
-  function findPendingAlerts(loadedAlerts) {
-    return loadedAlerts.filter((a) => a.status === "pending" || a.status === "delivery_failed");
+  function findOpenIncidents(loadedAlerts) {
+    return loadedAlerts.filter((a) => a.incidentStatus === "open");
   }
 
   /**
-   * 写入一条新告警。
-   *
-   * @param {object} alert - 告警对象
-   * @returns {Promise<void>}
+   * 查找 deliveryStatus=pending 或 delivery_failed 的告警。
+   */
+  function findPendingDelivery(loadedAlerts) {
+    return loadedAlerts.filter(
+      (a) => a.deliveryStatus === "pending" || a.deliveryStatus === "delivery_failed"
+    );
+  }
+
+  /**
+   * 写入新告警。若文件已存在则抛出（防止覆盖）。
    */
   function writeAlert(alert) {
     validateAlertId(alert.id);
-    _validateAlert(alert);
-    // 为新写入的告警补上 version
-    const toSave = { version: FILE_VERSION, ...alert };
+
+    // 版本剥离：调用方传入的 version 会被忽略，由 _saveAlertFile 注入
+    const { version: _v, ...clean } = alert;
+    _validateAlert({ ...clean, version: FILE_VERSION });
 
     return _enqueueWrite(() => {
-      _saveAlertFile(toSave);
+      const filePath = _filePath(alert.id);
+      _ensureDir();
+
+      // 防止覆盖已有文件
+      if (existsSync(filePath)) {
+        throw new OutboxError(
+          `告警文件已存在，拒绝覆盖：${filePath}`,
+          "file_exists"
+        );
+      }
+
+      _saveAlertFile(clean);
+
       if (logger) {
         logger.info("[AlertOutbox] 告警已写入", {
           alertId: alert.id,
-          type: alert.type,
-          severity: alert.severity,
-          status: alert.status,
+          incidentKey: alert.incidentKey,
+          event: alert.event,
+          deliveryStatus: alert.deliveryStatus,
+          incidentStatus: alert.incidentStatus,
         });
       }
     });
@@ -286,32 +328,27 @@ export function createAlertOutbox(options) {
 
   /**
    * 更新已有告警。
-   * 读取当前文件、应用 patch、重新写入。
    *
-   * @param {string} alertId
-   * @param {object} patch - 要合并的字段
-   * @returns {Promise<void>}
+   * 文件不存在 → OutboxError("file_not_found")
+   * JSON/Schema 损坏 → OutboxError("schema_corrupt")
+   * 其他读取错误 → OutboxError("read_error")
    */
   function updateAlert(alertId, patch) {
     validateAlertId(alertId);
     const filePath = _filePath(alertId);
 
     return _enqueueWrite(() => {
-      // 读 → 改 → 写（同一队列内，不会有并发问题）
-      let current;
-      try {
-        current = _loadAlertFile(filePath);
-      } catch {
-        // 文件不存在 → 无法更新
-        if (logger) {
-          logger.error("[AlertOutbox] updateAlert 找不到告警文件", { alertId, filePath });
-        }
-        return;
-      }
+      // 读（区分错误类型——全部向上抛，不静默）
+      const current = _loadAlertFile(filePath);
 
-      Object.assign(current, patch, { updatedAt: Date.now() });
-      _validateAlert(current, filePath); // 更新后再次校验
-      _saveAlertFile(current);
+      // 版本剥离 + patch 合并
+      const { version: _v, ...rest } = current;
+      const merged = { ...rest, ...patch, updatedAt: Date.now() };
+
+      // 更新后再次校验
+      _validateAlert({ ...merged, version: FILE_VERSION }, filePath);
+
+      _saveAlertFile(merged);
 
       if (logger) {
         logger.info("[AlertOutbox] 告警已更新", {
@@ -323,62 +360,49 @@ export function createAlertOutbox(options) {
   }
 
   /**
-   * 标记告警为 resolved 并记录恢复时间。
-   *
-   * @param {string} alertId
-   * @returns {Promise<void>}
+   * 标记 incidentStatus=resolved + 记录 recoveryAt。
    */
   function markResolved(alertId) {
     return updateAlert(alertId, {
-      status: "resolved",
+      incidentStatus: "resolved",
       recoveryAt: Date.now(),
     });
   }
 
-  /**
-   * 标记告警为 delivered（Hermes 已取走）。
-   *
-   * @param {string} alertId
-   * @returns {Promise<void>}
-   */
   function markDelivered(alertId) {
-    return updateAlert(alertId, {
-      status: "delivered",
-    });
+    return updateAlert(alertId, { deliveryStatus: "delivered" });
   }
 
-  /**
-   * 标记告警投递失败。
-   *
-   * @param {string} alertId
-   * @returns {Promise<void>}
-   */
   function markDeliveryFailed(alertId) {
-    return updateAlert(alertId, {
-      status: "delivery_failed",
-    });
+    return updateAlert(alertId, { deliveryStatus: "delivery_failed" });
   }
 
-  /**
-   * 等待所有进行中的写操作完成。
-   *
-   * @returns {Promise<void>}
-   */
   async function close() {
     await _writeQueue;
   }
 
   return {
+    verifyWritable,
     loadAllAlerts,
     findAlert,
-    findPendingAlerts,
+    findOpenIncidents,
+    findPendingDelivery,
     writeAlert,
     updateAlert,
     markResolved,
     markDelivered,
     markDeliveryFailed,
     close,
-    // 导出供测试
     _getAlertsDir: () => alertsDir,
   };
+}
+
+/**
+ * 生成唯一的告警文件 ID。
+ */
+export function generateAlertId(incidentKey) {
+  const ts = Date.now();
+  const rand = Math.random().toString(36).slice(2, 8);
+  const safe = incidentKey.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 80);
+  return `${safe}_${ts}_${rand}`;
 }

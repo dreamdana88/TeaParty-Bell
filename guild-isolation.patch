@@ -1,0 +1,250 @@
+From e1e7403987950507cbd9d96e25962828b590391b Mon Sep 17 00:00:00 2001
+From: Hermes Agent <hermes@teaparty-bell.local>
+Date: Wed, 22 Jul 2026 21:59:24 +0800
+Subject: [PATCH] =?UTF-8?q?Phase=209:=20=E5=A2=9E=E5=8A=A0=20Guild=20?=
+ =?UTF-8?q?=E7=99=BD=E5=90=8D=E5=8D=95=E8=BF=87=E6=BB=A4=EF=BC=8C=E9=98=B2?=
+ =?UTF-8?q?=E6=AD=A2=E8=B7=A8=E6=9C=8D=E5=8A=A1=E5=99=A8=20Boost=20?=
+ =?UTF-8?q?=E4=BA=8B=E4=BB=B6=E6=B3=84=E9=9C=B2?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- observer.js: setupBoostObserver 增加 targetGuildId 参数
+- bot.js: 显式注入 config.discordGuildId 作为白名单
+- 非目标 Guild 的 type 8/9/10/11 系统消息均直接忽略
+- observer.test.js: 新增 13 个 Guild 过滤测试（14a-14h）
+- 不传 targetGuildId 时向后兼容
+---
+ src/core/bot.js                           |   3 +-
+ src/features/boostThanks/observer.js      |  11 +-
+ src/features/boostThanks/observer.test.js | 169 ++++++++++++++++++++++
+ 3 files changed, 180 insertions(+), 3 deletions(-)
+
+diff --git a/src/core/bot.js b/src/core/bot.js
+index 33a01c4..deb5c7d 100644
+--- a/src/core/bot.js
++++ b/src/core/bot.js
+@@ -100,7 +100,8 @@ export async function start() {
+     client,
+     logger,
+     config,
+-    (event) => thanksHandler.handleBoostEvent(event)
++    (event) => thanksHandler.handleBoostEvent(event),
++    config.discordGuildId
+   );
+ 
+   // ---- 4. 登录 ----
+diff --git a/src/features/boostThanks/observer.js b/src/features/boostThanks/observer.js
+index 564806e..05fd9f9 100644
+--- a/src/features/boostThanks/observer.js
++++ b/src/features/boostThanks/observer.js
+@@ -60,9 +60,10 @@ export function extractBoostObservation(message) {
+  * @param {object} logger - Logger 实例
+  * @param {object} config - 完整配置对象（含 boostAggregationWindowMs）
+  * @param {Function} [onAggregated] - Phase 6：聚合完成回调 (event) => void
++ * @param {string} [targetGuildId] - Phase 9：目标 Guild 白名单，仅处理该 Guild 的 Boost 事件
+  * @returns {{ destroy: Function }} 返回清理函数供 shutdown 使用
+  */
+-export function setupBoostObserver(client, logger, config, onAggregated) {
++export function setupBoostObserver(client, logger, config, onAggregated, targetGuildId) {
+   const aggregator = createAggregator(config);
+ 
+   // 聚合完成回调
+@@ -100,7 +101,13 @@ export function setupBoostObserver(client, logger, config, onAggregated) {
+       return;
+     }
+ 
+-    // 4. 按消息类型路由
++    // 4. Guild 白名单过滤（Phase 9）：仅处理目标 Guild 的 Boost 事件，
++    //    非目标 Guild 的任何 Boost/Tier 系统消息均直接忽略。
++    if (targetGuildId && observation.guildId !== targetGuildId) {
++      return;
++    }
++
++    // 5. 按消息类型路由
+     if (isCountableBoostType(observation.messageType)) {
+       // 可计数 Boost（type 8）：标准化 → 聚合
+       const boostEvent = normalizeObservation(observation);
+diff --git a/src/features/boostThanks/observer.test.js b/src/features/boostThanks/observer.test.js
+index dee1fe5..fce08b9 100644
+--- a/src/features/boostThanks/observer.test.js
++++ b/src/features/boostThanks/observer.test.js
+@@ -763,6 +763,175 @@ console.log("\n=== 测试 13c：onAggregated 回调抛错不中断 observer 主
+   assert(aggLogs.length >= 2, "聚合日志正常（observer 主流程不受影响）");
+ }
+ 
++// ============================================================
++// 测试 14：Guild 白名单过滤（Phase 9）
++// ============================================================
++
++console.log("\n=== 测试 14：Guild 白名单过滤 ===\n");
++
++const TARGET_GUILD = "target_guild_123";
++const OTHER_GUILD = "other_guild_456";
++
++// --- 14a: 目标 Guild type 8 → 正常进入处理（observer + aggregator）---
++{
++  const mockClient = new MockClient();
++  const mockLogger = makeMockLogger();
++  const cleanup = setupBoostObserver(mockClient, mockLogger, SHORT_WINDOW, undefined, TARGET_GUILD);
++
++  mockClient.emit(Events.MessageCreate, makeMockMessage({
++    type: 8, system: true, guildId: TARGET_GUILD
++  }));
++
++  const boostLogs = mockLogger.calls.filter(
++    c => c.level === "info" && c.msg?.includes("[BoostObserver] 收到可计数 Boost")
++  );
++  assertEqual(boostLogs.length, 1, "14a: 目标 Guild type 8 → 触发可计数日志");
++  assertEqual(boostLogs[0].data.guildId, TARGET_GUILD, "14a: guildId 正确");
++
++  await new Promise(r => setTimeout(r, 30));
++  const aggLogs = mockLogger.calls.filter(
++    c => c.level === "info" && c.msg?.includes("[BoostAggregator]")
++  );
++  assert(aggLogs.length >= 1, "14a: 目标 Guild → 触发聚合");
++  cleanup.destroy();
++}
++
++// --- 14b: 非目标 Guild type 8 → 完全忽略 ---
++{
++  const mockClient = new MockClient();
++  const mockLogger = makeMockLogger();
++  const cleanup = setupBoostObserver(mockClient, mockLogger, SHORT_WINDOW, undefined, TARGET_GUILD);
++
++  mockClient.emit(Events.MessageCreate, makeMockMessage({
++    type: 8, system: true, guildId: OTHER_GUILD
++  }));
++
++  const allBoostLogs = mockLogger.calls.filter(
++    c => c.level === "info" && c.msg?.includes("[BoostObserver]")
++  );
++  assertEqual(allBoostLogs.length, 0, "14b: 非目标 Guild type 8 → 无 BoostObserver 日志");
++
++  await new Promise(r => setTimeout(r, 30));
++  const aggLogs = mockLogger.calls.filter(
++    c => c.level === "info" && c.msg?.includes("[BoostAggregator]")
++  );
++  assertEqual(aggLogs.length, 0, "14b: 非目标 Guild type 8 → 不触发聚合");
++  cleanup.destroy();
++}
++
++// --- 14c: 非目标 Guild type 9 → 完全忽略（不记录 Tier 通知）---
++{
++  const mockClient = new MockClient();
++  const mockLogger = makeMockLogger();
++  const cleanup = setupBoostObserver(mockClient, mockLogger, SHORT_WINDOW, undefined, TARGET_GUILD);
++
++  mockClient.emit(Events.MessageCreate, makeMockMessage({
++    type: 9, system: true, guildId: OTHER_GUILD
++  }));
++
++  const tierLogs = mockLogger.calls.filter(
++    c => c.level === "info" && c.msg?.includes("收到 Tier 通知")
++  );
++  assertEqual(tierLogs.length, 0, "14c: 非目标 Guild type 9 → 无 Tier 通知日志");
++
++  const allBoostLogs = mockLogger.calls.filter(
++    c => c.msg?.includes("[BoostObserver]")
++  );
++  assertEqual(allBoostLogs.length, 0, "14c: 非目标 Guild type 9 → 完全无 BoostObserver 日志");
++  cleanup.destroy();
++}
++
++// --- 14d: 非目标 Guild type 10 → 完全忽略 ---
++{
++  const mockClient = new MockClient();
++  const mockLogger = makeMockLogger();
++  const cleanup = setupBoostObserver(mockClient, mockLogger, SHORT_WINDOW, undefined, TARGET_GUILD);
++
++  mockClient.emit(Events.MessageCreate, makeMockMessage({
++    type: 10, system: true, guildId: OTHER_GUILD
++  }));
++
++  const allBoostLogs = mockLogger.calls.filter(
++    c => c.msg?.includes("[BoostObserver]")
++  );
++  assertEqual(allBoostLogs.length, 0, "14d: 非目标 Guild type 10 → 完全忽略");
++  cleanup.destroy();
++}
++
++// --- 14e: 非目标 Guild type 11 → 完全忽略 ---
++{
++  const mockClient = new MockClient();
++  const mockLogger = makeMockLogger();
++  const cleanup = setupBoostObserver(mockClient, mockLogger, SHORT_WINDOW, undefined, TARGET_GUILD);
++
++  mockClient.emit(Events.MessageCreate, makeMockMessage({
++    type: 11, system: true, guildId: OTHER_GUILD
++  }));
++
++  const allBoostLogs = mockLogger.calls.filter(
++    c => c.msg?.includes("[BoostObserver]")
++  );
++  assertEqual(allBoostLogs.length, 0, "14e: 非目标 Guild type 11 → 完全忽略");
++  cleanup.destroy();
++}
++
++// --- 14f: 非目标 Guild → 不调用 onAggregated 回调 ---
++{
++  const mockClient = new MockClient();
++  const mockLogger = makeMockLogger();
++  let callbackCalled = false;
++  const onAggregated = () => { callbackCalled = true; };
++  const cleanup = setupBoostObserver(mockClient, mockLogger, SHORT_WINDOW, onAggregated, TARGET_GUILD);
++
++  mockClient.emit(Events.MessageCreate, makeMockMessage({
++    type: 8, system: true, guildId: OTHER_GUILD
++  }));
++
++  await new Promise(r => setTimeout(r, 30));
++  assert(!callbackCalled, "14f: 非目标 Guild → onAggregated 未被调用");
++  cleanup.destroy();
++}
++
++// --- 14g: 目标 Guild type 8 → onAggregated 正常调用 ---
++{
++  const mockClient = new MockClient();
++  const mockLogger = makeMockLogger();
++  let callbackCalled = false;
++  const onAggregated = () => { callbackCalled = true; };
++  const cleanup = setupBoostObserver(mockClient, mockLogger, SHORT_WINDOW, onAggregated, TARGET_GUILD);
++
++  mockClient.emit(Events.MessageCreate, makeMockMessage({
++    type: 8, system: true, guildId: TARGET_GUILD
++  }));
++
++  await new Promise(r => setTimeout(r, 30));
++  assert(callbackCalled, "14g: 目标 Guild type 8 → onAggregated 正常调用");
++  cleanup.destroy();
++}
++
++// --- 14h: 不传 targetGuildId → 向后兼容（所有 Guild 都处理）---
++{
++  const mockClient = new MockClient();
++  const mockLogger = makeMockLogger();
++  const cleanup = setupBoostObserver(mockClient, mockLogger, SHORT_WINDOW);
++
++  mockClient.emit(Events.MessageCreate, makeMockMessage({
++    type: 8, system: true, guildId: OTHER_GUILD
++  }));
++
++  const boostLogs = mockLogger.calls.filter(
++    c => c.level === "info" && c.msg?.includes("[BoostObserver] 收到可计数 Boost")
++  );
++  assertEqual(boostLogs.length, 1, "14h: 无 targetGuildId → 非目标 Guild 也处理（向后兼容）");
++
++  await new Promise(r => setTimeout(r, 30));
++  const aggLogs = mockLogger.calls.filter(
++    c => c.level === "info" && c.msg?.includes("[BoostAggregator]")
++  );
++  assert(aggLogs.length >= 1, "14h: 无 targetGuildId → 聚合正常");
++  cleanup.destroy();
++}
++
+ // ============================================================
+ // Summary
+ // ============================================================
+-- 
+2.47.3
+
