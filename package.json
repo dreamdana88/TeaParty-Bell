@@ -8,6 +8,7 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
+    "test": "node scripts/run-tests.mjs",
     "test:ai": "node scripts/test-ai.js",
     "export:emojis": "node scripts/export-guild-emojis.js",
     "test:copy": "node scripts/test-copy.js",

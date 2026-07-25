@@ -1,0 +1,56 @@
+# TeaParty-Bell systemd User Service（部署模板）
+#
+# 此文件是部署模板，不含真实凭证或路径。
+# 部署到 VPS 时需要根据实际环境修改路径和变量。
+#
+# 部署步骤：
+# 1. 复制到 ~/.config/systemd/user/teaparty-bell.service
+# 2. 修改 WorkingDirectory 为实际项目路径
+# 3. 确认 Environment 中的环境变量（不要在此文件中写入 Token）
+# 4. systemctl --user daemon-reload
+# 5. systemctl --user restart teaparty-bell
+#
+# 查看日志：
+# journalctl --user -u teaparty-bell -n 200 --no-pager
+# journalctl --user -u teaparty-bell -f
+#
+
+[Unit]
+Description=TeaParty-Bell 茶会钟声（小G宝）Discord Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# ---- 项目路径（部署时填写实际路径）----
+WorkingDirectory=/home/YOUR_USER/TeaParty-Bell
+
+# ---- 启动命令 ----
+ExecStart=/usr/bin/node src/index.js
+
+# ---- 运行环境（生产部署必须设置 NODE_ENV=production）----
+Environment=NODE_ENV=production
+
+# ---- 优雅关闭 ----
+KillSignal=SIGTERM
+KillMode=process
+TimeoutStopSec=30
+
+# ---- 自动重启策略 ----
+# Restart=on-failure：进程以非 0 退出码退出时自动重启
+# 但 exit 78（永久性配置故障）不重启，防止无限重启循环
+Restart=on-failure
+RestartSec=10s
+RestartPreventExitStatus=78
+
+# ---- 不启用 WatchdogSec ----
+# 当前阶段不实现 sd_notify WATCHDOG=1。
+# 仅靠 Gateway Health Monitor + exit(1) + systemd restart 实现恢复。
+
+# ---- 系统资源（可选约束）----
+# MemoryHigh=256M
+# CPUQuota=50%
+
+[Install]
+WantedBy=default.target

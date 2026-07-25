@@ -21,13 +21,33 @@ const REQUIRED_CONFIG = [
 ];
 
 /**
+ * 合法的 NODE_ENV 值。
+ * 未设置时默认 "development"。
+ */
+const VALID_NODE_ENVS = new Set(["development", "test", "production"]);
+
+/**
  * 读取配置并校验必填项。
  *
  * @returns {object} 完整配置对象
  * @throws {Error} 如有必填配置缺失
  */
 export function loadConfig() {
+  // ---- NODE_ENV ----
+  const rawNodeEnv = (process.env.NODE_ENV || "").trim().toLowerCase();
+  const nodeEnv = VALID_NODE_ENVS.has(rawNodeEnv) ? rawNodeEnv : "development";
+
+  if (rawNodeEnv && !VALID_NODE_ENVS.has(rawNodeEnv)) {
+    console.warn(
+      `无效的 NODE_ENV "${rawNodeEnv}"，已回退为 "development"。合法值：development | test | production`
+    );
+  }
+
   const config = {
+    // ---- 运行环境 ----
+    nodeEnv,
+    isProduction: nodeEnv === "production",
+
     // Discord
     discordBotToken: process.env.DISCORD_BOT_TOKEN,
     discordApplicationId: process.env.DISCORD_APPLICATION_ID,

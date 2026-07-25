@@ -26,6 +26,9 @@ export function createClient() {
   });
 
   // ---- 就绪事件 ----
+  /** @type {Promise<void>|null} Ready Promise，供 waitUntilReady() 使用 */
+  let _readyPromise = null;
+
   client.once(Events.ClientReady, (readyClient) => {
     logger.info("Discord BOT 已就绪", {
       tag: readyClient.user.tag,
@@ -65,5 +68,26 @@ export function createClient() {
     logger.info("Discord 连接已关闭");
   }
 
-  return { client, login, destroy };
+  /**
+   * 等待首次 ClientReady 事件。
+   *
+   * 返回一个 Promise，在 ClientReady 后 resolve。
+   * 多次调用返回同一个 Promise。
+   * 如果 client 已经 Ready（如测试环境），立即 resolve。
+   *
+   * @returns {Promise<void>}
+   */
+  function waitUntilReady() {
+    if (_readyPromise) return _readyPromise;
+    if (client.isReady()) {
+      _readyPromise = Promise.resolve();
+      return _readyPromise;
+    }
+    _readyPromise = new Promise((resolve) => {
+      client.once(Events.ClientReady, () => resolve());
+    });
+    return _readyPromise;
+  }
+
+  return { client, login, destroy, waitUntilReady };
 }
