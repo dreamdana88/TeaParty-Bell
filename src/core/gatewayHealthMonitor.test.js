@@ -199,5 +199,101 @@ function makeFakeClient(opts = {}) {
   m.stop();
 }
 
+// ===== Test 12: startup timeout 告警写盘失败 → exit 78 =====
+{
+  let exitCode = null;
+  const client = makeFakeClient({ ready: false, wsStatus: 1, ping: null });
+  const m = createGatewayHealthMonitor({ client,
+    notifyFailure: async () => { throw new Error("disk full"); },
+    notifyRecovery: async () => {},
+    exitFn: c => { exitCode = c; },
+    logger: { info:()=>{},error:()=>{},warn:()=>{},debug:()=>{} },
+    checkIntervalMs: 30, startupGraceMs: 80, unhealthyThresholdMs: 200,
+    alertPersistenceFailureExitCode: 78,
+  });
+  m.start();
+  await new Promise(r => setTimeout(r, 200));
+  assertEqual(exitCode, 78, "startup timeout 告警持久化失败 → exit 78");
+  m.stop();
+}
+
+// ===== Test 13: unhealthy 告警写盘失败 → exit 78 =====
+{
+  let exitCode = null;
+  const client = makeFakeClient({ ready: true, wsStatus: 0, ping: 48 });
+  const failures = [];
+  const m = createGatewayHealthMonitor({ client,
+    notifyFailure: async (t, msg) => { failures.push(t); throw new Error("disk full"); },
+    notifyRecovery: async () => {},
+    exitFn: c => { exitCode = c; },
+    logger: { info:()=>{},error:()=>{},warn:()=>{},debug:()=>{} },
+    checkIntervalMs: 30, startupGraceMs: 5000, unhealthyThresholdMs: 60,
+    alertPersistenceFailureExitCode: 78,
+  });
+  m.start(); m.onReady();
+  client._ready = false; client._wsStatus = 1;
+  await new Promise(r => setTimeout(r, 200));
+  assertEqual(exitCode, 78, "unhealthy 告警持久化失败 → exit 78");
+  m.stop();
+}
+
+// ===== Test 14: Recovery 写盘失败 → exit 78 =====
+{
+  let exitCode = null;
+  const client = makeFakeClient({ ready: true, wsStatus: 0, ping: 48 });
+  let failureCreated = false;
+  const m = createGatewayHealthMonitor({ client,
+    notifyFailure: async (t, msg) => { failureCreated = true; },
+    notifyRecovery: async () => { throw new Error("recovery write failed"); },
+    exitFn: c => { exitCode = c; },
+    logger: { info:()=>{},error:()=>{},warn:()=>{},debug:()=>{} },
+    checkIntervalMs: 30, startupGraceMs: 5000, unhealthyThresholdMs: 50,
+    alertPersistenceFailureExitCode: 78,
+  });
+  m.start(); m.onReady();
+
+  // 先触发 failure
+  client._ready = false; client._wsStatus = 1;
+  await new Promise(r => setTimeout(r, 120));
+
+  // 恢复
+  client._ready = true; client._wsStatus = 0;
+  await new Promise(r => setTimeout(r, 150));
+
+  assert(failureCreated, "failure 已创建");
+  assertEqual(exitCode, 78, "Recovery 持久化失败 → exit 78");
+  m.stop();
+}
+
+// ===== Test 15: Recovery resolve → 只调用一次, failure 状态清除 =====
+{
+  let recoveryCallCount = 0;
+  let failureCreated = false;
+  const callOrder = [];
+  const client = makeFakeClient({ ready: true, wsStatus: 0, ping: 48 });
+  const m = createGatewayHealthMonitor({ client,
+    notifyFailure: async (t, msg) => { failureCreated = true; },
+    notifyRecovery: async () => { recoveryCallCount++; },
+    exitFn: () => { callOrder.push("exit"); },
+    logger: { info:()=>{},error:()=>{},warn:()=>{},debug:()=>{} },
+    checkIntervalMs: 30, startupGraceMs: 5000, unhealthyThresholdMs: 50,
+  });
+  m.start(); m.onReady();
+
+  // unhealthy → exit(1) after threshold
+  client._ready = false; client._wsStatus = 1;
+  await new Promise(r => setTimeout(r, 120));
+
+  // healthy → recovery fires
+  client._ready = true; client._wsStatus = 0;
+  await new Promise(r => setTimeout(r, 150));
+
+  assert(failureCreated, "failure created");
+  assertEqual(recoveryCallCount, 1, "recovery called exactly once");
+  // unhealthy exit(1) fires, but recovery succeeds (no additional exit)
+  assert(callOrder.filter(x => x === "exit").length === 1, "exactly 1 exit call (from unhealthy)");
+  m.stop();
+}
+
 console.log(`\n[gatewayHealthMonitor.test] ${passed} passed / ${failed} failed`);
 if (failed > 0) process.exit(1);

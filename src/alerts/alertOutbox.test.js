@@ -5,7 +5,7 @@
  */
 
 import { createAlertOutbox, generateAlertId, OutboxError } from "./alertOutbox.js";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, unlinkSync } from "fs";
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, unlinkSync, renameSync, existsSync, readdirSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 
@@ -348,26 +348,84 @@ console.log(`[alertOutbox.test] 临时目录：${testDir}`);
   assertThrows(() => outbox2.writeAlert({...base, id:generateAlertId("s"), ping:-1}), "ping=-1 → schema_invalid");
   assertThrows(() => outbox2.writeAlert({...base, id:generateAlertId("s"), ping:Infinity}), "ping=Infinity → schema_invalid");
 
+  // 时间戳 NaN/Infinity
+  assertThrows(() => outbox2.writeAlert({...base, id:generateAlertId("s"), startedAt:Infinity}), "startedAt=Infinity → schema_invalid");
+  assertThrows(() => outbox2.writeAlert({...base, id:generateAlertId("s"), occurredAt:NaN}), "occurredAt=NaN → schema_invalid");
+  assertThrows(() => outbox2.writeAlert({...base, id:generateAlertId("s"), updatedAt:Infinity}), "updatedAt=Infinity → schema_invalid");
+  assertThrows(() => outbox2.writeAlert({...base, id:generateAlertId("s"), recoveryAt:Infinity}), "recoveryAt=Infinity → schema_invalid");
+
   await outbox2.close();
   rmSync(dir2, { recursive: true, force: true });
 }
 
 // ======================
-// verifyWritable probe test (Fix 5)
+// verifyWritable probe tests (Fix 4+5)
 // ======================
 
 {
   // 正常目录 → probe 成功
   const dir2 = tmpDir();
   const outbox2 = createAlertOutbox({ alertsDir: dir2 });
-  outbox2.verifyWritable(); // 不应抛错
+  outbox2.verifyWritable();
   passed++; console.log("  PASS: verifyWritable probe 正常目录成功");
 
-  // 验证 probe 文件未残留
   const { readdirSync } = await import("fs");
   const files = readdirSync(dir2);
   assert(!files.some(f => f.startsWith("_probe_")), "probe 文件未残留");
 
+  await outbox2.close();
+  rmSync(dir2, { recursive: true, force: true });
+}
+
+// probe unlink 失败 → 抛 OutboxError
+{
+  const dir2 = tmpDir();
+  let unlinkCalled = false;
+  const failingFs = {
+    writeFileSync: (...a) => writeFileSync(...a),
+    renameSync: (...a) => renameSync(...a),
+    existsSync: (...a) => existsSync(...a),
+    unlinkSync: () => { unlinkCalled = true; throw new Error("unlink denied"); },
+    readdirSync: (...a) => readdirSync(...a),
+  };
+  const outbox2 = createAlertOutbox({ alertsDir: dir2, fsOps: failingFs });
+  try {
+    outbox2.verifyWritable();
+    failed++; console.error("  FAIL: probe unlink 失败应抛 OutboxError");
+  } catch (err) {
+    assert(err instanceof OutboxError, "probe unlink 失败 → OutboxError");
+    assertEqual(err.code, "probe_cleanup_failed", "code=probe_cleanup_failed");
+    passed++; console.log("  PASS: probe unlink 失败 → OutboxError(probe_cleanup_failed)");
+  }
+  await outbox2.close();
+  rmSync(dir2, { recursive: true, force: true });
+}
+
+// _saveAlertFile 写入失败 → tmp 不残留
+{
+  const dir2 = tmpDir();
+  let tmpWritten = false;
+  let tmpPathUsed = null;
+  const failingFs = {
+    writeFileSync: (tmpPath, ...a) => { tmpWritten = true; tmpPathUsed = tmpPath; writeFileSync(tmpPath, ...a); },
+    renameSync: () => { throw new Error("rename failed"); },
+    existsSync: (...a) => existsSync(...a),
+    unlinkSync: (...a) => unlinkSync(...a),
+    readdirSync: (...a) => readdirSync(...a),
+  };
+  const outbox2 = createAlertOutbox({ alertsDir: dir2, fsOps: failingFs });
+  try {
+    await outbox2.writeAlert(makeAlert());
+    failed++; console.error("  FAIL: rename 失败应抛 OutboxError");
+  } catch (err) {
+    assert(err instanceof OutboxError, "rename 失败 → OutboxError");
+    assertEqual(err.code, "write_failed", "code=write_failed");
+    // tmp 文件已被清理
+    if (tmpPathUsed) {
+      assert(!existsSync(tmpPathUsed), "rename 失败后 tmp 已清理");
+    }
+    passed++; console.log("  PASS: _saveAlertFile rename 失败 → tmp 已清理");
+  }
   await outbox2.close();
   rmSync(dir2, { recursive: true, force: true });
 }

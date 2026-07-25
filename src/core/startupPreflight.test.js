@@ -218,5 +218,17 @@ function makeFakeClient(guildOverride = null, systemChOverride = null, thanksChO
   assertEqual(exitCode, 78, "Unknown Channel (404) → exit 78");
 }
 
+// ===== Test 15: Recoverable 告警写盘失败 → exit 78 =====
+{
+  let exitCode = null;
+  const client = makeFakeClient();
+  client.guilds.fetch = async () => { throw Object.assign(new Error("connect ETIMEDOUT"), { code: "ETIMEDOUT" }); };
+  const p = createStartupPreflight({ client, config: makeBaseConfig(), logger: makeMockLogger(),
+    notifyFailure: async () => { throw new Error("disk full"); },
+    notifyWarning: async () => {}, exitFn: c => { exitCode = c; } });
+  await p.run();
+  assertEqual(exitCode, 78, "recoverable 告警持久化失败 → exit 78");
+}
+
 console.log(`\n[startupPreflight.test] ${passed} passed / ${failed} failed`);
 if (failed > 0) process.exit(1);

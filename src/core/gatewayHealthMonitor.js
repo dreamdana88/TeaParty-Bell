@@ -84,6 +84,7 @@ export function createGatewayHealthMonitor(options) {
   let _unhealthySince = null;
   let _lastHealthySummaryAt = null;
   let _hasCreatedFailureAlert = false;
+  let _recoveryInFlight = false;
   let _hasExited = false;
   let _intervalId = null;
 
@@ -213,13 +214,23 @@ export function createGatewayHealthMonitor(options) {
         }
 
         // 只有此前创建了 failure alert 才发送 recovery
-        if (_hasCreatedFailureAlert) {
-          _hasCreatedFailureAlert = false;
+        if (_hasCreatedFailureAlert && !_recoveryInFlight) {
+          _recoveryInFlight = true;
           Promise.resolve()
             .then(() =>
               notifyRecovery("gateway_unhealthy", `Gateway 已恢复健康，持续时间 ${Math.round(duration / 1000)}s`)
             )
-            .catch(() => {});
+            .then(() => {
+              _hasCreatedFailureAlert = false;
+              _recoveryInFlight = false;
+            })
+            .catch((err) => {
+              if (logger) logger.error("[GatewayHealth] Recovery 持久化失败，放弃运行", { error: err.message });
+              _recoveryInFlight = false;
+              // 不清除 _hasCreatedFailureAlert——让跨重启识别
+              _hasExited = true;
+              exitFn(alertPersistenceFailureExitCode);
+            });
         }
       }
 
@@ -354,6 +365,7 @@ export function createGatewayHealthMonitor(options) {
     }
     // 重置状态
     _unhealthySince = null;
+    _recoveryInFlight = false;
     if (logger) {
       logger.info("[GatewayHealth] Monitor 已停止");
     }

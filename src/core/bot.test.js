@@ -425,13 +425,20 @@ function makeFakeClient() {
   // 等待 shutdown 完成
   await new Promise(r => setTimeout(r, 50));
 
-  assert(cleanupOrder.includes("healthmon_stop"), "shutdown: healthmon_stop");
-  assert(cleanupOrder.includes("lifecycle_destroy"), "shutdown: lifecycle_destroy");
-  assert(cleanupOrder.includes("observer_destroy"), "shutdown: observer_destroy");
-  assert(cleanupOrder.includes("store_close"), "shutdown: store_close");
-  assert(cleanupOrder.includes("outbox_close"), "shutdown: outbox_close");
-  assert(cleanupOrder.includes("client_destroy"), "shutdown: client_destroy");
-  assert(cleanupOrder.includes("exit_0"), "shutdown: exit 0");
+  // 验证精确顺序
+  const expectedOrder = [
+    "healthmon_stop",
+    "lifecycle_destroy",
+    "observer_destroy",
+    "store_close",
+    "outbox_close",
+    "client_destroy",
+    "exit_0",
+  ];
+  assertEqual(cleanupOrder.length, expectedOrder.length, `shutdown ${expectedOrder.length} steps`);
+  for (let i = 0; i < expectedOrder.length; i++) {
+    assertEqual(cleanupOrder[i], expectedOrder[i], `shutdown[${i}] = ${expectedOrder[i]}`);
+  }
 }
 
 console.log(`\n[bot.test] ${passed} passed / ${failed} failed`);

@@ -71,7 +71,10 @@ function validateAlertId(id) {
 // ---- 工厂 ----
 
 export function createAlertOutbox(options) {
-  const { alertsDir, logger } = options;
+  const { alertsDir, logger, fsOps } = options;
+  const fs = fsOps ?? {
+    writeFileSync, renameSync, existsSync, unlinkSync, readdirSync,
+  };
 
   /** @type {Promise<void>} 串行写队列链尾 */
   let _writeQueue = Promise.resolve();
@@ -93,6 +96,7 @@ export function createAlertOutbox(options) {
   /**
    * 真实原子写 probe：创建随机 probe.tmp → 写入 → rename → 删除。
    * 任一步失败均抛出 OutboxError("write_probe_failed")。
+   * 删除失败抛出 OutboxError("probe_cleanup_failed")。
    */
   function verifyWritable() {
     _ensureDir();
@@ -101,16 +105,14 @@ export function createAlertOutbox(options) {
     const tmpPath = probePath + ".tmp";
 
     try {
-      // 确保 probe 文件名不与任何现有文件冲突
-      if (existsSync(probePath) || existsSync(tmpPath)) {
+      if (fs.existsSync(probePath) || fs.existsSync(tmpPath)) {
         throw new Error("probe file name collision");
       }
-      writeFileSync(tmpPath, `{"probe":true,"ts":${Date.now()}}`, "utf-8");
-      renameSync(tmpPath, probePath);
+      fs.writeFileSync(tmpPath, `{"probe":true,"ts":${Date.now()}}`, "utf-8");
+      fs.renameSync(tmpPath, probePath);
     } catch (err) {
-      // 清理残留
-      try { if (existsSync(tmpPath)) unlinkSync(tmpPath); } catch {}
-      try { if (existsSync(probePath)) unlinkSync(probePath); } catch {}
+      try { if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath); } catch {}
+      try { if (fs.existsSync(probePath)) fs.unlinkSync(probePath); } catch {}
       throw new OutboxError(
         `告警目录写入 probe 失败：${alertsDir}（${err.message}）`,
         "write_probe_failed",
@@ -118,8 +120,25 @@ export function createAlertOutbox(options) {
       );
     }
 
-    // 成功后删除 probe 文件
-    try { unlinkSync(probePath); } catch {}
+    // 删除 probe 文件
+    try { fs.unlinkSync(probePath); } catch (e) {
+      try { if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath); } catch {}
+      throw new OutboxError(
+        `告警目录 probe 清理失败：${alertsDir}（${e.message}）`,
+        "probe_cleanup_failed",
+        { cause: e }
+      );
+    }
+
+    // 确认完全清理
+    if (fs.existsSync(tmpPath) || fs.existsSync(probePath)) {
+      try { if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath); } catch {}
+      try { if (fs.existsSync(probePath)) fs.unlinkSync(probePath); } catch {}
+      throw new OutboxError(
+        `告警目录 probe 残留未清理：${alertsDir}`,
+        "probe_cleanup_failed"
+      );
+    }
   }
 
   /**
@@ -134,9 +153,11 @@ export function createAlertOutbox(options) {
     const json = JSON.stringify(toSave, null, 2);
 
     try {
-      writeFileSync(tmpPath, json, "utf-8");
-      renameSync(tmpPath, filePath);
+      fs.writeFileSync(tmpPath, json, "utf-8");
+      fs.renameSync(tmpPath, filePath);
     } catch (err) {
+      // 尽力清理残留 tmp
+      try { if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath); } catch {}
       throw new OutboxError(
         `告警文件写入失败：${filePath}（${err.message}）`,
         "write_failed",
@@ -169,10 +190,10 @@ export function createAlertOutbox(options) {
     if (!VALID_SEVERITIES.has(alert.severity)) throw E(`告警 severity 非法："${alert.severity}"`);
     if (!VALID_DELIVERY_STATUSES.has(alert.deliveryStatus)) throw E(`告警 deliveryStatus 非法："${alert.deliveryStatus}"`);
     if (!VALID_INCIDENT_STATUSES.has(alert.incidentStatus)) throw E(`告警 incidentStatus 非法："${alert.incidentStatus}"`);
-    if (typeof alert.startedAt !== "number" || alert.startedAt <= 0) throw E("告警缺少有效 startedAt");
-    if (typeof alert.occurredAt !== "number" || alert.occurredAt <= 0) throw E("告警缺少有效 occurredAt");
-    if (typeof alert.updatedAt !== "number" || alert.updatedAt <= 0) throw E("告警缺少有效 updatedAt");
-    if (alert.recoveryAt !== null && (typeof alert.recoveryAt !== "number" || alert.recoveryAt <= 0)) throw E("告警 recoveryAt 非法（必须为 null 或有效时间戳）");
+    if (typeof alert.startedAt !== "number" || !Number.isFinite(alert.startedAt) || alert.startedAt <= 0) throw E("告警缺少有效 startedAt");
+    if (typeof alert.occurredAt !== "number" || !Number.isFinite(alert.occurredAt) || alert.occurredAt <= 0) throw E("告警缺少有效 occurredAt");
+    if (typeof alert.updatedAt !== "number" || !Number.isFinite(alert.updatedAt) || alert.updatedAt <= 0) throw E("告警缺少有效 updatedAt");
+    if (alert.recoveryAt !== null && (typeof alert.recoveryAt !== "number" || !Number.isFinite(alert.recoveryAt) || alert.recoveryAt <= 0)) throw E("告警 recoveryAt 非法（必须为 null 或有效时间戳）");
     if (typeof alert.message !== "string" || alert.message.length === 0) throw E("告警缺少有效 message");
     if (!alert.details || typeof alert.details !== "object" || Array.isArray(alert.details)) throw E("告警 details 必须为普通对象（非数组）");
     if (typeof alert.durationMs !== "number" || !Number.isFinite(alert.durationMs) || alert.durationMs < 0) throw E("告警 durationMs 非法（必须为非负有限数）");
