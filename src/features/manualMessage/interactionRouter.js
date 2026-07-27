@@ -1,11 +1,16 @@
 import { Events, PermissionFlagsBits } from "discord.js";
 import { logger as defaultLogger } from "../../utils/logger.js";
 import { isManualMessageError } from "./errors.js";
-import { MANUAL_REPLY_COMMAND_NAME } from "./commands.js";
+import {
+  MESSAGE_REPLY_COMMAND_NAME,
+  SLASH_SEND_COMMAND_NAME,
+} from "./commands.js";
 import {
   buildReplyModal,
-  parseReplyModalCustomId,
+  buildSendModal,
+  parseManualModalContext,
   MANUAL_REPLY_MODAL_PREFIX,
+  MANUAL_SEND_MODAL_PREFIX,
 } from "./modalContext.js";
 
 const DEFAULT_HANDLED_INTERACTION_TTL_MS = 10 * 60 * 1000;
@@ -36,15 +41,22 @@ function safeErrorFields(error) {
 function isRecognizedContextMenu(interaction) {
   return typeof interaction?.isMessageContextMenuCommand === "function"
     && interaction.isMessageContextMenuCommand()
-    && interaction.commandName === MANUAL_REPLY_COMMAND_NAME;
+    && interaction.commandName === MESSAGE_REPLY_COMMAND_NAME;
+}
+
+function isRecognizedSlashCommand(interaction) {
+  return typeof interaction?.isChatInputCommand === "function"
+    && interaction.isChatInputCommand()
+    && interaction.commandName === SLASH_SEND_COMMAND_NAME;
 }
 
 function isRecognizedModal(interaction) {
   const customId = interaction?.customId;
+  const prefixes = [MANUAL_REPLY_MODAL_PREFIX, MANUAL_SEND_MODAL_PREFIX];
   return typeof interaction?.isModalSubmit === "function"
     && interaction.isModalSubmit()
     && typeof customId === "string"
-    && (customId === MANUAL_REPLY_MODAL_PREFIX || customId.startsWith(`${MANUAL_REPLY_MODAL_PREFIX}:`));
+    && prefixes.some((prefix) => customId === prefix || customId.startsWith(`${prefix}:`));
 }
 
 export function createManualInteractionRouter({
@@ -184,6 +196,34 @@ export function createManualInteractionRouter({
     }
   }
 
+  async function handleSlashCommand(interaction) {
+    if (!claimInteraction(interaction)) {
+      await respondEphemeral(interaction, DUPLICATE_MESSAGE);
+      return;
+    }
+
+    const failure = accessFailure(interaction);
+    if (failure) {
+      log("warn", `拒绝 Slash Command：${failure.code}`, interaction);
+      await respondEphemeral(interaction, failure.message);
+      return;
+    }
+
+    const modal = buildSendModal({ channelId: interaction.channelId });
+    if (!modal) {
+      log("warn", "Slash Command 当前频道 ID 格式无效", interaction);
+      await respondEphemeral(interaction, INVALID_CONTEXT_MESSAGE);
+      return;
+    }
+
+    try {
+      await interaction.showModal(modal);
+    } catch (error) {
+      log("warn", "打开发言 Modal 失败", interaction, safeErrorFields(error));
+      await respondEphemeral(interaction, GENERIC_FAILURE_MESSAGE);
+    }
+  }
+
   async function handleModalSubmit(interaction) {
     if (!claimInteraction(interaction)) {
       await respondEphemeral(interaction, DUPLICATE_MESSAGE);
@@ -197,7 +237,7 @@ export function createManualInteractionRouter({
       return;
     }
 
-    const context = parseReplyModalCustomId(interaction.customId);
+    const context = parseManualModalContext(interaction.customId);
     if (!context) {
       log("warn", "Modal Context 无效", interaction);
       await respondEphemeral(interaction, INVALID_CONTEXT_MESSAGE);
@@ -222,18 +262,33 @@ export function createManualInteractionRouter({
     };
 
     try {
-      await manualMessageService.reply({
-        guildId: interaction.guildId,
-        channelId: context.channelId,
-        targetMessageId: context.targetMessageId,
-        content,
-        actor,
-        source: "discord_context_menu",
-      });
-      await respondEphemeral(interaction, REPLY_SUCCESS_MESSAGE);
+      if (context.action === "send") {
+        await manualMessageService.send({
+          guildId: interaction.guildId,
+          channelId: context.channelId,
+          content,
+          actor,
+          source: "discord_slash",
+        });
+        await respondEphemeral(interaction, "小G宝已经在当前频道发言。");
+      } else {
+        await manualMessageService.reply({
+          guildId: interaction.guildId,
+          channelId: context.channelId,
+          targetMessageId: context.targetMessageId,
+          content,
+          actor,
+          source: "discord_context_menu",
+        });
+        await respondEphemeral(interaction, REPLY_SUCCESS_MESSAGE);
+      }
     } catch (error) {
       const message = isManualMessageError(error) ? error.safeMessage : GENERIC_FAILURE_MESSAGE;
-      log("warn", "Manual Message Service 回复失败", interaction, safeErrorFields(error));
+      const operationLabel = context.action === "send" ? "发言" : "回复";
+      log("warn", `Manual Message Service ${operationLabel}失败`, interaction, {
+        operation: context.action,
+        ...safeErrorFields(error),
+      });
       await respondEphemeral(interaction, message);
     }
   }
@@ -241,6 +296,10 @@ export function createManualInteractionRouter({
   async function dispatch(interaction) {
     if (isRecognizedContextMenu(interaction)) {
       await handleContextMenu(interaction);
+      return;
+    }
+    if (isRecognizedSlashCommand(interaction)) {
+      await handleSlashCommand(interaction);
       return;
     }
     if (isRecognizedModal(interaction)) {

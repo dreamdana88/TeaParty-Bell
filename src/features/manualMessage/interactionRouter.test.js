@@ -1,6 +1,7 @@
 import { EventEmitter } from "events";
 import { PermissionFlagsBits } from "discord.js";
 import { ManualMessageError } from "./errors.js";
+import { SLASH_SEND_COMMAND_NAME } from "./commands.js";
 import { createManualInteractionRouter } from "./interactionRouter.js";
 
 const GUILD_ID = "111111111111111111";
@@ -30,11 +31,15 @@ function makeClient() {
 }
 function makeInteraction({ kind, id = `interaction-${Math.random()}`, ...overrides } = {}) {
   const calls = [];
+  const isSendModal = kind === "send-modal";
+  const isModal = kind === "modal" || isSendModal;
   const interaction = {
     id,
-    type: kind === "context" ? 3 : kind === "modal" ? 5 : 2,
-    commandName: kind === "context" ? "小G宝回复" : undefined,
-    customId: kind === "modal" ? `manual:v1:reply:${CHANNEL_ID}:${TARGET_MESSAGE_ID}` : undefined,
+    type: kind === "context" ? 3 : isModal ? 5 : 2,
+    commandName: kind === "context" ? "小G宝回复" : kind === "slash" ? SLASH_SEND_COMMAND_NAME : undefined,
+    customId: isSendModal
+      ? `manual:v1:send:${CHANNEL_ID}`
+      : kind === "modal" ? `manual:v1:reply:${CHANNEL_ID}:${TARGET_MESSAGE_ID}` : undefined,
     guildId: GUILD_ID,
     channelId: CHANNEL_ID,
     targetId: TARGET_MESSAGE_ID,
@@ -45,7 +50,8 @@ function makeInteraction({ kind, id = `interaction-${Math.random()}`, ...overrid
     replied: false,
     deferred: false,
     isMessageContextMenuCommand: () => kind === "context",
-    isModalSubmit: () => kind === "modal",
+    isChatInputCommand: () => kind === "slash",
+    isModalSubmit: () => isModal,
     inGuild: () => true,
     reply: async (payload) => {
       calls.push({ method: "reply", payload });
@@ -81,6 +87,10 @@ function makeHarness(service = null, options = {}) {
       replyCalls.push(request);
       return { messageId: "sent-1", ...request, action: "reply" };
     },
+    send: async (request) => {
+      replyCalls.push(request);
+      return { messageId: "sent-1", ...request, action: "send" };
+    },
   };
   const router = createManualInteractionRouter({
     client,
@@ -104,6 +114,45 @@ console.log("\n=== Manual Interaction Router ===\n");
   assertEqual(replyCalls.length, 0, "Context Menu 不直接调用 Service");
   assertEqual(interaction.calls[0]?.method, "showModal", "Context Menu 打开 Modal");
   assertEqual(interaction.calls[0]?.modal.toJSON().custom_id, `manual:v1:reply:${CHANNEL_ID}:${TARGET_MESSAGE_ID}`, "Modal 绑定频道与目标消息");
+  router.destroy();
+}
+
+// Slash Command 只打开当前频道的 Send Modal，不直接调用 Service。
+{
+  const { client, router, replyCalls } = makeHarness();
+  const interaction = makeInteraction({ kind: "slash", id: "slash-1" });
+  client.emit("interactionCreate", interaction);
+  await flush();
+  assertEqual(replyCalls.length, 0, "Slash Command 不直接调用 Service");
+  assertEqual(interaction.calls[0]?.method, "showModal", "Slash Command 打开 Send Modal");
+  const modal = interaction.calls[0]?.modal.toJSON();
+  assertEqual(modal.custom_id, `manual:v1:send:${CHANNEL_ID}`, "Send Modal 使用当前频道 ID");
+  assertEqual(modal.title, "让小G宝发言", "Send Modal 标题");
+  assertEqual(modal.components[0].components[0].label, "发言内容", "Send Modal label");
+  router.destroy();
+}
+
+for (const [overrides, expected, label] of [
+  [{ inGuild: () => false }, "该操作只能在服务器内使用。", "Slash DM 拒绝"],
+  [{ guildId: "999999999999999999" }, "该操作不能用于当前服务器。", "Slash 错误 Guild 拒绝"],
+  [{ memberPermissions: { has: () => false } }, "只有管理员可以使用该操作。", "Slash 非管理员拒绝"],
+]) {
+  const { client, router, replyCalls } = makeHarness();
+  const interaction = makeInteraction({ kind: "slash", id: `slash-${label}`, ...overrides });
+  client.emit("interactionCreate", interaction);
+  await flush();
+  assertEqual(replyCalls.length, 0, `${label} 不调用 Service`);
+  assertEqual(interaction.calls[0]?.payload?.content, expected, label);
+  assertEqual(interaction.calls[0]?.payload?.ephemeral, true, `${label} ephemeral`);
+  router.destroy();
+}
+
+{
+  const { client, router } = makeHarness();
+  const interaction = makeInteraction({ kind: "slash", id: "slash-show-failure", showModal: async () => { throw new Error("slash token secret"); } });
+  client.emit("interactionCreate", interaction);
+  await flush();
+  assertEqual(interaction.calls[0]?.payload?.content, "处理人工回复失败，请稍后重试。", "Slash showModal 失败安全响应");
   router.destroy();
 }
 
@@ -173,6 +222,77 @@ for (const [overrides, expected, label] of [
   assertEqual(request.actor.username, "admin", "Service actor.username");
   assertEqual(request.actor.displayName, "服务器管理员", "Service actor.displayName 优先 member");
   assertEqual(request.content, "回复内容 🫖", "Service content");
+  router.destroy();
+}
+
+// Send Modal Submit：先 defer，再调用 send，并使用 discord_slash source。
+{
+  let request;
+  const service = {
+    reply: async () => ({ messageId: "unused" }),
+    send: async (value) => { request = value; return { messageId: "sent-send-1" }; },
+  };
+  const { client, router } = makeHarness(service);
+  const interaction = makeInteraction({
+    kind: "send-modal",
+    id: "send-modal-params",
+    member: undefined,
+    fields: { getTextInputValue: () => "发送正文 🫖" },
+  });
+  client.emit("interactionCreate", interaction);
+  await flush();
+  assertEqual(interaction.calls[0]?.method, "deferReply", "Send Modal 先 deferReply");
+  assertEqual(interaction.calls.at(-1)?.method, "editReply", "Send 成功后 editReply");
+  assertEqual(interaction.calls.at(-1)?.payload?.content, "小G宝已经在当前频道发言。", "Send 成功提示");
+  assertEqual(request.guildId, GUILD_ID, "Send Service guildId");
+  assertEqual(request.channelId, CHANNEL_ID, "Send Service channelId 来自 Modal Context");
+  assertEqual(request.content, "发送正文 🫖", "Send Service content");
+  assertEqual(request.actor.id, "444444444444444444", "Send actor.id");
+  assertEqual(request.actor.username, "admin", "Send actor.username");
+  assertEqual(request.actor.displayName, "管理员", "Send displayName 回退到 globalName");
+  assertEqual(request.source, "discord_slash", "Send source 固定为 discord_slash");
+  assert(!interaction.calls.at(-1)?.payload?.content.includes("发送正文"), "Send 成功提示不包含正文");
+  router.destroy();
+}
+
+for (const [overrides, label] of [
+  [{ inGuild: () => false }, "Send 提交 DM 拒绝"],
+  [{ guildId: "999999999999999999" }, "Send 提交错误 Guild 拒绝"],
+  [{ memberPermissions: { has: () => false } }, "Send 提交权限撤销拒绝"],
+  [{ customId: "manual:v1:send:bad" }, "Send 非法 customId 拒绝"],
+]) {
+  const serviceCalls = [];
+  const service = {
+    reply: async () => ({ messageId: "unused" }),
+    send: async (value) => { serviceCalls.push(value); return { messageId: "sent-1" }; },
+  };
+  const { client, router } = makeHarness(service);
+  const interaction = makeInteraction({ kind: "send-modal", id: `send-invalid-${label}`, ...overrides });
+  client.emit("interactionCreate", interaction);
+  await flush();
+  assertEqual(serviceCalls.length, 0, `${label} 不调用 send`);
+  assertEqual(interaction.calls[0]?.payload?.ephemeral, true, `${label} ephemeral`);
+  router.destroy();
+}
+
+for (const [error, expected, label] of [
+  [new ManualMessageError("CHANNEL_NOT_FOUND"), "目标频道不存在或无法访问。", "Send 频道删除错误"],
+  [new ManualMessageError("BOT_MISSING_PERMISSION"), "小G宝缺少在目标频道发言所需的权限。", "Send 权限变化错误"],
+  [new ManualMessageError("THREAD_LOCKED"), "目标 Thread 已锁定，无法发言。", "Send locked Thread 错误"],
+  [new Error("send secret body"), "处理人工回复失败，请稍后重试。", "Send 未知错误"],
+]) {
+  const service = {
+    reply: async () => ({ messageId: "unused" }),
+    send: async () => { throw error; },
+  };
+  const { client, router, logger } = makeHarness(service);
+  const interaction = makeInteraction({ kind: "send-modal", id: `send-error-${label}` });
+  client.emit("interactionCreate", interaction);
+  await flush();
+  assertEqual(interaction.calls.at(-1)?.payload?.content, expected, label);
+  const serialized = JSON.stringify(logger.calls);
+  assert(!serialized.includes("send secret body"), `${label} 日志不包含原始正文`);
+  assert(!serialized.includes("回复内容 🫖"), `${label} 日志不包含 Modal 正文`);
   router.destroy();
 }
 
@@ -288,6 +408,23 @@ for (const [interactionOptions, label] of [
   client.emit("interactionCreate", afterDestroy);
   await flush();
   assertEqual(afterDestroy.calls.length, 0, "destroy 后忽略新 Interaction");
+}
+
+{
+  let sendCount = 0;
+  const service = {
+    reply: async () => ({ messageId: "unused" }),
+    send: async () => { sendCount++; return { messageId: "sent-send-1" }; },
+  };
+  const { client, router } = makeHarness(service);
+  client.emit("interactionCreate", makeInteraction({ kind: "send-modal", id: "send-duplicate-1" }));
+  client.emit("interactionCreate", makeInteraction({ kind: "send-modal", id: "send-duplicate-1" }));
+  await flush();
+  assertEqual(sendCount, 1, "重复 Send Modal 不重复调用 send");
+  router.destroy();
+  client.emit("interactionCreate", makeInteraction({ kind: "send-modal", id: "send-duplicate-1" }));
+  await flush();
+  assertEqual(sendCount, 1, "destroy 后忽略 Send Modal");
 }
 
 // TTL 到期后可以重新处理，start 重复调用不重复注册 listener。

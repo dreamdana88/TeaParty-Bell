@@ -11,6 +11,7 @@
     "test": "node scripts/run-tests.mjs",
     "test:ai": "node scripts/test-ai.js",
     "export:emojis": "node scripts/export-guild-emojis.js",
+    "commands:register": "node scripts/register-admin-commands.js",
     "test:copy": "node scripts/test-copy.js",
     "test:send": "node scripts/test-send.js"
   },
