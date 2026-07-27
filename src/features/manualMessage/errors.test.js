@@ -29,6 +29,16 @@ console.log("\n=== Manual Message errors ===\n");
   assert(!error.safeMessage.includes("internal detail"), "safeMessage 不包含内部原因");
 }
 
+{
+  const error = createManualMessageError("INVALID_ACTOR");
+  assertEqual(error.safeMessage, "无法确认人工发言操作者身份。", "INVALID_ACTOR 安全文案");
+}
+
+{
+  assertEqual(getSafeMessage("CHANNEL_FETCH_FAILED"), "获取目标频道失败。", "CHANNEL_FETCH_FAILED 安全文案");
+  assertEqual(getSafeMessage("TARGET_MESSAGE_FETCH_FAILED"), "获取目标消息失败。", "TARGET_MESSAGE_FETCH_FAILED 安全文案");
+}
+
 assertEqual(MANUAL_MESSAGE_SOURCES.length, 3, "来源数量");
 assert(MANUAL_MESSAGE_SOURCES.includes("discord_slash"), "允许 discord_slash");
 assert(MANUAL_MESSAGE_SOURCES.includes("discord_context_menu"), "允许 discord_context_menu");

@@ -12,10 +12,13 @@ export const MANUAL_MESSAGE_SOURCES = Object.freeze([
 
 const SAFE_MESSAGES = Object.freeze({
   INVALID_SOURCE: "人工发言来源无效。",
+  INVALID_ACTOR: "无法确认人工发言操作者身份。",
   WRONG_GUILD: "只能在目标服务器发言。",
   CHANNEL_NOT_FOUND: "目标频道不存在或无法访问。",
+  CHANNEL_FETCH_FAILED: "获取目标频道失败。",
   WRONG_CHANNEL_TYPE: "目标频道不是可发送的文字频道。",
   TARGET_MESSAGE_NOT_FOUND: "目标消息不存在或无法访问。",
+  TARGET_MESSAGE_FETCH_FAILED: "获取目标消息失败。",
   BOT_MISSING_PERMISSION: "小G宝缺少在目标频道发言所需的权限。",
   EMPTY_CONTENT: "发言内容不能为空。",
   CONTENT_TOO_LONG: "发言内容超过 2000 字符。",

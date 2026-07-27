@@ -83,6 +83,19 @@ function makeHarness(channel, audit = null) {
   return { service, client, logger };
 }
 
+function assertSafeDiscordLog(logger, label) {
+  const log = logger.calls.find((call) => call.level === "warn");
+  assert(Boolean(log), `${label} 产生安全 warn 日志`);
+  if (!log) return;
+  assertEqual(
+    JSON.stringify(Object.keys(log.data).sort()),
+    JSON.stringify(["discordCode", "errorMessage", "errorName"]),
+    `${label} 日志仅包含允许字段`,
+  );
+  assert(!("stack" in log.data), `${label} 日志不包含 stack`);
+  assert(!("requestHeaders" in log.data), `${label} 日志不包含请求头`);
+}
+
 function request(overrides = {}) {
   return {
     guildId: TARGET_GUILD,
@@ -95,6 +108,36 @@ function request(overrides = {}) {
 }
 
 console.log("\n=== Manual Message Service ===\n");
+
+// actor 必须先于任何 Discord 调用完成验证；失败仍产生安全失败审计。
+for (const [actor, label] of [
+  [undefined, "actor 缺失"],
+  [null, "actor=null"],
+  [{}, "actor.id 缺失"],
+  [{ id: "" }, "actor.id 空字符串"],
+  [{ id: "   " }, "actor.id 空白"],
+  [{ id: "actor-1", username: 123 }, "username 非字符串"],
+  [{ id: "actor-1", displayName: 123 }, "displayName 非字符串"],
+]) {
+  const auditCalls = [];
+  let fetchCount = 0;
+  const { service, client } = makeHarness(makeChannel(), { record: (entry) => auditCalls.push(entry) });
+  client.channels.fetch = async () => { fetchCount++; return makeChannel(); };
+  await expectCode(service.send(request({ actor })), "INVALID_ACTOR", `${label} 拒绝`);
+  assertEqual(fetchCount, 0, `${label} 在 Discord 调用前拒绝`);
+  assertEqual(auditCalls.length, 1, `${label} 产生失败审计`);
+  assertEqual(auditCalls[0].success, false, `${label} 审计 success=false`);
+  assertEqual(auditCalls[0].errorCode, "INVALID_ACTOR", `${label} 审计 errorCode`);
+  assert(typeof auditCalls[0].actorId === "string" && auditCalls[0].actorId.trim().length > 0, `${label} 审计 actorId 非空`);
+}
+
+{
+  const auditCalls = [];
+  const { service } = makeHarness(makeChannel(), { record: (entry) => auditCalls.push(entry) });
+  const result = await service.send(request({ actor: { id: "actor-valid" } }));
+  assertEqual(result.messageId, "sent-1", "合法 actor 发送成功");
+  assertEqual(auditCalls[0].actorId, "actor-valid", "合法 actor 审计 actorId");
+}
 
 // Send：普通文字频道成功、审计、返回 messageId
 {
@@ -135,6 +178,39 @@ for (const [type, label] of [
   await expectCode(service.send(request()), "THREAD_LOCKED", "锁定 Thread 拒绝");
 }
 {
+  const permissions = makePermissions([
+    PermissionFlagsBits.ViewChannel,
+    PermissionFlagsBits.SendMessagesInThreads,
+    PermissionFlagsBits.ManageThreads,
+    PermissionFlagsBits.ReadMessageHistory,
+  ]);
+  const { service } = makeHarness(makeChannel({ type: ChannelType.PublicThread, locked: true, permissions }));
+  const result = await service.send(request());
+  assertEqual(result.messageId, "sent-1", "锁定 Thread + ManageThreads 允许发送");
+}
+{
+  const permissions = makePermissions([
+    PermissionFlagsBits.ViewChannel,
+    PermissionFlagsBits.SendMessagesInThreads,
+    PermissionFlagsBits.ManageThreads,
+    PermissionFlagsBits.ReadMessageHistory,
+  ]);
+  const channel = makeChannel({
+    type: ChannelType.PublicThread,
+    locked: true,
+    permissions,
+    messages: {
+      fetch: async () => ({
+        id: "target-1", guildId: TARGET_GUILD, channelId: "channel-1",
+        reply: async () => ({ id: "locked-reply-1" }),
+      }),
+    },
+  });
+  const { service } = makeHarness(channel);
+  const result = await service.reply(request({ targetMessageId: "target-1" }));
+  assertEqual(result.messageId, "locked-reply-1", "锁定 Thread + ManageThreads 允许回复");
+}
+{
   const { service } = makeHarness(makeChannel({ guildId: "other-guild" }));
   await expectCode(service.send(request()), "WRONG_GUILD", "Channel Guild 不匹配拒绝");
 }
@@ -151,6 +227,19 @@ for (const [type, label] of [
   const { service, client } = makeHarness(channel);
   client.channels.fetch = async () => null;
   await expectCode(service.send(request()), "CHANNEL_NOT_FOUND", "Channel 不存在拒绝");
+}
+
+for (const [error, expected, label] of [
+  [Object.assign(new Error("Unknown Channel"), { name: "DiscordAPIError", code: 10003 }), "CHANNEL_NOT_FOUND", "channel 10003"],
+  [Object.assign(new Error("Missing Access"), { name: "DiscordAPIError", code: 50001 }), "BOT_MISSING_PERMISSION", "channel 50001"],
+  [Object.assign(new Error("Missing Permissions"), { name: "DiscordAPIError", code: 50013 }), "BOT_MISSING_PERMISSION", "channel 50013"],
+  [Object.assign(new Error("connect ETIMEDOUT"), { code: "ETIMEDOUT" }), "CHANNEL_FETCH_FAILED", "channel ETIMEDOUT"],
+  [Object.assign(new Error("unexpected channel failure"), { code: 99999 }), "CHANNEL_FETCH_FAILED", "channel unknown error"],
+]) {
+  const { service, client, logger } = makeHarness(makeChannel());
+  client.channels.fetch = async () => { throw error; };
+  await expectCode(service.send(request()), expected, `${label} 分类`);
+  assertSafeDiscordLog(logger, label);
 }
 
 // Send：权限矩阵
@@ -239,6 +328,21 @@ for (const [type, label] of [
   const permissions = makePermissions([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages]);
   const { service } = makeHarness(makeChannel({ permissions }));
   await expectCode(service.reply(request({ targetMessageId: "target" })), "BOT_MISSING_PERMISSION", "Reply 缺少 ReadMessageHistory 拒绝");
+}
+
+for (const [error, expected, label] of [
+  [Object.assign(new Error("Unknown Message"), { name: "DiscordAPIError", code: 10008 }), "TARGET_MESSAGE_NOT_FOUND", "message 10008"],
+  [Object.assign(new Error("Missing Access"), { name: "DiscordAPIError", code: 50001 }), "BOT_MISSING_PERMISSION", "message 50001"],
+  [Object.assign(new Error("Missing Permissions"), { name: "DiscordAPIError", code: 50013 }), "BOT_MISSING_PERMISSION", "message 50013"],
+  [Object.assign(new Error("connect ETIMEDOUT"), { code: "ETIMEDOUT" }), "TARGET_MESSAGE_FETCH_FAILED", "message ETIMEDOUT"],
+  [Object.assign(new Error("unexpected message failure"), { code: 99999 }), "TARGET_MESSAGE_FETCH_FAILED", "message unknown error"],
+]) {
+  const auditCalls = [];
+  const channel = makeChannel({ messages: { fetch: async () => { throw error; } } });
+  const { service, logger } = makeHarness(channel, { record: (entry) => auditCalls.push(entry) });
+  await expectCode(service.reply(request({ targetMessageId: "target-1" })), expected, `${label} 分类`);
+  assertSafeDiscordLog(logger, label);
+  assertEqual(auditCalls[0].errorCode, expected, `${label} 失败审计 errorCode`);
 }
 {
   const auditCalls = [];

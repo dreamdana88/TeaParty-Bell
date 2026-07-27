@@ -35,8 +35,11 @@ const THREAD_CHANNEL_TYPES = new Set([
   ChannelType.AnnouncementThread,
 ]);
 
+const UNKNOWN_CHANNEL_CODE = 10003;
 const UNKNOWN_MESSAGE_CODE = 10008;
 const MISSING_ACCESS_CODE = 50001;
+const MISSING_PERMISSION_CODE = 50013;
+const MISSING_PERMISSION_CODES = new Set([MISSING_ACCESS_CODE, MISSING_PERMISSION_CODE]);
 
 function getAllowedGuildId(config) {
   return config?.discordGuildId ?? config?.discord?.guildId ?? null;
@@ -47,7 +50,23 @@ function getChannelGuildId(channel) {
 }
 
 function isUnknownMessage(error) {
-  return error?.code === UNKNOWN_MESSAGE_CODE || error?.status === 404;
+  return error?.code === UNKNOWN_MESSAGE_CODE;
+}
+
+function getSafeDiscordErrorMeta(error) {
+  return {
+    errorName: typeof error?.name === "string" && error.name.length > 0 ? error.name : "Error",
+    discordCode: error?.code ?? null,
+    errorMessage: typeof error?.message === "string" ? error.message : String(error),
+  };
+}
+
+function logDiscordError(logger, operation, error) {
+  try {
+    logger?.warn?.(`[ManualMessage] ${operation}`, getSafeDiscordErrorMeta(error));
+  } catch {
+    // 诊断日志不可用时不能改变业务错误分类或发送结果。
+  }
 }
 
 function safeAudit(audit, entry) {
@@ -75,10 +94,36 @@ export function createManualMessageService({
 
   const allowedGuildId = getAllowedGuildId(config);
 
-  function validateRequest({ guildId, source }) {
+  function validateActor(actor) {
+    if (!actor || typeof actor !== "object" || Array.isArray(actor)) {
+      throw createManualMessageError("INVALID_ACTOR");
+    }
+    if (typeof actor.id !== "string" || actor.id.trim().length === 0) {
+      throw createManualMessageError("INVALID_ACTOR");
+    }
+    if (actor.username !== undefined && typeof actor.username !== "string") {
+      throw createManualMessageError("INVALID_ACTOR");
+    }
+    if (actor.displayName !== undefined && typeof actor.displayName !== "string") {
+      throw createManualMessageError("INVALID_ACTOR");
+    }
+  }
+
+  function getAuditActor(actor) {
+    return {
+      id: actor && typeof actor.id === "string" && actor.id.trim().length > 0
+        ? actor.id
+        : "unknown",
+      username: actor && typeof actor.username === "string" ? actor.username : undefined,
+      displayName: actor && typeof actor.displayName === "string" ? actor.displayName : undefined,
+    };
+  }
+
+  function validateRequest({ guildId, source, actor }) {
     if (!MANUAL_MESSAGE_SOURCES.includes(source)) {
       throw createManualMessageError("INVALID_SOURCE");
     }
+    validateActor(actor);
     if (!guildId || guildId !== allowedGuildId) {
       throw createManualMessageError("WRONG_GUILD");
     }
@@ -93,10 +138,14 @@ export function createManualMessageService({
     try {
       channel = await client.channels.fetch(channelId);
     } catch (error) {
-      if (error?.code === MISSING_ACCESS_CODE) {
+      logDiscordError(logger, "channel fetch failed", error);
+      if (error?.code === UNKNOWN_CHANNEL_CODE) {
+        throw createManualMessageError("CHANNEL_NOT_FOUND", error);
+      }
+      if (MISSING_PERMISSION_CODES.has(error?.code)) {
         throw createManualMessageError("BOT_MISSING_PERMISSION", error);
       }
-      throw createManualMessageError("CHANNEL_NOT_FOUND", error);
+      throw createManualMessageError("CHANNEL_FETCH_FAILED", error);
     }
 
     if (!channel) {
@@ -111,9 +160,6 @@ export function createManualMessageService({
     }
     if (!ALLOWED_CHANNEL_TYPES.has(channel.type)) {
       throw createManualMessageError("WRONG_CHANNEL_TYPE");
-    }
-    if (THREAD_CHANNEL_TYPES.has(channel.type) && channel.locked === true) {
-      throw createManualMessageError("THREAD_LOCKED");
     }
   }
 
@@ -132,6 +178,14 @@ export function createManualMessageService({
       throw createManualMessageError("BOT_MISSING_PERMISSION");
     }
 
+    if (
+      THREAD_CHANNEL_TYPES.has(channel.type) &&
+      channel.locked === true &&
+      !permissions.has(PermissionFlagsBits.ManageThreads)
+    ) {
+      throw createManualMessageError("THREAD_LOCKED");
+    }
+
     const required = [PermissionFlagsBits.ViewChannel];
     if (THREAD_CHANNEL_TYPES.has(channel.type)) {
       required.push(PermissionFlagsBits.SendMessagesInThreads);
@@ -148,8 +202,8 @@ export function createManualMessageService({
     }
   }
 
-  async function prepare({ action, guildId, channelId, content, source }) {
-    validateRequest({ guildId, source });
+  async function prepare({ action, guildId, channelId, content, actor, source }) {
+    validateRequest({ guildId, source, actor });
     const contentPolicy = validateManualContent(content);
     const channel = await fetchChannel(channelId);
     validateChannel(channel, guildId);
@@ -158,10 +212,14 @@ export function createManualMessageService({
   }
 
   async function run(action, params, operation) {
+    const auditActor = getAuditActor(params?.actor);
     const auditContext = {
       action,
       source: params?.source,
-      actor: params?.actor,
+      actor: auditActor,
+      actorId: auditActor.id,
+      actorUsername: auditActor.username,
+      actorDisplayName: auditActor.displayName,
       guildId: params?.guildId,
       channelId: params?.channelId,
       targetMessageId: action === "reply" ? params?.targetMessageId : null,
@@ -205,6 +263,7 @@ export function createManualMessageService({
           allowedMentions: contentPolicy.allowedMentions,
         });
       } catch (error) {
+        logDiscordError(logger, "send failed", error);
         throw createManualMessageError("SEND_FAILED", error);
       }
       return {
@@ -227,10 +286,14 @@ export function createManualMessageService({
       try {
         targetMessage = await channel.messages.fetch(params.targetMessageId);
       } catch (error) {
+        logDiscordError(logger, "target message fetch failed", error);
         if (isUnknownMessage(error)) {
           throw createManualMessageError("TARGET_MESSAGE_NOT_FOUND", error);
         }
-        throw createManualMessageError("TARGET_MESSAGE_NOT_FOUND", error);
+        if (MISSING_PERMISSION_CODES.has(error?.code)) {
+          throw createManualMessageError("BOT_MISSING_PERMISSION", error);
+        }
+        throw createManualMessageError("TARGET_MESSAGE_FETCH_FAILED", error);
       }
 
       if (!targetMessage) {
@@ -254,6 +317,7 @@ export function createManualMessageService({
           allowedMentions: contentPolicy.allowedMentions,
         });
       } catch (error) {
+        logDiscordError(logger, "reply failed", error);
         if (isUnknownMessage(error)) {
           throw createManualMessageError("TARGET_MESSAGE_NOT_FOUND", error);
         }
