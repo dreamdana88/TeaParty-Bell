@@ -29,6 +29,30 @@ export const EXIT_OK = 0;
 export const EXIT_RUNTIME = 1;
 export const EXIT_PERMANENT = 78;
 
+function safeStartupErrorFields(error) {
+  return {
+    errorName: typeof error?.name === "string" ? error.name : "Error",
+    errorCode: error?.code ?? null,
+  };
+}
+
+function safeStartupLog(logger, message, error) {
+  try {
+    logger.error(message, safeStartupErrorFields(error));
+  } catch {
+    // 启动错误日志自身失败不能改变既定退出路径。
+  }
+}
+
+async function safelyDestroyManualRouter(router, logger, message) {
+  if (!router || typeof router.destroy !== "function") return;
+  try {
+    await router.destroy();
+  } catch (error) {
+    safeStartupLog(logger, message, error);
+  }
+}
+
 /**
  * 启动 TeaParty-Bell。
  *
@@ -187,33 +211,47 @@ export async function start(options = {}) {
     return;
   }
 
-  // ---- 13. Preflight 通过 → 发送就绪通知 ----
+  // ---- 13. Preflight 通过 → 创建并启动人工回复链路 ----
+  let manualMessageService;
+  let manualInteractionRouter;
+  try {
+    manualMessageService = createManualMessageServiceFn({ client, config, logger });
+    manualInteractionRouter = createManualInteractionRouterFn({
+      client,
+      manualMessageService,
+      guildId: config.discordGuildId,
+      logger,
+    });
+    await manualInteractionRouter.start();
+  } catch (error) {
+    await safelyDestroyManualRouter(manualInteractionRouter, logger, "Manual Interaction Router 清理异常");
+    safeStartupLog(logger, "Manual Message Service / Interaction Router 初始化失败，拒绝继续运行", error);
+    exitFn(EXIT_RUNTIME);
+    return;
+  }
+
+  // ---- 14. Router 启动后 → 发送就绪通知 ----
   let readyResult;
   try {
     readyResult = await notifier.notifyReadyAfterRestart();
   } catch (err) {
-    logger.error("[Bot] notifyReadyAfterRestart 持久化失败，拒绝继续运行", { error: err.message });
+    await safelyDestroyManualRouter(manualInteractionRouter, logger, "Router 启动后清理失败");
+    safeStartupLog(logger, "[Bot] notifyReadyAfterRestart 持久化失败，拒绝继续运行", err);
     exitFn(EXIT_PERMANENT);
     return;
   }
 
   // 检查 recovery 是否有失败
   if (readyResult && readyResult.failedRecoveries && readyResult.failedRecoveries.length > 0) {
-    logger.error("[Bot] 部分 Recovery 持久化失败", { failed: readyResult.failedRecoveries });
+    await safelyDestroyManualRouter(manualInteractionRouter, logger, "Router 启动后清理失败");
+    try {
+      logger.error("[Bot] 部分 Recovery 持久化失败", { count: readyResult.failedRecoveries.length });
+    } catch {
+      // 日志设施失败不能掩盖 EXIT_PERMANENT 路径。
+    }
     exitFn(EXIT_PERMANENT);
     return;
   }
-
-  // ---- 14. 启用人工回复 Interaction Router ----
-  // Router 延后到所有启动前置步骤完成后，确保任一失败路径都不会遗留活动 listener。
-  const manualMessageService = createManualMessageServiceFn({ client, config, logger });
-  const manualInteractionRouter = createManualInteractionRouterFn({
-    client,
-    manualMessageService,
-    guildId: config.discordGuildId,
-    logger,
-  });
-  manualInteractionRouter.start();
 
   // ---- 15. 进程退出处理 ----
   async function shutdown(signal) {

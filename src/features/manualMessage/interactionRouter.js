@@ -16,13 +16,21 @@ const GENERIC_FAILURE_MESSAGE = "处理人工回复失败，请稍后重试。";
 const NOT_IN_GUILD_MESSAGE = "该操作只能在服务器内使用。";
 const WRONG_GUILD_MESSAGE = "该操作不能用于当前服务器。";
 const NOT_ADMIN_MESSAGE = "只有管理员可以使用该操作。";
+const SAFE_ROUTER_ERROR_MESSAGE = "Interaction Router operation failed.";
 
 function safeErrorFields(error) {
-  return {
+  const fields = {
     errorName: typeof error?.name === "string" ? error.name : "Error",
-    discordCode: error?.code ?? null,
-    errorMessage: typeof error?.message === "string" ? error.message : "Unknown error",
   };
+  if (isManualMessageError(error)) {
+    fields.errorCode = error.code;
+    const discordCode = error.discordCode ?? error.cause?.code;
+    if (discordCode !== undefined && discordCode !== null) fields.discordCode = discordCode;
+    return fields;
+  }
+  if (error?.code !== undefined && error?.code !== null) fields.discordCode = error.code;
+  fields.errorMessage = SAFE_ROUTER_ERROR_MESSAGE;
+  return fields;
 }
 
 function isRecognizedContextMenu(interaction) {

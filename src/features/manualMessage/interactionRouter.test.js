@@ -195,7 +195,7 @@ for (const [overrides, expected, label] of [
 
 // Service 业务错误使用 safeMessage，未知错误使用通用安全文案，并写有限字段日志。
 for (const [error, expected, label] of [
-  [new ManualMessageError("REPLY_FAILED", "安全失败提示"), "安全失败提示", "业务错误 safeMessage"],
+  [Object.assign(new ManualMessageError("REPLY_FAILED", "安全失败提示", Object.assign(new Error("secret cause"), { code: 50013 })), { discordCode: 50013 }), "安全失败提示", "业务错误 safeMessage"],
   [Object.assign(new Error("secret body"), { code: 50013 }), "处理人工回复失败，请稍后重试。", "未知错误通用文案"],
 ]) {
   const service = { reply: async () => { throw error; } };
@@ -207,9 +207,56 @@ for (const [error, expected, label] of [
   const diagnostic = logger.calls.find((call) => call.message.includes("Service 回复失败"));
   assert(Boolean(diagnostic), `${label} 产生安全诊断日志`);
   if (diagnostic) {
-    assertEqual(diagnostic.data.errorMessage, error.message, `${label} 只记录 errorMessage`);
+    if (isManualMessageErrorForTest(error)) {
+      assertEqual(diagnostic.data.errorCode, "REPLY_FAILED", `${label} 记录 errorCode`);
+      assertEqual(diagnostic.data.discordCode, 50013, `${label} 记录 discordCode`);
+      assertEqual("errorMessage" in diagnostic.data, false, `${label} 不记录原始 message`);
+    } else {
+      assertEqual(diagnostic.data.errorMessage, "Interaction Router operation failed.", `${label} 使用固定安全摘要`);
+      assertEqual(diagnostic.data.discordCode, 50013, `${label} 记录 discordCode`);
+    }
     assert(!("stack" in diagnostic.data), `${label} 不记录 stack`);
+    const serialized = JSON.stringify(logger.calls);
+    assert(!serialized.includes("secret body"), `${label} 日志不包含原始错误正文`);
+    assert(!serialized.includes("回复内容 🫖"), `${label} 日志不包含 Modal 正文`);
+    assert(!serialized.includes("token"), `${label} 日志不包含 token`);
+    assert(!serialized.includes("headers"), `${label} 日志不包含 headers`);
   }
+  router.destroy();
+}
+
+function isManualMessageErrorForTest(error) {
+  return error instanceof ManualMessageError;
+}
+
+// defer / reply / 顶层 dispatch 的错误路径使用同一套安全摘要。
+for (const [interactionOptions, label] of [
+  [{ fields: { getTextInputValue: () => { throw new Error("modal secret"); } } }, "defer 前读取失败"],
+  [{ inGuild: () => false, reply: async () => { throw new Error("token secret"); } }, "reply 失败"],
+]) {
+  const { client, router, logger } = makeHarness();
+  const interaction = makeInteraction({ kind: label === "reply 失败" ? "context" : "modal", id: `safe-${label}`, ...interactionOptions });
+  client.emit("interactionCreate", interaction);
+  await flush();
+  const serialized = JSON.stringify(logger.calls);
+  assert(serialized.includes("Interaction Router operation failed."), `${label} 写固定安全摘要`);
+  assert(!serialized.includes("secret"), `${label} 不记录原始错误正文`);
+  assert(!serialized.includes("回复内容 🫖"), `${label} 不记录 Modal 正文`);
+  router.destroy();
+}
+
+{
+  const { client, router, logger } = makeHarness();
+  const interaction = makeInteraction({
+    kind: "other",
+    id: "top-level-catch",
+    isMessageContextMenuCommand: () => { throw new Error("dispatch secret"); },
+  });
+  client.emit("interactionCreate", interaction);
+  await flush();
+  const serialized = JSON.stringify(logger.calls);
+  assert(serialized.includes("Interaction Router operation failed."), "顶层 dispatch catch 写固定安全摘要");
+  assert(!serialized.includes("dispatch secret"), "顶层 dispatch catch 不记录原始错误正文");
   router.destroy();
 }
 

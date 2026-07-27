@@ -517,5 +517,149 @@ function makeFakeClient() {
   }
 }
 
+// ============================
+// Test 12: service_operational 启动时序与初始化失败语义
+// ============================
+
+function makeManualStartupOptions({
+  events,
+  serviceFactory = () => ({ reply: async () => ({ messageId: "sent-1" }) }),
+  routerFactory = () => ({
+    start: () => { events.push("router_start"); },
+    destroy: () => { events.push("router_destroy"); },
+  }),
+  readyResult = { createdReady: true, recovered: [], failedRecoveries: [] },
+  readyError = null,
+} = {}) {
+  const logger = {
+    calls: [],
+    info: (message, data) => logger.calls.push({ level: "info", message, data }),
+    error: (message, data) => logger.calls.push({ level: "error", message, data }),
+    warn: (message, data) => logger.calls.push({ level: "warn", message, data }),
+    debug: (message, data) => logger.calls.push({ level: "debug", message, data }),
+  };
+  const originalInfo = logger.info;
+  logger.info = (message, data) => {
+    originalInfo(message, data);
+    if (message === "TeaParty-Bell 启动完成 / operational") events.push("operational");
+  };
+  const fakeOutbox = { verifyWritable: () => {}, loadAllAlerts: () => [], writeAlert: async () => {}, findAlert: () => undefined, close: async () => {} };
+  const fakeStore = { load: async () => {}, getAllRecords: () => new Map(), listRecoverable: () => [], markUncertain: async () => {}, close: async () => {} };
+  const fakeNotifier = {
+    initialize: async () => {},
+    notifyFailure: async () => {},
+    notifyRecovery: async () => {},
+    notifyWarning: async () => {},
+    notifyReadyAfterRestart: async () => {
+      events.push("notify_ready");
+      if (readyError) throw readyError;
+      return readyResult;
+    },
+  };
+
+  return {
+    loadConfigFn: () => makeFakeConfig(),
+    createAlertOutboxFn: () => fakeOutbox,
+    createNotifierFn: () => fakeNotifier,
+    createStoreFn: () => fakeStore,
+    createClientFn: () => ({ client: makeFakeClient(), login: async () => {}, destroy: async () => {}, waitUntilReady: async () => {} }),
+    createHealthMonitorFn: () => ({ start: () => {}, stop: () => {}, onReady: () => {} }),
+    setupLifecycleLoggerFn: () => ({ destroy: () => {} }),
+    setupObserverFn: () => ({ destroy: () => {} }),
+    createHandlerFn: () => ({}),
+    createEmojiProviderFn: () => ({}),
+    createPreflightFn: () => ({ run: async () => ({ passed: true }) }),
+    createManualMessageServiceFn: (options) => {
+      events.push("service_create");
+      return serviceFactory(options);
+    },
+    createManualInteractionRouterFn: (options) => {
+      events.push("router_create");
+      return routerFactory(options);
+    },
+    logger,
+    exitFn: (code) => { events.push(`exit_${code}`); },
+    processLike: { on: () => {} },
+  };
+}
+
+{
+  const events = [];
+  const options = makeManualStartupOptions({
+    events,
+    serviceFactory: () => { throw new Error("service secret"); },
+  });
+  await start(options);
+  assertEqual(events.includes("notify_ready"), false, "Service 创建失败未写 ready");
+  assertEqual(events.includes("operational"), false, "Service 创建失败未进入 operational");
+  assertEqual(events.at(-1), "exit_1", "Service 创建失败 exit 1");
+  assertEqual(options.logger.calls.at(-1).data.errorName, "Error", "Service 创建失败记录安全 errorName");
+  assertEqual("errorMessage" in options.logger.calls.at(-1).data, false, "Service 创建失败不记录原始 message");
+}
+
+{
+  const events = [];
+  const options = makeManualStartupOptions({
+    events,
+    routerFactory: () => { throw new Error("router secret"); },
+  });
+  await start(options);
+  assertEqual(events.includes("notify_ready"), false, "Router 创建失败未写 ready");
+  assertEqual(events.includes("operational"), false, "Router 创建失败未进入 operational");
+  assertEqual(events.at(-1), "exit_1", "Router 创建失败 exit 1");
+  assertEqual("errorMessage" in options.logger.calls.at(-1).data, false, "Router 创建失败不记录原始 message");
+}
+
+{
+  const events = [];
+  const options = makeManualStartupOptions({
+    events,
+    routerFactory: () => ({
+      start: () => { events.push("router_start"); throw new Error("start secret"); },
+      destroy: () => { events.push("router_destroy"); },
+    }),
+  });
+  await start(options);
+  assertEqual(events.includes("notify_ready"), false, "router.start 失败未写 ready");
+  assertEqual(events.includes("operational"), false, "router.start 失败未进入 operational");
+  assertEqual(events.at(-1), "exit_1", "router.start 失败 exit 1");
+}
+
+{
+  const events = [];
+  await start(makeManualStartupOptions({ events }));
+  assertEqual(
+    JSON.stringify(events),
+    JSON.stringify(["service_create", "router_create", "router_start", "notify_ready", "operational"]),
+    "正常路径 router_start → notify_ready → operational",
+  );
+}
+
+for (const [readyOptions, label] of [
+  [{ readyError: new Error("ready secret") }, "notifyReadyAfterRestart 失败"],
+  [{ readyResult: { createdReady: false, recovered: [], failedRecoveries: [{ incidentKey: "gw" }] } }, "failedRecoveries"],
+]) {
+  const events = [];
+  await start(makeManualStartupOptions({ events, ...readyOptions }));
+  assertEqual(events.indexOf("router_destroy") > events.indexOf("notify_ready"), true, `${label} 先 destroy Router`);
+  assertEqual(events.at(-1), "exit_78", `${label} exit 78`);
+  assertEqual(events.includes("operational"), false, `${label} 未进入 operational`);
+}
+
+{
+  const events = [];
+  const options = makeManualStartupOptions({
+    events,
+    readyError: new Error("ready secret"),
+    routerFactory: () => ({
+      start: () => { events.push("router_start"); },
+      destroy: () => { events.push("router_destroy"); throw new Error("destroy secret"); },
+    }),
+  });
+  await start(options);
+  assertEqual(events.at(-1), "exit_78", "Router destroy 失败不掩盖 exit 78");
+  assert(options.logger.calls.some((call) => call.message === "Router 启动后清理失败"), "Router destroy 失败写安全日志");
+}
+
 console.log(`\n[bot.test] ${passed} passed / ${failed} failed`);
 if (failed > 0) process.exit(1);
