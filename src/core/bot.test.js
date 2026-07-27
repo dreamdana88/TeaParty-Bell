@@ -200,6 +200,7 @@ function makeFakeClient() {
 {
   let readyCalled = false;
   let exitCode = null;
+  let manualRouterCreated = false;
   const fakeOutbox = { verifyWritable: () => {}, loadAllAlerts: () => [], writeAlert: async () => {}, findAlert: () => undefined, close: async () => {} };
   const fakeNotifier = {
     initialize: async () => {},
@@ -226,6 +227,10 @@ function makeFakeClient() {
     createHandlerFn: () => ({}),
     createEmojiProviderFn: () => ({}),
     createPreflightFn: ({ exitFn }) => ({ run: async () => { exitFn(78); return { passed: false }; } }),
+    createManualInteractionRouterFn: () => {
+      manualRouterCreated = true;
+      return { start: () => {}, destroy: () => {} };
+    },
     logger: makeMockLogger(),
     exitFn: (c) => { exitCode = c; },
     processLike: { on: () => {} },
@@ -233,6 +238,7 @@ function makeFakeClient() {
 
   assert(!readyCalled, "Preflight failed → 不调用 notifyReadyAfterRestart");
   assertEqual(exitCode, 78, "Preflight failed → exitFn(78) called");
+  assert(!manualRouterCreated, "Preflight failed → 不创建或启动 Interaction Router");
 
   // Reset
   readyCalled = false; exitCode = null;
@@ -385,6 +391,76 @@ function makeFakeClient() {
 
   // 手动调用 captured notifyFailure 验证它通过 notifier 传播
   assert(typeof capturedNotifyFailure === "function", "HealthMonitor 收到 notifyFailure");
+}
+
+// ============================
+// Test 11: Manual Message Service / Interaction Router 真实 start 编排与关闭顺序
+// ============================
+
+{
+  const lifecycle = [];
+  let capturedServiceOptions;
+  let capturedRouterOptions;
+  let createdService;
+  let routerCreated = false;
+  const fakeOutbox = { verifyWritable: () => {}, loadAllAlerts: () => [], writeAlert: async () => {}, findAlert: () => undefined, close: async () => {} };
+  const fakeNotifier = {
+    initialize: async () => {},
+    notifyFailure: async () => {},
+    notifyRecovery: async () => {},
+    notifyWarning: async () => {},
+    notifyReadyAfterRestart: async () => ({ createdReady: true, recovered: [], failedRecoveries: [] }),
+  };
+  const fakeStore = { load: async () => {}, getAllRecords: () => new Map(), listRecoverable: () => [], markUncertain: async () => {}, close: async () => {} };
+  const fakeClient = makeFakeClient();
+
+  await start({
+    loadConfigFn: () => makeFakeConfig(),
+    createAlertOutboxFn: () => fakeOutbox,
+    createNotifierFn: () => fakeNotifier,
+    createStoreFn: () => fakeStore,
+    createClientFn: () => ({
+      client: fakeClient,
+      login: async () => {},
+      destroy: async () => { lifecycle.push("client_destroy"); },
+      waitUntilReady: async () => {},
+    }),
+    createHealthMonitorFn: () => ({ start: () => {}, stop: () => { lifecycle.push("health_stop"); }, onReady: () => {} }),
+    setupLifecycleLoggerFn: () => ({ destroy: () => { lifecycle.push("lifecycle_destroy"); } }),
+    setupObserverFn: () => ({ destroy: () => { lifecycle.push("observer_destroy"); } }),
+    createHandlerFn: () => ({}),
+    createEmojiProviderFn: () => ({}),
+    createPreflightFn: () => ({ run: async () => ({ passed: true }) }),
+    createManualMessageServiceFn: (options) => {
+      capturedServiceOptions = options;
+      createdService = { reply: async () => ({ messageId: "sent-1" }) };
+      return createdService;
+    },
+    createManualInteractionRouterFn: (options) => {
+      routerCreated = true;
+      capturedRouterOptions = options;
+      return {
+        start: () => { lifecycle.push("router_start"); },
+        destroy: () => { lifecycle.push("router_destroy"); },
+      };
+    },
+    logger: makeMockLogger(),
+    exitFn: () => { lifecycle.push("exit"); },
+    processLike: {
+      on: (event, handler) => {
+        if (event === "SIGTERM") setTimeout(() => handler("SIGTERM"), 10);
+      },
+    },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  assert(routerCreated, "正常启动创建 Interaction Router");
+  assertEqual(capturedServiceOptions.client, fakeClient, "Service 收到真实启动 Client");
+  assertEqual(capturedServiceOptions.config.discordGuildId, "111", "Service 收到配置");
+  assertEqual(capturedRouterOptions.manualMessageService, createdService, "Router 使用创建出的 Service");
+  assertEqual(capturedRouterOptions.guildId, "111", "Router 收到配置 Guild");
+  assert(lifecycle.indexOf("router_start") >= 0, "正常启动调用 router.start()");
+  assert(lifecycle.indexOf("router_destroy") < lifecycle.indexOf("client_destroy"), "router.destroy() 先于 client.destroy()");
 }
 
 // ============================

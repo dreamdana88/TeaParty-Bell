@@ -17,6 +17,8 @@ import { createProductionAlertNotifier } from "../alerts/productionAlertNotifier
 import { setupGatewayLifecycleLogger } from "./gatewayLifecycleLogger.js";
 import { createGatewayHealthMonitor } from "./gatewayHealthMonitor.js";
 import { createStartupPreflight } from "./startupPreflight.js";
+import { createManualMessageService } from "../features/manualMessage/service.js";
+import { createManualInteractionRouter } from "../features/manualMessage/interactionRouter.js";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 
@@ -34,6 +36,7 @@ export const EXIT_PERMANENT = 78;
  *   loadConfigFn, createClientFn, createAlertOutboxFn, createNotifierFn,
  *   createStoreFn, createHealthMonitorFn, createPreflightFn,
  *   setupLifecycleLoggerFn, setupObserverFn, createHandlerFn, createEmojiProviderFn,
+ *   createManualMessageServiceFn, createManualInteractionRouterFn,
  *   logger, exitFn, processLike, projectRoot
  *
  * @returns {Promise<{client: object, destroy: Function, healthMonitor: object}|undefined>}
@@ -51,6 +54,8 @@ export async function start(options = {}) {
     setupObserverFn = setupBoostObserver,
     createHandlerFn = createBoostThanksHandler,
     createEmojiProviderFn = createApplicationEmojiProvider,
+    createManualMessageServiceFn = createManualMessageService,
+    createManualInteractionRouterFn = createManualInteractionRouter,
     logger = defaultLogger,
     exitFn = (code) => process.exit(code),
     processLike = process,
@@ -199,12 +204,24 @@ export async function start(options = {}) {
     return;
   }
 
-  // ---- 14. 进程退出处理 ----
+  // ---- 14. 启用人工回复 Interaction Router ----
+  // Router 延后到所有启动前置步骤完成后，确保任一失败路径都不会遗留活动 listener。
+  const manualMessageService = createManualMessageServiceFn({ client, config, logger });
+  const manualInteractionRouter = createManualInteractionRouterFn({
+    client,
+    manualMessageService,
+    guildId: config.discordGuildId,
+    logger,
+  });
+  manualInteractionRouter.start();
+
+  // ---- 15. 进程退出处理 ----
   async function shutdown(signal) {
     logger.info(`收到 ${signal} 信号，正在关闭...`);
     try { healthMonitor.stop(); } catch (err) { logger.error("Health Monitor 停止异常", { message: err.message }); }
     try { if (lifecycleLoggerCleanup) lifecycleLoggerCleanup.destroy(); } catch (err) { logger.error("Lifecycle Logger 清理异常", { message: err.message }); }
     try { if (observerCleanup) observerCleanup.destroy(); } catch (err) { logger.error("Observer 清理异常", { message: err.message }); }
+    try { if (manualInteractionRouter) manualInteractionRouter.destroy(); } catch (err) { logger.error("Manual Interaction Router 清理异常", { message: err.message }); }
     try { await store.close(); } catch (err) { logger.error("Store 关闭异常", { message: err.message }); }
     try { await outbox.close(); } catch (err) { logger.error("Outbox 关闭异常", { message: err.message }); }
     try { await destroy(); } catch (err) { logger.error("Discord 断开异常", { message: err.message }); }
