@@ -1,4 +1,4 @@
-import { Events, PermissionFlagsBits } from "discord.js";
+import { Events, MessageFlags, PermissionFlagsBits } from "discord.js";
 import { logger as defaultLogger } from "../../utils/logger.js";
 import { isManualMessageError } from "./errors.js";
 import {
@@ -23,6 +23,8 @@ const NOT_IN_GUILD_MESSAGE = "该操作只能在服务器内使用。";
 const WRONG_GUILD_MESSAGE = "该操作不能用于当前服务器。";
 const NOT_ADMIN_MESSAGE = "只有管理员可以使用该操作。";
 const SAFE_ROUTER_ERROR_MESSAGE = "Interaction Router operation failed.";
+const INTERACTION_EXPIRED_DISCORD_CODE = 10062;
+const INTERACTION_EXPIRED_CODE = "INTERACTION_EXPIRED";
 
 function safeErrorFields(error) {
   const fields = {
@@ -37,6 +39,15 @@ function safeErrorFields(error) {
   if (error?.code !== undefined && error?.code !== null) fields.discordCode = error.code;
   fields.errorMessage = SAFE_ROUTER_ERROR_MESSAGE;
   return fields;
+}
+
+function isInteractionExpired(error) {
+  return error?.code === INTERACTION_EXPIRED_DISCORD_CODE;
+}
+
+function getCreatedTimestampAge(interaction, wallClockMs) {
+  if (!Number.isFinite(interaction?.createdTimestamp)) return null;
+  return Math.max(0, wallClockMs - interaction.createdTimestamp);
 }
 
 function isRecognizedContextMenu(interaction) {
@@ -66,6 +77,7 @@ export function createManualInteractionRouter({
   guildId,
   logger = defaultLogger,
   now = () => Date.now(),
+  performanceNow = () => globalThis.performance?.now?.() ?? Date.now(),
   handledInteractionTtlMs = DEFAULT_HANDLED_INTERACTION_TTL_MS,
 } = {}) {
   if (!client || typeof client.on !== "function") {
@@ -78,11 +90,30 @@ export function createManualInteractionRouter({
   }
 
   const getNow = typeof now === "function" ? now : () => Date.now();
+  const getPerformanceNow = typeof performanceNow === "function"
+    ? performanceNow
+    : () => globalThis.performance?.now?.() ?? Date.now();
   const ttl = Number.isFinite(handledInteractionTtlMs) && handledInteractionTtlMs > 0
     ? handledInteractionTtlMs
     : DEFAULT_HANDLED_INTERACTION_TTL_MS;
   const handledInteractions = new Map();
   let started = false;
+
+  function createInteractionState(interaction) {
+    const receivedAtWallClockMs = Date.now();
+    return {
+      interaction,
+      receivedAtWallClockMs,
+      receivedAtPerformanceMs: getPerformanceNow(),
+      interactionAgeAtReceiveMs: getCreatedTimestampAge(interaction, receivedAtWallClockMs),
+      interactionAgeAtAckStartMs: null,
+      ackDurationMs: null,
+      ackOperation: null,
+      ackStartPerformanceMs: null,
+      interactionExpired: false,
+      interactionExpiredLogged: false,
+    };
+  }
 
   function interactionMeta(interaction, extra = {}) {
     return {
@@ -107,6 +138,42 @@ export function createManualInteractionRouter({
     } catch {
       // 日志设施失败不能让 Interaction 处理流程崩溃。
     }
+  }
+
+  function ackTimingFields(state, error) {
+    return {
+      interactionAgeAtReceiveMs: state.interactionAgeAtReceiveMs,
+      interactionAgeAtAckStartMs: state.interactionAgeAtAckStartMs,
+      ackDurationMs: state.ackDurationMs,
+      ackOperation: state.ackOperation,
+      discordCode: error?.code ?? null,
+    };
+  }
+
+  function startAck(state, operation) {
+    const startWallClockMs = Date.now();
+    state.ackOperation = operation;
+    state.ackStartPerformanceMs = getPerformanceNow();
+    state.interactionAgeAtAckStartMs = getCreatedTimestampAge(state.interaction, startWallClockMs);
+  }
+
+  function finishAck(state, error) {
+    if (state.ackStartPerformanceMs === null) return;
+    state.ackDurationMs = Math.max(0, getPerformanceNow() - state.ackStartPerformanceMs);
+    log("info", "Interaction 首次响应时序", state.interaction, ackTimingFields(state, error));
+  }
+
+  function markInteractionExpired(state, error, operation) {
+    state.interactionExpired = true;
+    if (state.interactionExpiredLogged) return;
+    state.interactionExpiredLogged = true;
+    log("warn", "Interaction 已失效", state.interaction, {
+      operation,
+      errorName: typeof error?.name === "string" ? error.name : "DiscordAPIError",
+      errorCode: INTERACTION_EXPIRED_CODE,
+      discordCode: INTERACTION_EXPIRED_DISCORD_CODE,
+      ...ackTimingFields(state, error),
+    });
   }
 
   function cleanupHandled() {
@@ -151,33 +218,107 @@ export function createManualInteractionRouter({
     return null;
   }
 
-  async function respondEphemeral(interaction, content) {
+  async function respondEphemeral(interaction, content, state, operation = "response") {
+    if (state?.interactionExpired) return undefined;
     try {
       if (interaction?.deferred && typeof interaction.editReply === "function") {
         return await interaction.editReply({ content });
       }
       if (interaction?.replied && typeof interaction.followUp === "function") {
-        return await interaction.followUp({ content, ephemeral: true });
+        return await interaction.followUp({ content, flags: MessageFlags.Ephemeral });
       }
       if (typeof interaction?.reply === "function") {
-        return await interaction.reply({ content, ephemeral: true });
+        return await interaction.reply({ content, flags: MessageFlags.Ephemeral });
       }
     } catch (error) {
+      if (isInteractionExpired(error)) {
+        if (state) markInteractionExpired(state, error, operation);
+        return undefined;
+      }
       log("warn", "Interaction 响应失败", interaction, safeErrorFields(error));
     }
     return undefined;
   }
 
-  async function handleContextMenu(interaction) {
+  async function showModalResponse(interaction, modal, state, operation, failureMessage) {
+    if (state.interactionExpired) return false;
+    startAck(state, operation);
+    try {
+      await interaction.showModal(modal);
+      finishAck(state, null);
+      return true;
+    } catch (error) {
+      finishAck(state, error);
+      if (isInteractionExpired(error)) {
+        markInteractionExpired(state, error, operation);
+        return false;
+      }
+      log("warn", operation === "show_send_modal" ? "打开发言 Modal 失败" : "打开回复 Modal 失败", interaction, {
+        ...safeErrorFields(error),
+        ackOperation: operation,
+      });
+      await respondEphemeral(interaction, failureMessage, state, `${operation}_failure`);
+      return false;
+    }
+  }
+
+  async function deferModalSubmit(interaction, state, operation, failureMessage) {
+    if (state.interactionExpired) return false;
+    startAck(state, operation);
+    try {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      finishAck(state, null);
+      return true;
+    } catch (error) {
+      finishAck(state, error);
+      if (isInteractionExpired(error)) {
+        markInteractionExpired(state, error, operation);
+        return false;
+      }
+      log("warn", "确认 Modal Submit 失败", interaction, {
+        ...safeErrorFields(error),
+        ackOperation: operation,
+      });
+      await respondEphemeral(interaction, failureMessage, state, `${operation}_failure`);
+      return false;
+    }
+  }
+
+  async function deleteSuccessfulReply(interaction, state, operation) {
+    if (state.interactionExpired || typeof interaction?.deleteReply !== "function") {
+      if (!state.interactionExpired && typeof interaction?.deleteReply !== "function") {
+        log("warn", "删除成功确认失败", interaction, {
+          operation,
+          errorName: "TypeError",
+          errorCode: "DELETE_REPLY_UNAVAILABLE",
+        });
+      }
+      return;
+    }
+    try {
+      await interaction.deleteReply();
+    } catch (error) {
+      if (isInteractionExpired(error)) {
+        markInteractionExpired(state, error, "delete_reply");
+        return;
+      }
+      log("warn", "删除成功确认失败", interaction, {
+        operation,
+        ...safeErrorFields(error),
+      });
+    }
+  }
+
+  async function handleContextMenu(interaction, state) {
     if (!claimInteraction(interaction)) {
-      await respondEphemeral(interaction, DUPLICATE_MESSAGE);
+      await respondEphemeral(interaction, DUPLICATE_MESSAGE, state, "duplicate_context_menu");
       return;
     }
 
     const failure = accessFailure(interaction);
     if (failure) {
       log("warn", `拒绝 Context Menu：${failure.code}`, interaction);
-      await respondEphemeral(interaction, failure.message);
+      await respondEphemeral(interaction, failure.message, state, "context_menu_access_failure");
       return;
     }
 
@@ -187,63 +328,65 @@ export function createManualInteractionRouter({
     });
     if (!modal) {
       log("warn", "Context Menu 目标 ID 格式无效", interaction);
-      await respondEphemeral(interaction, INVALID_CONTEXT_MESSAGE);
+      await respondEphemeral(interaction, INVALID_CONTEXT_MESSAGE, state, "context_menu_invalid_context");
       return;
     }
 
-    try {
-      await interaction.showModal(modal);
-    } catch (error) {
-      log("warn", "打开回复 Modal 失败", interaction, safeErrorFields(error));
-      await respondEphemeral(interaction, REPLY_GENERIC_FAILURE_MESSAGE);
-    }
+    await showModalResponse(
+      interaction,
+      modal,
+      state,
+      "show_reply_modal",
+      REPLY_GENERIC_FAILURE_MESSAGE,
+    );
   }
 
-  async function handleSlashCommand(interaction) {
+  async function handleSlashCommand(interaction, state) {
     if (!claimInteraction(interaction)) {
-      await respondEphemeral(interaction, DUPLICATE_MESSAGE);
+      await respondEphemeral(interaction, DUPLICATE_MESSAGE, state, "duplicate_slash_command");
       return;
     }
 
     const failure = accessFailure(interaction);
     if (failure) {
       log("warn", `拒绝 Slash Command：${failure.code}`, interaction);
-      await respondEphemeral(interaction, failure.message);
+      await respondEphemeral(interaction, failure.message, state, "slash_access_failure");
       return;
     }
 
     const modal = buildSendModal({ channelId: interaction.channelId });
     if (!modal) {
       log("warn", "Slash Command 当前频道 ID 格式无效", interaction);
-      await respondEphemeral(interaction, INVALID_CONTEXT_MESSAGE);
+      await respondEphemeral(interaction, INVALID_CONTEXT_MESSAGE, state, "slash_invalid_context");
       return;
     }
 
-    try {
-      await interaction.showModal(modal);
-    } catch (error) {
-      log("warn", "打开发言 Modal 失败", interaction, safeErrorFields(error));
-      await respondEphemeral(interaction, SEND_GENERIC_FAILURE_MESSAGE);
-    }
+    await showModalResponse(
+      interaction,
+      modal,
+      state,
+      "show_send_modal",
+      SEND_GENERIC_FAILURE_MESSAGE,
+    );
   }
 
-  async function handleModalSubmit(interaction) {
+  async function handleModalSubmit(interaction, state) {
     if (!claimInteraction(interaction)) {
-      await respondEphemeral(interaction, DUPLICATE_MESSAGE);
+      await respondEphemeral(interaction, DUPLICATE_MESSAGE, state, "duplicate_modal_submit");
       return;
     }
 
     const failure = accessFailure(interaction);
     if (failure) {
       log("warn", `拒绝 Modal Submit：${failure.code}`, interaction);
-      await respondEphemeral(interaction, failure.message);
+      await respondEphemeral(interaction, failure.message, state, "modal_access_failure");
       return;
     }
 
     const context = parseManualModalContext(interaction.customId);
     if (!context) {
       log("warn", "Modal Context 无效", interaction);
-      await respondEphemeral(interaction, INVALID_CONTEXT_MESSAGE);
+      await respondEphemeral(interaction, INVALID_CONTEXT_MESSAGE, state, "modal_invalid_context");
       return;
     }
 
@@ -254,12 +397,16 @@ export function createManualInteractionRouter({
     let content;
     try {
       content = interaction.fields.getTextInputValue("content");
-      await interaction.deferReply({ ephemeral: true });
     } catch (error) {
       log("warn", "读取或确认 Modal Submit 失败", interaction, safeErrorFields(error));
-      await respondEphemeral(interaction, genericFailureMessage);
+      await respondEphemeral(interaction, genericFailureMessage, state, "modal_content_read_failure");
       return;
     }
+
+    const deferOperation = context.action === "send"
+      ? "defer_send_submit"
+      : "defer_reply_submit";
+    if (!(await deferModalSubmit(interaction, state, deferOperation, genericFailureMessage))) return;
 
     const user = interaction.user ?? {};
     const actor = {
@@ -277,7 +424,7 @@ export function createManualInteractionRouter({
           actor,
           source: "discord_slash",
         });
-        await respondEphemeral(interaction, "小G宝已经在当前频道发言。");
+        await deleteSuccessfulReply(interaction, state, context.action);
       } else {
         await manualMessageService.reply({
           guildId: interaction.guildId,
@@ -287,7 +434,7 @@ export function createManualInteractionRouter({
           actor,
           source: "discord_context_menu",
         });
-        await respondEphemeral(interaction, REPLY_SUCCESS_MESSAGE);
+        await deleteSuccessfulReply(interaction, state, context.action);
       }
     } catch (error) {
       const message = isManualMessageError(error) ? error.safeMessage : genericFailureMessage;
@@ -296,30 +443,36 @@ export function createManualInteractionRouter({
         operation: context.action,
         ...safeErrorFields(error),
       });
-      await respondEphemeral(interaction, message);
+      await respondEphemeral(interaction, message, state, `${context.action}_service_failure`);
     }
   }
 
-  async function dispatch(interaction) {
+  async function dispatch(interaction, state) {
     if (isRecognizedContextMenu(interaction)) {
-      await handleContextMenu(interaction);
+      await handleContextMenu(interaction, state);
       return;
     }
     if (isRecognizedSlashCommand(interaction)) {
-      await handleSlashCommand(interaction);
+      await handleSlashCommand(interaction, state);
       return;
     }
     if (isRecognizedModal(interaction)) {
-      await handleModalSubmit(interaction);
+      await handleModalSubmit(interaction, state);
     }
   }
 
   function onInteractionCreate(interaction) {
     if (!started) return;
+    const state = createInteractionState(interaction);
     cleanupHandled();
-    void dispatch(interaction).catch((error) => {
+    void dispatch(interaction, state).catch((error) => {
       log("error", "Interaction Router 未捕获异常", interaction, safeErrorFields(error));
-      void respondEphemeral(interaction, REPLY_GENERIC_FAILURE_MESSAGE);
+      const genericFailureMessage = isRecognizedSlashCommand(interaction)
+        || (isRecognizedModal(interaction)
+          && interaction.customId.startsWith(`${MANUAL_SEND_MODAL_PREFIX}:`))
+        ? SEND_GENERIC_FAILURE_MESSAGE
+        : REPLY_GENERIC_FAILURE_MESSAGE;
+      void respondEphemeral(interaction, genericFailureMessage, state, "dispatch_failure");
     });
   }
 

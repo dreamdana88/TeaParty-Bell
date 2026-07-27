@@ -1,5 +1,5 @@
 import { EventEmitter } from "events";
-import { PermissionFlagsBits } from "discord.js";
+import { MessageFlags, PermissionFlagsBits } from "discord.js";
 import { ManualMessageError } from "./errors.js";
 import { SLASH_SEND_COMMAND_NAME } from "./commands.js";
 import { createManualInteractionRouter } from "./interactionRouter.js";
@@ -35,6 +35,7 @@ function makeInteraction({ kind, id = `interaction-${Math.random()}`, ...overrid
   const isModal = kind === "modal" || isSendModal;
   const interaction = {
     id,
+    createdTimestamp: Date.now() - 25,
     type: kind === "context" ? 3 : isModal ? 5 : 2,
     commandName: kind === "context" ? "小G宝回复" : kind === "slash" ? SLASH_SEND_COMMAND_NAME : undefined,
     customId: isSendModal
@@ -66,6 +67,9 @@ function makeInteraction({ kind, id = `interaction-${Math.random()}`, ...overrid
     },
     editReply: async (payload) => {
       calls.push({ method: "editReply", payload });
+    },
+    deleteReply: async () => {
+      calls.push({ method: "deleteReply" });
     },
     showModal: async (modal) => {
       calls.push({ method: "showModal", modal });
@@ -185,7 +189,8 @@ for (const [overrides, expected, label] of [
   await flush();
   assertEqual(replyCalls.length, 0, `${label} 不调用 Service`);
   assertEqual(interaction.calls[0]?.payload?.content, expected, label);
-  assertEqual(interaction.calls[0]?.payload?.ephemeral, true, `${label} ephemeral`);
+  assertEqual(interaction.calls[0]?.payload?.flags, MessageFlags.Ephemeral, `${label} flags`);
+  assertEqual("ephemeral" in (interaction.calls[0]?.payload ?? {}), false, `${label} 不使用 deprecated ephemeral`);
   router.destroy();
 }
 
@@ -195,6 +200,93 @@ for (const [overrides, expected, label] of [
   client.emit("interactionCreate", interaction);
   await flush();
   assertEqual(interaction.calls[0]?.payload?.content, "处理人工发言失败，请稍后重试。", "Slash showModal 失败安全响应");
+  router.destroy();
+}
+
+// 首次响应时序记录接收年龄、开始响应年龄和 Discord REST 响应耗时。
+{
+  const performanceValues = [1000, 1020, 1055];
+  const { client, router, logger } = makeHarness(null, {
+    performanceNow: () => performanceValues.shift(),
+  });
+  const interaction = makeInteraction({
+    kind: "context",
+    id: "timing-context",
+    createdTimestamp: Date.now() - 5000,
+  });
+  client.emit("interactionCreate", interaction);
+  await flush();
+  const timing = logger.calls.find((call) => call.message.includes("Interaction 首次响应时序"));
+  assert(Boolean(timing), "记录 Interaction 首次响应时序");
+  assert(timing && timing.data.interactionAgeAtReceiveMs >= 4900, "记录 receive age");
+  assert(timing && timing.data.interactionAgeAtAckStartMs >= 4900, "记录 ack start age");
+  assertEqual(timing?.data?.ackDurationMs, 35, "记录 ack duration");
+  assertEqual(timing?.data?.ackOperation, "show_reply_modal", "记录 show reply ack operation");
+  assertEqual(timing?.data?.discordCode, null, "成功响应 discordCode 为空");
+  router.destroy();
+}
+
+// Discord 10062 只记录一次安全 WARN，不进行第二次响应，也不调用 Service。
+for (const [kind, operation, label] of [
+  ["context", "show_reply_modal", "showModal"],
+  ["send-modal", "defer_send_submit", "deferReply"],
+]) {
+  let serviceCalls = 0;
+  const service = {
+    reply: async () => { serviceCalls++; },
+    send: async () => { serviceCalls++; },
+  };
+  const { client, router, logger } = makeHarness(service);
+  const expiredError = Object.assign(new Error("secret body"), {
+    name: "DiscordAPIError",
+    code: 10062,
+    stack: "secret stack",
+  });
+  const interaction = makeInteraction({
+    kind,
+    id: `expired-${label}`,
+    ...(label === "showModal"
+      ? { showModal: async () => { throw expiredError; } }
+      : { deferReply: async (payload) => { interaction.calls.push({ method: "deferReply", payload }); throw expiredError; } }),
+  });
+  client.emit("interactionCreate", interaction);
+  await flush();
+  const warnings = logger.calls.filter((call) => call.level === "warn");
+  assertEqual(warnings.length, 1, `${label} 10062 只记录一条 WARN`);
+  assertEqual(warnings[0]?.data?.errorCode, "INTERACTION_EXPIRED", `${label} 10062 归类为 INTERACTION_EXPIRED`);
+  assertEqual(warnings[0]?.data?.discordCode, 10062, `${label} 记录 Discord code`);
+  assertEqual(warnings[0]?.data?.ackOperation, operation, `${label} 记录 ack operation`);
+  assertEqual(serviceCalls, 0, `${label} 10062 不调用 Service`);
+  assert(!interaction.calls.some((call) => ["reply", "followUp", "editReply"].includes(call.method)), `${label} 10062 不进行第二次响应`);
+  const serialized = JSON.stringify(logger.calls);
+  assert(!serialized.includes("secret body"), `${label} 10062 日志不包含原始错误正文`);
+  assert(!serialized.includes("secret stack"), `${label} 10062 日志不包含 stack`);
+  router.destroy();
+}
+
+// 成功消息已发送时只删除临时回复；deleteReply 失败不改变业务成功结果，也不再次响应。
+{
+  let serviceCalls = 0;
+  const service = {
+    reply: async () => ({ messageId: "unused" }),
+    send: async () => { serviceCalls++; return { messageId: "sent-1" }; },
+  };
+  const { client, router, logger } = makeHarness(service);
+  const interaction = makeInteraction({
+    kind: "send-modal",
+    id: "delete-reply-failure",
+    deleteReply: async () => {
+      interaction.calls.push({ method: "deleteReply" });
+      throw new Error("delete secret body");
+    },
+  });
+  client.emit("interactionCreate", interaction);
+  await flush();
+  assertEqual(serviceCalls, 1, "deleteReply 失败前 Service 已成功调用");
+  assert(interaction.calls.some((call) => call.method === "deleteReply"), "成功后尝试 deleteReply");
+  assert(!interaction.calls.some((call) => ["reply", "followUp", "editReply"].includes(call.method)), "deleteReply 失败不重复响应");
+  assert(logger.calls.some((call) => call.message.includes("删除成功确认失败")), "deleteReply 失败写安全日志");
+  assert(!JSON.stringify(logger.calls).includes("delete secret body"), "deleteReply 失败日志不包含原始错误正文");
   router.destroy();
 }
 
@@ -210,7 +302,8 @@ for (const [overrides, expected, label] of [
   await flush();
   assertEqual(replyCalls.length, 0, `${label} 不调用 Service`);
   assertEqual(interaction.calls[0]?.payload?.content, expected, label);
-  assertEqual(interaction.calls[0]?.payload?.ephemeral, true, `${label} ephemeral`);
+  assertEqual(interaction.calls[0]?.payload?.flags, MessageFlags.Ephemeral, `${label} flags`);
+  assertEqual("ephemeral" in (interaction.calls[0]?.payload ?? {}), false, `${label} 不使用 deprecated ephemeral`);
   router.destroy();
 }
 
@@ -228,7 +321,7 @@ for (const [overrides, expected, label] of [
   router.destroy();
 }
 
-// Modal Submit：立即 defer，传递固定 source 与 actor，成功后编辑 ephemeral 回复。
+// Modal Submit：立即 defer，传递固定 source 与 actor，成功后删除 ephemeral 回复。
 {
   const order = [];
   const service = {
@@ -245,9 +338,10 @@ for (const [overrides, expected, label] of [
   await flush();
   assertEqual(order.join(","), "defer,service", "Modal 先 defer 再调用 Service");
   assertEqual(replyCalls.length, 0, "替换 Service 时不记录默认调用");
-  assertEqual(interaction.calls.at(-1)?.method, "editReply", "成功后 editReply");
+  assertEqual(interaction.calls.at(-1)?.method, "deleteReply", "成功后 deleteReply");
   const request = service.request;
-  assert(interaction.calls.some((call) => call.method === "deferReply" && call.payload.ephemeral === true), "deferReply 为 ephemeral");
+  assert(interaction.calls.some((call) => call.method === "deferReply" && call.payload.flags === MessageFlags.Ephemeral), "deferReply 使用 Ephemeral flags");
+  assert(interaction.calls.every((call) => !call.payload || !("ephemeral" in call.payload)), "响应不使用 deprecated ephemeral");
   router.destroy();
 }
 
@@ -290,8 +384,8 @@ for (const [overrides, expected, label] of [
   client.emit("interactionCreate", interaction);
   await flush();
   assertEqual(interaction.calls[0]?.method, "deferReply", "Send Modal 先 deferReply");
-  assertEqual(interaction.calls.at(-1)?.method, "editReply", "Send 成功后 editReply");
-  assertEqual(interaction.calls.at(-1)?.payload?.content, "小G宝已经在当前频道发言。", "Send 成功提示");
+  assertEqual(interaction.calls.at(-1)?.method, "deleteReply", "Send 成功后 deleteReply");
+  assert(interaction.calls.every((call) => call.method !== "editReply"), "Send 成功不显示多余确认卡片");
   assertEqual(request.guildId, GUILD_ID, "Send Service guildId");
   assertEqual(request.channelId, CHANNEL_ID, "Send Service channelId 来自 Modal Context");
   assertEqual(request.content, "发送正文 🫖", "Send Service content");
@@ -299,7 +393,7 @@ for (const [overrides, expected, label] of [
   assertEqual(request.actor.username, "admin", "Send actor.username");
   assertEqual(request.actor.displayName, "管理员", "Send displayName 回退到 globalName");
   assertEqual(request.source, "discord_slash", "Send source 固定为 discord_slash");
-  assert(!interaction.calls.at(-1)?.payload?.content.includes("发送正文"), "Send 成功提示不包含正文");
+  assert(interaction.calls.every((call) => !call.payload || !("ephemeral" in call.payload)), "Send 响应不使用 deprecated ephemeral");
   router.destroy();
 }
 
@@ -319,7 +413,8 @@ for (const [overrides, label] of [
   client.emit("interactionCreate", interaction);
   await flush();
   assertEqual(serviceCalls.length, 0, `${label} 不调用 send`);
-  assertEqual(interaction.calls[0]?.payload?.ephemeral, true, `${label} ephemeral`);
+  assertEqual(interaction.calls[0]?.payload?.flags, MessageFlags.Ephemeral, `${label} flags`);
+  assertEqual("ephemeral" in (interaction.calls[0]?.payload ?? {}), false, `${label} 不使用 deprecated ephemeral`);
   router.destroy();
 }
 
