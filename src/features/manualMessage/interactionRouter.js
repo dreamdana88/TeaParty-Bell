@@ -17,7 +17,8 @@ const DEFAULT_HANDLED_INTERACTION_TTL_MS = 10 * 60 * 1000;
 const REPLY_SUCCESS_MESSAGE = "小G宝已经回复这条消息。";
 const DUPLICATE_MESSAGE = "该操作已经处理。";
 const INVALID_CONTEXT_MESSAGE = "该操作已失效，请重新打开。";
-const GENERIC_FAILURE_MESSAGE = "处理人工回复失败，请稍后重试。";
+export const REPLY_GENERIC_FAILURE_MESSAGE = "处理人工回复失败，请稍后重试。";
+export const SEND_GENERIC_FAILURE_MESSAGE = "处理人工发言失败，请稍后重试。";
 const NOT_IN_GUILD_MESSAGE = "该操作只能在服务器内使用。";
 const WRONG_GUILD_MESSAGE = "该操作不能用于当前服务器。";
 const NOT_ADMIN_MESSAGE = "只有管理员可以使用该操作。";
@@ -70,8 +71,10 @@ export function createManualInteractionRouter({
   if (!client || typeof client.on !== "function") {
     throw new TypeError("client must provide on()");
   }
-  if (!manualMessageService || typeof manualMessageService.reply !== "function") {
-    throw new TypeError("manualMessageService must provide reply()");
+  if (!manualMessageService
+    || typeof manualMessageService.reply !== "function"
+    || typeof manualMessageService.send !== "function") {
+    throw new TypeError("manualMessageService must provide reply() and send()");
   }
 
   const getNow = typeof now === "function" ? now : () => Date.now();
@@ -192,7 +195,7 @@ export function createManualInteractionRouter({
       await interaction.showModal(modal);
     } catch (error) {
       log("warn", "打开回复 Modal 失败", interaction, safeErrorFields(error));
-      await respondEphemeral(interaction, GENERIC_FAILURE_MESSAGE);
+      await respondEphemeral(interaction, REPLY_GENERIC_FAILURE_MESSAGE);
     }
   }
 
@@ -220,7 +223,7 @@ export function createManualInteractionRouter({
       await interaction.showModal(modal);
     } catch (error) {
       log("warn", "打开发言 Modal 失败", interaction, safeErrorFields(error));
-      await respondEphemeral(interaction, GENERIC_FAILURE_MESSAGE);
+      await respondEphemeral(interaction, SEND_GENERIC_FAILURE_MESSAGE);
     }
   }
 
@@ -244,13 +247,17 @@ export function createManualInteractionRouter({
       return;
     }
 
+    const genericFailureMessage = context.action === "send"
+      ? SEND_GENERIC_FAILURE_MESSAGE
+      : REPLY_GENERIC_FAILURE_MESSAGE;
+
     let content;
     try {
       content = interaction.fields.getTextInputValue("content");
       await interaction.deferReply({ ephemeral: true });
     } catch (error) {
       log("warn", "读取或确认 Modal Submit 失败", interaction, safeErrorFields(error));
-      await respondEphemeral(interaction, GENERIC_FAILURE_MESSAGE);
+      await respondEphemeral(interaction, genericFailureMessage);
       return;
     }
 
@@ -283,7 +290,7 @@ export function createManualInteractionRouter({
         await respondEphemeral(interaction, REPLY_SUCCESS_MESSAGE);
       }
     } catch (error) {
-      const message = isManualMessageError(error) ? error.safeMessage : GENERIC_FAILURE_MESSAGE;
+      const message = isManualMessageError(error) ? error.safeMessage : genericFailureMessage;
       const operationLabel = context.action === "send" ? "发言" : "回复";
       log("warn", `Manual Message Service ${operationLabel}失败`, interaction, {
         operation: context.action,
@@ -312,7 +319,7 @@ export function createManualInteractionRouter({
     cleanupHandled();
     void dispatch(interaction).catch((error) => {
       log("error", "Interaction Router 未捕获异常", interaction, safeErrorFields(error));
-      void respondEphemeral(interaction, GENERIC_FAILURE_MESSAGE);
+      void respondEphemeral(interaction, REPLY_GENERIC_FAILURE_MESSAGE);
     });
   }
 
@@ -338,4 +345,6 @@ export const MANUAL_INTERACTION_ROUTER_MESSAGES = Object.freeze({
   REPLY_SUCCESS_MESSAGE,
   DUPLICATE_MESSAGE,
   INVALID_CONTEXT_MESSAGE,
+  REPLY_GENERIC_FAILURE_MESSAGE,
+  SEND_GENERIC_FAILURE_MESSAGE,
 });

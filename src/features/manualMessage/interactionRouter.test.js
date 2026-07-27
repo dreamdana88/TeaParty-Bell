@@ -103,7 +103,49 @@ function makeHarness(service = null, options = {}) {
   return { client, logger, router, replyCalls };
 }
 
+function expectRouterTypeError(service, label) {
+  const client = makeClient();
+  let error;
+  try {
+    createManualInteractionRouter({
+      client,
+      manualMessageService: service,
+      guildId: GUILD_ID,
+      logger: makeLogger(),
+    });
+  } catch (caught) {
+    error = caught;
+  }
+  assert(error instanceof TypeError, `${label} 构造阶段抛出 TypeError`);
+  assertEqual(client.listenerCount("interactionCreate"), 0, `${label} 不注册 InteractionCreate listener`);
+}
+
 console.log("\n=== Manual Interaction Router ===\n");
+
+// Router 构造阶段严格要求共享 Service 同时具备 send 与 reply。
+for (const [service, label] of [
+  [undefined, "Service 缺失"],
+  [null, "Service=null"],
+  [{ send: async () => {} }, "reply 缺失"],
+  [{ reply: async () => {} }, "send 缺失"],
+  [{ reply: "not-a-function", send: async () => {} }, "reply 非函数"],
+  [{ reply: async () => {}, send: "not-a-function" }, "send 非函数"],
+]) {
+  expectRouterTypeError(service, label);
+}
+
+{
+  const client = makeClient();
+  const router = createManualInteractionRouter({
+    client,
+    manualMessageService: { reply: async () => {}, send: async () => {} },
+    guildId: GUILD_ID,
+    logger: makeLogger(),
+  });
+  assert(typeof router.start === "function" && typeof router.destroy === "function", "同时具备 send/reply 时成功创建 Router");
+  assertEqual(client.listenerCount("interactionCreate"), 0, "构造成功但 start 前不注册 listener");
+  router.destroy();
+}
 
 // Context Menu 只打开 Modal，不读取目标正文，也不直接调用 Service。
 {
@@ -152,7 +194,7 @@ for (const [overrides, expected, label] of [
   const interaction = makeInteraction({ kind: "slash", id: "slash-show-failure", showModal: async () => { throw new Error("slash token secret"); } });
   client.emit("interactionCreate", interaction);
   await flush();
-  assertEqual(interaction.calls[0]?.payload?.content, "处理人工回复失败，请稍后重试。", "Slash showModal 失败安全响应");
+  assertEqual(interaction.calls[0]?.payload?.content, "处理人工发言失败，请稍后重试。", "Slash showModal 失败安全响应");
   router.destroy();
 }
 
@@ -189,7 +231,10 @@ for (const [overrides, expected, label] of [
 // Modal Submit：立即 defer，传递固定 source 与 actor，成功后编辑 ephemeral 回复。
 {
   const order = [];
-  const service = { reply: async (request) => { order.push("service"); return { messageId: "sent-1" }; } };
+  const service = {
+    reply: async (request) => { order.push("service"); return { messageId: "sent-1" }; },
+    send: async () => ({ messageId: "unused" }),
+  };
   const { client, router, replyCalls } = makeHarness(service);
   const interaction = makeInteraction({
     kind: "modal",
@@ -209,7 +254,10 @@ for (const [overrides, expected, label] of [
 // 精确核对 Service 参数。
 {
   let request;
-  const service = { reply: async (value) => { request = value; return { messageId: "sent-1" }; } };
+  const service = {
+    reply: async (value) => { request = value; return { messageId: "sent-1" }; },
+    send: async () => ({ messageId: "unused" }),
+  };
   const { client, router } = makeHarness(service);
   const interaction = makeInteraction({ kind: "modal", id: "modal-params" });
   client.emit("interactionCreate", interaction);
@@ -279,7 +327,7 @@ for (const [error, expected, label] of [
   [new ManualMessageError("CHANNEL_NOT_FOUND"), "目标频道不存在或无法访问。", "Send 频道删除错误"],
   [new ManualMessageError("BOT_MISSING_PERMISSION"), "小G宝缺少在目标频道发言所需的权限。", "Send 权限变化错误"],
   [new ManualMessageError("THREAD_LOCKED"), "目标 Thread 已锁定，无法发言。", "Send locked Thread 错误"],
-  [new Error("send secret body"), "处理人工回复失败，请稍后重试。", "Send 未知错误"],
+  [new Error("send secret body"), "处理人工发言失败，请稍后重试。", "Send 未知错误"],
 ]) {
   const service = {
     reply: async () => ({ messageId: "unused" }),
@@ -318,7 +366,10 @@ for (const [error, expected, label] of [
   [Object.assign(new ManualMessageError("REPLY_FAILED", "安全失败提示", Object.assign(new Error("secret cause"), { code: 50013 })), { discordCode: 50013 }), "安全失败提示", "业务错误 safeMessage"],
   [Object.assign(new Error("secret body"), { code: 50013 }), "处理人工回复失败，请稍后重试。", "未知错误通用文案"],
 ]) {
-  const service = { reply: async () => { throw error; } };
+  const service = {
+    reply: async () => { throw error; },
+    send: async () => ({ messageId: "unused" }),
+  };
   const { client, router, logger } = makeHarness(service);
   const interaction = makeInteraction({ kind: "modal", id: `failure-${label}` });
   client.emit("interactionCreate", interaction);
@@ -350,14 +401,19 @@ function isManualMessageErrorForTest(error) {
 }
 
 // defer / reply / 顶层 dispatch 的错误路径使用同一套安全摘要。
-for (const [interactionOptions, label] of [
-  [{ fields: { getTextInputValue: () => { throw new Error("modal secret"); } } }, "defer 前读取失败"],
-  [{ inGuild: () => false, reply: async () => { throw new Error("token secret"); } }, "reply 失败"],
+for (const [interactionOptions, label, expected] of [
+  [{ fields: { getTextInputValue: () => { throw new Error("reply modal secret"); } } }, "Reply Modal 读取失败", "处理人工回复失败，请稍后重试。"],
+  [{ fields: { getTextInputValue: () => { throw new Error("send modal secret"); } } }, "Send Modal 读取失败", "处理人工发言失败，请稍后重试。"],
+  [{ inGuild: () => false, reply: async () => { throw new Error("token secret"); } }, "reply 失败", null],
 ]) {
   const { client, router, logger } = makeHarness();
-  const interaction = makeInteraction({ kind: label === "reply 失败" ? "context" : "modal", id: `safe-${label}`, ...interactionOptions });
+  const kind = label === "reply 失败"
+    ? "context"
+    : label.startsWith("Send") ? "send-modal" : "modal";
+  const interaction = makeInteraction({ kind, id: `safe-${label}`, ...interactionOptions });
   client.emit("interactionCreate", interaction);
   await flush();
+  if (expected) assertEqual(interaction.calls.at(-1)?.payload?.content, expected, `${label} 安全文案`);
   const serialized = JSON.stringify(logger.calls);
   assert(serialized.includes("Interaction Router operation failed."), `${label} 写固定安全摘要`);
   assert(!serialized.includes("secret"), `${label} 不记录原始错误正文`);
@@ -393,7 +449,10 @@ for (const [interactionOptions, label] of [
 // 同一个 Interaction ID 只允许一次处理；destroy 后不再处理新事件，且可安全重复调用。
 {
   let serviceCount = 0;
-  const service = { reply: async () => { serviceCount++; return { messageId: "sent-1" }; } };
+  const service = {
+    reply: async () => { serviceCount++; return { messageId: "sent-1" }; },
+    send: async () => ({ messageId: "unused" }),
+  };
   const { client, router } = makeHarness(service);
   const first = makeInteraction({ kind: "modal", id: "duplicate-1" });
   const second = makeInteraction({ kind: "modal", id: "duplicate-1" });
@@ -431,7 +490,10 @@ for (const [interactionOptions, label] of [
 {
   let current = 100;
   let serviceCount = 0;
-  const service = { reply: async () => { serviceCount++; return { messageId: "sent-1" }; } };
+  const service = {
+    reply: async () => { serviceCount++; return { messageId: "sent-1" }; },
+    send: async () => ({ messageId: "unused" }),
+  };
   const { client, router } = makeHarness(service, { now: () => current, handledInteractionTtlMs: 10 });
   router.start();
   client.emit("interactionCreate", makeInteraction({ kind: "modal", id: "ttl-1" }));
