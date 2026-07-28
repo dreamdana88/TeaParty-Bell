@@ -28,6 +28,9 @@ data/history/*.json
 
 # Runtime state (do NOT commit)
 data/runtime/
+# Forum Bump 状态（显式列出，防止忽略规则变更时漏掉）
+data/runtime/forum-bump/state.json
+data/runtime/forum-bump/state.json.tmp-*
 
 # Emoji backup (local asset export — do NOT commit)
 data/exported-emojis/
