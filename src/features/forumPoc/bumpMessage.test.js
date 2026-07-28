@@ -90,12 +90,17 @@ function makeThread(overrides = {}) {
   return { thread, state };
 }
 
-function makeClient(thread, { onFetch } = {}) {
+function makeClient(thread, { onFetch, failForceOn } = {}) {
   return {
     user: { id: "bot-1" },
     channels: {
-      fetch: async (id) => {
-        if (onFetch) onFetch(id);
+      fetch: async (id, options) => {
+        if (onFetch) onFetch(id, options);
+        if (failForceOn && failForceOn(id, options)) {
+          const err = new Error("force fetch failed");
+          err.code = 500;
+          throw err;
+        }
         if (id === THREAD_ID) return thread;
         if (id === FORUM_ID) return thread.parent;
         return null;
@@ -313,14 +318,15 @@ try {
   assertEqual(result.plannedAction.deleteDelayMs, BUMP_DELETE_DELAY_MS, "计划延迟 1000ms");
 }
 
-// ---- Execute 成功 ----
+// ---- Execute 成功：强制 force 刷新 + 两次 1000ms 等待 ----
 {
   let sendCalls = 0;
   let deleteCalls = 0;
   let sleepCalls = 0;
-  let sleepMs = null;
+  const sleepMsList = [];
   let sentPayload = null;
   const deletedIds = [];
+  const fetchCalls = [];
 
   const { thread, state } = makeThread();
   thread.send = async (payload) => {
@@ -341,7 +347,9 @@ try {
 
   const logs = [];
   const result = await bumpForumThreadMessage({
-    client: makeClient(thread),
+    client: makeClient(thread, {
+      onFetch: (id, options) => fetchCalls.push({ id, force: options?.force === true }),
+    }),
     config: baseConfig(),
     threadId: THREAD_ID,
     confirmGuild: GUILD_ID,
@@ -349,7 +357,7 @@ try {
     clock: fixedClock,
     sleep: async (ms) => {
       sleepCalls += 1;
-      sleepMs = ms;
+      sleepMsList.push(ms);
     },
     logger: {
       info: (m, meta) => logs.push({ level: "info", m, meta }),
@@ -360,8 +368,9 @@ try {
 
   assertEqual(sendCalls, 1, "send 只调用一次");
   assertEqual(deleteCalls, 1, "delete 只调用一次");
-  assertEqual(sleepCalls, 1, "sleep 调用一次");
-  assertEqual(sleepMs, 1000, "sleep(1000)");
+  assertEqual(sleepCalls, 2, "sleep 调用两次（删前 + 删后 afterDelete）");
+  assertEqual(sleepMsList[0], 1000, "第一次 sleep(1000)");
+  assertEqual(sleepMsList[1], 1000, "第二次 sleep(1000)");
   assertEqual(sentPayload.content, BUMP_MESSAGE_CONTENT, "固定测试文案");
   assertEqual(JSON.stringify(sentPayload.allowedMentions.parse), "[]", "allowedMentions.parse 空");
   assertEqual(JSON.stringify(sentPayload.allowedMentions.users), "[]", "allowedMentions.users 空");
@@ -374,11 +383,105 @@ try {
   assertEqual(deletedIds[0], MESSAGE_ID, "删除同一消息 id");
   assertEqual(result.clientObservations.observedSortPositionAfter, null, "不伪装 UI 排序");
 
+  const threadForceFetches = fetchCalls.filter((c) => c.id === THREAD_ID && c.force);
+  assert(threadForceFetches.length >= 3, "before/afterSend/afterDelete 均 force 刷新 Thread");
+  assert(fetchCalls.every((c) => c.id !== THREAD_ID || c.force === true), "Thread fetch 全部 force=true");
+
   const logBlob = JSON.stringify(logs);
   assert(!logBlob.includes("TOKEN_SECRET_VALUE"), "日志无 Token");
   assert(!logBlob.includes(BUMP_MESSAGE_CONTENT), "日志无固定消息正文");
   assert(!logBlob.includes("stack"), "日志无 stack 字段滥用");
   assert(!logBlob.includes("\"headers\""), "日志无请求头");
+}
+
+// ---- afterSend 强制刷新失败：不得伪装快照 ----
+{
+  let sendCalls = 0;
+  let deleteCalls = 0;
+  let forceFailCount = 0;
+  const { thread, state } = makeThread();
+  thread.send = async () => {
+    sendCalls += 1;
+    state.lastMessageId = MESSAGE_ID;
+    return {
+      id: MESSAGE_ID,
+      delete: async () => {
+        deleteCalls += 1;
+      },
+    };
+  };
+
+  const result = await bumpForumThreadMessage({
+    client: makeClient(thread, {
+      failForceOn: (id, options) => {
+        // 首次 load 成功；send 后的 force 刷新失败
+        if (id === THREAD_ID && options?.force === true) {
+          forceFailCount += 1;
+          // loadValidated 第一次 + 可能 parent；只让 afterSend 的 thread refresh 失败
+          // load 时 force 也会走这里——用计数：第 1 次 thread force 是 load，第 2 次是 afterSend
+          return forceFailCount >= 2;
+        }
+        return false;
+      },
+    }),
+    config: baseConfig(),
+    threadId: THREAD_ID,
+    confirmGuild: GUILD_ID,
+    execute: true,
+    clock: fixedClock,
+    sleep: async () => {},
+  });
+
+  assertEqual(sendCalls, 1, "afterSend 失败前已发送一次");
+  assertEqual(result.success, false, "afterSend 刷新失败 success=false");
+  assertEqual(result.errorCode, "SNAPSHOT_FAILED", "errorCode SNAPSHOT_FAILED");
+  assertEqual(result.afterSend, null, "不得伪装 afterSend 快照");
+  assertEqual(result.afterDelete, null, "afterSend 失败无 afterDelete");
+  assert(deleteCalls === 1, "快照失败后尝试删除临时消息");
+  assertEqual(result.cleanupRequired, false, "删除成功则 cleanupRequired=false");
+}
+
+// ---- afterDelete 强制刷新失败 ----
+{
+  let sleepCalls = 0;
+  const { thread, state } = makeThread();
+  thread.send = async () => {
+    state.lastMessageId = MESSAGE_ID;
+    return {
+      id: MESSAGE_ID,
+      delete: async () => {
+        state.messageCount = Math.max(0, state.messageCount - 1);
+      },
+    };
+  };
+
+  let threadForceCount = 0;
+  const result = await bumpForumThreadMessage({
+    client: makeClient(thread, {
+      failForceOn: (id, options) => {
+        if (id === THREAD_ID && options?.force === true) {
+          threadForceCount += 1;
+          // 1=load before, 2=afterSend, 3=afterDelete
+          return threadForceCount >= 3;
+        }
+        return false;
+      },
+    }),
+    config: baseConfig(),
+    threadId: THREAD_ID,
+    confirmGuild: GUILD_ID,
+    execute: true,
+    clock: fixedClock,
+    sleep: async () => { sleepCalls += 1; },
+  });
+
+  assertEqual(result.success, false, "afterDelete 刷新失败 success=false");
+  assertEqual(result.errorCode, "SNAPSHOT_FAILED", "afterDelete SNAPSHOT_FAILED");
+  assert(result.afterSend !== null, "afterSend 已采集");
+  assertEqual(result.afterDelete, null, "不得伪装 afterDelete");
+  assertEqual(result.cleanupRequired, false, "消息已删除无需手动清理");
+  assertEqual(result.messageDeleted, true, "标记 messageDeleted");
+  assertEqual(sleepCalls, 2, "删前与删后均 sleep");
 }
 
 // ---- 发送失败 ----

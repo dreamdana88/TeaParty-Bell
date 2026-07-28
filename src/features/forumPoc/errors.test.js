@@ -46,6 +46,7 @@ for (const code of [
   "SEND_FAILED",
   "DELETE_FAILED",
   "INSPECT_FAILED",
+  "SNAPSHOT_FAILED",
   "INVALID_ARGUMENT",
 ]) {
   const msg = getSafeMessage(code);

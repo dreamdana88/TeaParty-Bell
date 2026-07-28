@@ -66,11 +66,17 @@ function makeThread(overrides = {}) {
   };
 }
 
-function makeClient(thread) {
+function makeClient(thread, { onFetch, failForce } = {}) {
   return {
     user: { id: "bot-1" },
     channels: {
-      fetch: async (id) => {
+      fetch: async (id, options) => {
+        if (onFetch) onFetch(id, options);
+        if (failForce && options?.force === true && id === THREAD_ID) {
+          const err = new Error("force failed");
+          err.code = 500;
+          throw err;
+        }
         if (id === THREAD_ID) return thread;
         if (id === FORUM_ID) return thread.parent;
         return null;
@@ -216,6 +222,44 @@ try {
     assert(false, "不存在 thread 应失败");
   } catch (error) {
     assert(error.code === "THREAD_NOT_FOUND", "Thread 不存在");
+  }
+}
+
+{
+  const fetchCalls = [];
+  const thread = makeThread();
+  await inspectForumThread({
+    client: makeClient(thread, {
+      onFetch: (id, options) => fetchCalls.push({ id, force: options?.force === true }),
+    }),
+    config: baseConfig(),
+    threadId: THREAD_ID,
+    confirmGuild: GUILD_ID,
+    clock: fixedClock,
+  });
+  const threadFetches = fetchCalls.filter((c) => c.id === THREAD_ID);
+  assert(threadFetches.length >= 1, "inspect 至少 fetch 一次 Thread");
+  assert(threadFetches.every((c) => c.force === true), "inspect Thread fetch 使用 force:true");
+  const forumFetches = fetchCalls.filter((c) => c.id === FORUM_ID);
+  assert(forumFetches.every((c) => c.force === true), "inspect 父 Forum force:true");
+}
+
+{
+  try {
+    await inspectForumThread({
+      client: makeClient(makeThread(), { failForce: true }),
+      config: baseConfig(),
+      threadId: THREAD_ID,
+      confirmGuild: GUILD_ID,
+      clock: fixedClock,
+    });
+    assert(false, "force 刷新失败应拒绝");
+  } catch (error) {
+    assert(
+      error.code === "INSPECT_FAILED" || error.code === "SNAPSHOT_FAILED" || error.code === "THREAD_NOT_FOUND",
+      "inspect force 失败返回明确错误",
+    );
+    assert(error.safeMessage && !error.safeMessage.includes("TOKEN"), "inspect 失败错误安全");
   }
 }
 

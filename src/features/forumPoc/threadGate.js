@@ -39,16 +39,32 @@ export function getChannelGuildId(channel) {
 }
 
 /**
- * 解析父 Forum 频道（可能需 fetch）。
+ * 解析父 Forum 频道。
  * @param {object} thread
  * @param {object} client
+ * @param {{ force?: boolean }} [options]
  * @returns {Promise<object|null>}
  */
-export async function resolveParentForum(thread, client) {
+export async function resolveParentForum(thread, client, options = {}) {
+  const force = options.force === true;
+  const parentId = thread?.parentId ?? thread?.parent?.id ?? null;
+
+  // 快照路径必须 force REST，禁止只读 thread.parent 缓存。
+  if (force) {
+    if (!parentId || !client?.channels?.fetch) {
+      return null;
+    }
+    try {
+      const parent = await client.channels.fetch(parentId, { force: true });
+      return parent ?? null;
+    } catch {
+      return null;
+    }
+  }
+
   if (thread?.parent && thread.parent.type === ChannelType.GuildForum) {
     return thread.parent;
   }
-  const parentId = thread?.parentId ?? null;
   if (!parentId || !client?.channels?.fetch) {
     return null;
   }
@@ -61,11 +77,14 @@ export async function resolveParentForum(thread, client) {
 }
 
 /**
+ * 获取 Thread 频道。默认 force REST，避免读到陈旧缓存。
  * @param {object} client
  * @param {string} threadId
+ * @param {{ force?: boolean }} [options]
  * @returns {Promise<object>}
  */
-export async function fetchThreadChannel(client, threadId) {
+export async function fetchThreadChannel(client, threadId, options = {}) {
+  const force = options.force !== false;
   if (!threadId || typeof threadId !== "string" || threadId.trim().length === 0) {
     throw createForumPocError("INVALID_ARGUMENT");
   }
@@ -75,7 +94,7 @@ export async function fetchThreadChannel(client, threadId) {
 
   let channel;
   try {
-    channel = await client.channels.fetch(threadId);
+    channel = await client.channels.fetch(threadId, { force });
   } catch (error) {
     if (error?.code === UNKNOWN_CHANNEL_CODE || MISSING_PERMISSION_CODES.has(error?.code)) {
       throw createForumPocError("THREAD_NOT_FOUND", error);
@@ -87,6 +106,35 @@ export async function fetchThreadChannel(client, threadId) {
     throw createForumPocError("THREAD_NOT_FOUND");
   }
   return channel;
+}
+
+/**
+ * 强制 REST 刷新 Thread + 父 Forum，并生成快照。
+ * 失败时抛出 SNAPSHOT_FAILED / INSPECT_FAILED，不得退回旧对象伪装新快照。
+ * @param {object} client
+ * @param {string} threadId
+ * @param {{ now: () => number }} clock
+ * @param {(thread: object, parent: object, clock: object) => object} captureFn
+ * @returns {Promise<{ thread: object, parentForum: object, snapshot: object }>}
+ */
+export async function forceRefreshThreadSnapshot(client, threadId, clock, captureFn) {
+  let thread;
+  try {
+    thread = await fetchThreadChannel(client, threadId, { force: true });
+  } catch (error) {
+    if (error?.code === "THREAD_NOT_FOUND" || error?.code === "INVALID_ARGUMENT") {
+      throw error;
+    }
+    throw createForumPocError("SNAPSHOT_FAILED", error);
+  }
+
+  const parentForum = await resolveParentForum(thread, client, { force: true });
+  if (!parentForum || parentForum.type !== ChannelType.GuildForum) {
+    throw createForumPocError("SNAPSHOT_FAILED");
+  }
+
+  const snapshot = captureFn(thread, parentForum, clock);
+  return { thread, parentForum, snapshot };
 }
 
 /**
@@ -153,8 +201,8 @@ export function assertBotThreadPermissions(thread, client) {
  * @returns {Promise<{ thread: object, parentForum: object }>}
  */
 export async function loadValidatedForumThread(client, config, threadId, options = {}) {
-  const thread = await fetchThreadChannel(client, threadId);
-  const parentForum = await resolveParentForum(thread, client);
+  const thread = await fetchThreadChannel(client, threadId, { force: true });
+  const parentForum = await resolveParentForum(thread, client, { force: true });
   assertForumThreadTarget(thread, parentForum, config, options);
   return { thread, parentForum };
 }

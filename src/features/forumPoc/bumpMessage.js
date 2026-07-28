@@ -10,8 +10,7 @@ import {
   assertBotThreadPermissions,
   assertDevConfigGate,
   loadValidatedForumThread,
-  fetchThreadChannel,
-  resolveParentForum,
+  forceRefreshThreadSnapshot,
 } from "./threadGate.js";
 
 /** 固定测试文案，不允许 CLI 自定义。 */
@@ -19,7 +18,7 @@ export const BUMP_MESSAGE_CONTENT = "【小G宝自动顶帖测试】此消息将
 
 export const BUMP_MESSAGE_CONTENT_LENGTH = [...BUMP_MESSAGE_CONTENT].length;
 
-/** 发送后删除前的固定等待（毫秒）。 */
+/** 发送后删除前、删除后采集 afterDelete 前的固定等待（毫秒）。 */
 export const BUMP_DELETE_DELAY_MS = 1000;
 
 /** 严格禁止一切 mention 解析。 */
@@ -45,6 +44,22 @@ function safeDiscordMeta(error) {
     errorName: typeof error?.name === "string" && error.name.length > 0 ? error.name : "Error",
     discordCode: error?.code ?? null,
   };
+}
+
+/**
+ * 发送成功后尝试删除同一条消息（最多一次），用于快照失败时的清理。
+ * @returns {Promise<boolean>} 是否删除成功
+ */
+async function tryDeleteOnce(sentMessage) {
+  if (!sentMessage || typeof sentMessage.delete !== "function") {
+    return false;
+  }
+  try {
+    await sentMessage.delete();
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -95,6 +110,7 @@ export async function bumpForumThreadMessage({
         sendContentLength: BUMP_MESSAGE_CONTENT_LENGTH,
         allowedMentions: { ...BUMP_ALLOWED_MENTIONS, parse: [], users: [], roles: [] },
         deleteDelayMs: BUMP_DELETE_DELAY_MS,
+        afterDeleteSettleMs: BUMP_DELETE_DELAY_MS,
       },
       before,
       afterSend: null,
@@ -163,19 +179,60 @@ export async function bumpForumThreadMessage({
     throw createForumPocError("SEND_FAILED");
   }
 
-  let afterSendThread = thread;
+  let afterSend;
   try {
-    afterSendThread = await fetchThreadChannel(client, threadId);
-  } catch {
-    afterSendThread = thread;
+    const refreshed = await forceRefreshThreadSnapshot(
+      client,
+      threadId,
+      clock,
+      captureThreadSnapshot,
+    );
+    afterSend = refreshed.snapshot;
+  } catch (error) {
+    const deleted = await tryDeleteOnce(sentMessage);
+    const failResult = {
+      operation: "bump-message",
+      success: false,
+      dryRun: false,
+      execute: true,
+      cleanupRequired: !deleted,
+      sentMessageId,
+      guildId: before.guildId,
+      forumChannelId: before.forumChannelId,
+      threadId: before.threadId,
+      before,
+      afterSend: null,
+      afterDelete: null,
+      durationMs: Math.max(0, clock.now() - startedAt),
+      errorCode: "SNAPSHOT_FAILED",
+      safeMessage: createForumPocError("SNAPSHOT_FAILED", error).safeMessage,
+      manualCleanupHint: deleted ? null : MANUAL_CLEANUP_HINT,
+      clientObservations,
+    };
+
+    try {
+      logger?.error?.("[ForumPoc] afterSend snapshot refresh failed", {
+        operation: "bump-message",
+        dryRun: false,
+        guildId: failResult.guildId,
+        forumChannelId: failResult.forumChannelId,
+        threadId: failResult.threadId,
+        sentMessageId,
+        durationMs: failResult.durationMs,
+        before,
+        afterSend: null,
+        afterDelete: null,
+        success: false,
+        cleanupRequired: failResult.cleanupRequired,
+        errorCode: "SNAPSHOT_FAILED",
+        ...safeDiscordMeta(error),
+      });
+    } catch {
+      // ignore
+    }
+
+    return failResult;
   }
-  let afterSendParent = parentForum;
-  try {
-    afterSendParent = await resolveParentForum(afterSendThread, client) ?? parentForum;
-  } catch {
-    afterSendParent = parentForum;
-  }
-  const afterSend = captureThreadSnapshot(afterSendThread, afterSendParent, clock);
 
   await sleep(BUMP_DELETE_DELAY_MS);
 
@@ -229,19 +286,63 @@ export async function bumpForumThreadMessage({
     return failResult;
   }
 
-  let afterDeleteThread = afterSendThread;
+  // 删除成功后固定等待，再强制刷新 afterDelete（禁止读缓存伪装）。
+  await sleep(BUMP_DELETE_DELAY_MS);
+
+  let afterDelete;
   try {
-    afterDeleteThread = await fetchThreadChannel(client, threadId);
-  } catch {
-    afterDeleteThread = afterSendThread;
+    const refreshed = await forceRefreshThreadSnapshot(
+      client,
+      threadId,
+      clock,
+      captureThreadSnapshot,
+    );
+    afterDelete = refreshed.snapshot;
+  } catch (error) {
+    const failResult = {
+      operation: "bump-message",
+      success: false,
+      dryRun: false,
+      execute: true,
+      cleanupRequired: false,
+      sentMessageId,
+      guildId: before.guildId,
+      forumChannelId: before.forumChannelId,
+      threadId: before.threadId,
+      before,
+      afterSend,
+      afterDelete: null,
+      durationMs: Math.max(0, clock.now() - startedAt),
+      errorCode: "SNAPSHOT_FAILED",
+      safeMessage: createForumPocError("SNAPSHOT_FAILED", error).safeMessage,
+      messageDeleted: true,
+      clientObservations,
+    };
+
+    try {
+      logger?.error?.("[ForumPoc] afterDelete snapshot refresh failed", {
+        operation: "bump-message",
+        dryRun: false,
+        guildId: failResult.guildId,
+        forumChannelId: failResult.forumChannelId,
+        threadId: failResult.threadId,
+        sentMessageId,
+        durationMs: failResult.durationMs,
+        before,
+        afterSend,
+        afterDelete: null,
+        success: false,
+        cleanupRequired: false,
+        errorCode: "SNAPSHOT_FAILED",
+        ...safeDiscordMeta(error),
+      });
+    } catch {
+      // ignore
+    }
+
+    return failResult;
   }
-  let afterDeleteParent = afterSendParent;
-  try {
-    afterDeleteParent = await resolveParentForum(afterDeleteThread, client) ?? afterSendParent;
-  } catch {
-    afterDeleteParent = afterSendParent;
-  }
-  const afterDelete = captureThreadSnapshot(afterDeleteThread, afterDeleteParent, clock);
+
   const durationMs = Math.max(0, clock.now() - startedAt);
 
   const successResult = {

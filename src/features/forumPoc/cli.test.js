@@ -103,7 +103,7 @@ function makeHarness({
   const client = {
     user: { id: "bot" },
     channels: {
-      fetch: async (id) => {
+      fetch: async (id, _options) => {
         if (id === THREAD_ID) return thread;
         if (id === FORUM_ID) return parent;
         return null;
@@ -111,7 +111,10 @@ function makeHarness({
     },
   };
 
+  let clientCreated = 0;
+
   function createClientFn() {
+    clientCreated += 1;
     return {
       client,
       login: async () => {
@@ -130,6 +133,7 @@ function makeHarness({
     createClientFn,
     get loginCalled() { return loginCalled; },
     get destroyCalled() { return destroyCalled; },
+    get clientCreated() { return clientCreated; },
     setDestroyFail(v) { destroyShouldFail = v; },
   };
 }
@@ -196,7 +200,7 @@ for (const argv of [
   assert(!stderr.lines.join("").includes(TOKEN), "inspect 错误流无 Token");
 }
 
-// production 拒绝
+// production 拒绝：不得 createClient / login
 {
   const h = makeHarness();
   const stderr = outputBuffer();
@@ -207,11 +211,14 @@ for (const argv of [
     stderr,
   });
   assert(result.exitCode !== 0, "production 非 0");
-  assertEqual(h.destroyCalled, 1, "production 失败仍 destroy");
+  assertEqual(h.clientCreated, 0, "production 不创建 Client");
+  assertEqual(h.loginCalled, 0, "production 不 login");
+  assertEqual(h.destroyCalled, 0, "production 无 Client 无需 destroy");
+  assertEqual(result.errorCode, "NOT_DEVELOPMENT", "production errorCode");
   assert(!stderr.lines.join("").includes(TOKEN), "production 拒绝无 Token");
 }
 
-// TEST_MODE=false 拒绝
+// TEST_MODE=false 拒绝：不得 createClient / login
 {
   const h = makeHarness();
   const result = await runForumPoc({
@@ -221,10 +228,13 @@ for (const argv of [
     stderr: outputBuffer(),
   });
   assert(result.exitCode !== 0, "TEST_MODE=false 拒绝");
-  assertEqual(h.destroyCalled, 1, "TEST_MODE 失败仍 destroy");
+  assertEqual(h.clientCreated, 0, "TEST_MODE=false 不创建 Client");
+  assertEqual(h.loginCalled, 0, "TEST_MODE=false 不 login");
+  assertEqual(h.destroyCalled, 0, "TEST_MODE=false 无 destroy");
+  assertEqual(result.errorCode, "TEST_MODE_REQUIRED", "TEST_MODE errorCode");
 }
 
-// 缺少 / 不匹配 confirm-guild
+// 缺少 / 不匹配 confirm-guild：不得 createClient / login
 {
   const h = makeHarness();
   const result = await runForumPoc({
@@ -234,6 +244,9 @@ for (const argv of [
     stderr: outputBuffer(),
   });
   assert(result.exitCode !== 0, "缺少 confirm-guild 拒绝");
+  assertEqual(h.clientCreated, 0, "缺 confirm-guild 不创建 Client");
+  assertEqual(h.loginCalled, 0, "缺 confirm-guild 不 login");
+  assertEqual(result.errorCode, "GUILD_CONFIRMATION_REQUIRED", "缺 confirm errorCode");
 }
 
 {
@@ -245,6 +258,9 @@ for (const argv of [
     stderr: outputBuffer(),
   });
   assert(result.exitCode !== 0, "confirm-guild 不匹配拒绝");
+  assertEqual(h.clientCreated, 0, "confirm 不匹配不创建 Client");
+  assertEqual(h.loginCalled, 0, "confirm 不匹配不 login");
+  assertEqual(result.errorCode, "GUILD_CONFIRMATION_MISMATCH", "mismatch errorCode");
 }
 
 // dry-run 不 send
@@ -284,7 +300,7 @@ for (const argv of [
   });
   assertEqual(result.exitCode, 0, "execute 成功退出 0");
   assertEqual(result.result.success, true, "result.success");
-  assertEqual(sleepCount, 1, "CLI 注入 sleep 一次");
+  assertEqual(sleepCount, 2, "CLI 注入 sleep 两次（删前 + 删后）");
   assertEqual(h.destroyCalled, 1, "成功时 destroy");
   assertEqual(h.message._payload.content, BUMP_MESSAGE_CONTENT, "固定文案经 CLI");
   const out = stdout.lines.join("");

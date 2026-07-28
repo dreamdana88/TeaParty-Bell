@@ -10,6 +10,7 @@ import { logger as defaultLogger } from "../../utils/logger.js";
 import { bumpForumThreadMessage, MANUAL_CLEANUP_HINT } from "./bumpMessage.js";
 import { isForumPocError } from "./errors.js";
 import { inspectForumThread } from "./inspect.js";
+import { assertDevConfigGate } from "./threadGate.js";
 
 const COMMANDS = new Set(["inspect", "bump-message"]);
 
@@ -144,6 +145,17 @@ export async function runForumPoc({
     return { exitCode: 1, errorCode: "INVALID_ARGUMENT" };
   }
 
+  // 安全门必须在 createClient / login 之前，拒绝时不得接触 Discord。
+  try {
+    assertDevConfigGate(config, args.confirmGuild);
+  } catch (error) {
+    writeErr(safeErrorMessage(error));
+    return {
+      exitCode: 1,
+      errorCode: isForumPocError(error) ? error.code : "INVALID_ARGUMENT",
+    };
+  }
+
   const clientBundle = createClientFn();
   const client = clientBundle?.client;
   const login = clientBundle?.login;
@@ -194,9 +206,13 @@ export async function runForumPoc({
     };
   }
 
-  if (operationResult && operationResult.success === false && operationResult.cleanupRequired) {
+  if (operationResult && operationResult.success === false) {
     writeOut(JSON.stringify(operationResult, null, 2));
-    writeErr(operationResult.manualCleanupHint || MANUAL_CLEANUP_HINT);
+    if (operationResult.cleanupRequired) {
+      writeErr(operationResult.manualCleanupHint || MANUAL_CLEANUP_HINT);
+    } else if (operationResult.safeMessage) {
+      writeErr(operationResult.safeMessage);
+    }
     return {
       exitCode: 1,
       result: operationResult,

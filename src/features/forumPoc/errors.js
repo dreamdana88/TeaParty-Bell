@@ -18,6 +18,7 @@ const SAFE_MESSAGES = Object.freeze({
   SEND_FAILED: "发送临时顶帖消息失败。",
   DELETE_FAILED: "删除临时顶帖消息失败。",
   INSPECT_FAILED: "读取 Forum Thread 状态失败。",
+  SNAPSHOT_FAILED: "强制刷新 Thread 快照失败。",
   INVALID_ARGUMENT: "Forum POC 参数无效。",
   EXECUTE_REQUIRED: "真实写操作需要显式 --execute。",
 });
