@@ -100,15 +100,19 @@ export function isValidLocalDate(localDate) {
     && dt.getUTCDate() === d;
 }
 
+/** 仅接受标准 UTC ISO：YYYY-MM-DDTHH:mm:ss.sssZ */
+const UTC_ISO_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+
 /**
  * @param {unknown} value
  */
 export function isValidIsoTimestamp(value) {
-  if (typeof value !== "string" || value.length < 10) return false;
-  const ms = Date.parse(value);
-  if (!Number.isFinite(ms)) return false;
-  // 要求可往返解析（接受带 Z 的 ISO）
-  return true;
+  if (typeof value !== "string" || !UTC_ISO_RE.test(value)) return false;
+  try {
+    return new Date(value).toISOString() === value;
+  } catch {
+    return false;
+  }
 }
 
 /**

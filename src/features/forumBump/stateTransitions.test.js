@@ -157,6 +157,31 @@ let state = createInitialState("2026-07-28");
   assertEqual(r.errorCode, "STATE_ARGUMENT_INVALID", "nextEligibleAt 早于 successAt");
 }
 
+{
+  // completeSuccess 日期回退不得重置额度
+  let s = createInitialState("2026-07-28");
+  s = beginInFlightTransition(s, {
+    operationId: "op", guildId: G, forumChannelId: F, threadId: T, startedAt: TS,
+  }).state;
+  s = markMessageSentTransition(s, {
+    operationId: "op", sentMessageId: M, sentAt: TS2,
+  }).state;
+  s = markMessageDeletedTransition(s, {
+    operationId: "op", deletedAt: TS2,
+  }).state;
+  s.successCount = 5;
+  const before = s.successCount;
+  const r = completeSuccessTransition(s, {
+    operationId: "op",
+    localDate: "2026-07-27",
+    successAt: TS2,
+    nextEligibleAt: TS3,
+  });
+  assertEqual(r.errorCode, "STATE_DATE_ROLLBACK", "completeSuccess 日期回退");
+  assertEqual(s.successCount, before, "回退不改原状态额度");
+  assertEqual(r.state, null, "失败无 next state");
+}
+
 // rollover
 {
   let s = createInitialState("2026-07-28");

@@ -378,6 +378,148 @@ try {
     assert(!blob.includes("stack"), "无 stack");
   }
 
+  // 文件 fsync 失败：不 rename、清理 tmp、旧文件不变
+  {
+    const dir = makeTempDir();
+    dirs.push(dir);
+    const path = join(dir, "state.json");
+    const realFs = await import("fs");
+    let fileFsyncCount = 0;
+    const tmpSeen = [];
+    const fakeFs = {
+      existsSync: (...a) => realFs.existsSync(...a),
+      mkdirSync: (...a) => realFs.mkdirSync(...a),
+      readFileSync: (...a) => realFs.readFileSync(...a),
+      openSync: (p, ...rest) => {
+        if (typeof p === "string" && p.includes(".tmp-")) tmpSeen.push(p);
+        return realFs.openSync(p, ...rest);
+      },
+      writeSync: (...a) => realFs.writeSync(...a),
+      fsyncSync: (fd) => {
+        fileFsyncCount += 1;
+        // 第一次为临时文件 fsync（文件级），必须失败关闭
+        if (fileFsyncCount === 1) {
+          throw new Error("file fsync failed");
+        }
+        return realFs.fsyncSync(fd);
+      },
+      closeSync: (...a) => realFs.closeSync(...a),
+      renameSync: (...a) => {
+        throw new Error("rename must not be called after fsync fail");
+      },
+      unlinkSync: (...a) => realFs.unlinkSync(...a),
+    };
+
+    // 先用真实 fs 初始化合法文件
+    const boot = makeStore(dir);
+    await boot.initialize({ localDate: "2026-07-28" });
+    const beforeRaw = readFileSync(path, "utf8");
+
+    const store = createForumBumpStateStore({
+      statePath: path,
+      fs: fakeFs,
+      logger: { info() {}, warn() {} },
+    });
+    await store.load();
+    const r = await store.pause({ expectedRevision: 0, reason: "X" });
+    assertEqual(r.errorCode, "STATE_WRITE_FAILED", "文件 fsync 失败 → WRITE_FAILED");
+    assertEqual(readFileSync(path, "utf8"), beforeRaw, "旧 state 完整不变");
+    const leftoverTmp = tmpSeen.filter((p) => existsSync(p));
+    assertEqual(leftoverTmp.length, 0, "临时文件已清理");
+  }
+
+  // 双实例 revision：B 使用陈旧 revision 必须冲突
+  {
+    const dir = makeTempDir();
+    dirs.push(dir);
+    const path = join(dir, "state.json");
+    const storeA = makeStore(dir);
+    const storeB = makeStore(dir);
+    await storeA.initialize({ localDate: "2026-07-28" });
+    await storeA.load();
+    await storeB.load();
+    assertEqual(storeA.getSnapshot().revision, 0, "A rev0");
+    assertEqual(storeB.getSnapshot().revision, 0, "B rev0");
+
+    const aPause = await storeA.pause({ expectedRevision: 0, reason: "FROM_A" });
+    assertEqual(aPause.success, true, "A pause 成功");
+    assertEqual(aPause.revision, 1, "A rev1");
+
+    const bPause = await storeB.pause({ expectedRevision: 0, reason: "FROM_B" });
+    assertEqual(bPause.errorCode, "STATE_REVISION_CONFLICT", "B pause 冲突");
+    const disk = JSON.parse(readFileSync(path, "utf8"));
+    assertEqual(disk.revision, 1, "磁盘保持 A revision");
+    assertEqual(disk.pauseReason, "FROM_A", "磁盘保持 A 状态");
+  }
+
+  // 双实例：beginInFlight / completeSuccess 冲突
+  {
+    const dir = makeTempDir();
+    dirs.push(dir);
+    const path = join(dir, "state.json");
+    const storeA = makeStore(dir);
+    const storeB = makeStore(dir);
+    await storeA.initialize({ localDate: "2026-07-28" });
+    await storeA.load();
+    await storeB.load();
+
+    const beginA = await storeA.beginInFlight({
+      expectedRevision: 0,
+      operationId: "op-a",
+      guildId: G,
+      forumChannelId: F,
+      threadId: T,
+      startedAt: TS,
+    });
+    assertEqual(beginA.success, true, "A begin");
+    assertEqual(beginA.revision, 1, "A after begin rev1");
+
+    const beginB = await storeB.beginInFlight({
+      expectedRevision: 0,
+      operationId: "op-b",
+      guildId: G,
+      forumChannelId: F,
+      threadId: T,
+      startedAt: TS,
+    });
+    assertEqual(beginB.errorCode, "STATE_REVISION_CONFLICT", "B begin 冲突");
+    const diskAfterBegin = JSON.parse(readFileSync(path, "utf8"));
+    assertEqual(diskAfterBegin.inFlight.operationId, "op-a", "磁盘仍是 A 的 inFlight");
+
+    // A 继续 mark sent/deleted/complete
+    let rev = 1;
+    await storeA.markMessageSent({
+      expectedRevision: rev, operationId: "op-a", sentMessageId: M, sentAt: TS2,
+    });
+    rev = storeA.getSnapshot().revision;
+    await storeA.markMessageDeleted({
+      expectedRevision: rev, operationId: "op-a", deletedAt: TS2,
+    });
+    rev = storeA.getSnapshot().revision;
+
+    // B 仍拿 rev0 尝试 complete → 冲突
+    const completeB = await storeB.completeSuccess({
+      expectedRevision: 0,
+      operationId: "op-a",
+      localDate: "2026-07-28",
+      successAt: TS2,
+      nextEligibleAt: TS3,
+    });
+    assertEqual(completeB.errorCode, "STATE_REVISION_CONFLICT", "B complete 冲突");
+
+    const completeA = await storeA.completeSuccess({
+      expectedRevision: rev,
+      operationId: "op-a",
+      localDate: "2026-07-28",
+      successAt: TS2,
+      nextEligibleAt: TS3,
+    });
+    assertEqual(completeA.success, true, "A complete 成功");
+    const finalDisk = JSON.parse(readFileSync(path, "utf8"));
+    assertEqual(finalDisk.successCount, 1, "磁盘保持 A 成功计数");
+    assertEqual(finalDisk.inFlight, null, "A complete 后 inFlight 空");
+  }
+
 } finally {
   for (const dir of dirs) {
     try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }

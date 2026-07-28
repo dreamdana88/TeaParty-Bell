@@ -106,7 +106,8 @@ export function createForumBumpStateStore({
   }
 
   /**
-   * 原子写：tmp → write → fsync → close → rename
+   * 原子写：tmp → write → fsync(文件，失败则 fail closed) → close → rename
+   * 目录 fsync 仍 best-effort。
    */
   function _atomicWrite(state) {
     _ensureDir();
@@ -116,26 +117,47 @@ export function createForumBumpStateStore({
     try {
       fd = fs.openSync(tmpPath, "w");
       fs.writeSync(fd, json, 0, "utf8");
+      // 文件级 fsync：失败必须 fail closed，不得 rename
       try {
         fs.fsyncSync(fd);
-      } catch {
-        // 部分环境可能不支持 fsync；已写入完整内容后继续 rename
+      } catch (fsyncError) {
+        try {
+          fs.closeSync(fd);
+        } catch {
+          // ignore close after fsync failure
+        }
+        fd = null;
+        try {
+          if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
+        } catch {
+          // ignore cleanup
+        }
+        throw createStateError("STATE_WRITE_FAILED", fsyncError);
       }
       fs.closeSync(fd);
       fd = null;
       fs.renameSync(tmpPath, statePath);
-      // 目录 fsync best-effort
+      // 目录 fsync best-effort：仅忽略平台不支持或目录 fsync 失败
       try {
         const dirFd = fs.openSync(dirname(statePath), "r");
         try {
           fs.fsyncSync(dirFd);
+        } catch {
+          // 目录 fsync 失败不破坏已成功 rename 的提交
         } finally {
-          fs.closeSync(dirFd);
+          try {
+            fs.closeSync(dirFd);
+          } catch {
+            // ignore
+          }
         }
       } catch {
-        // Windows 等平台可能不支持目录 fsync
+        // 打开目录失败（平台限制）可忽略
       }
     } catch (error) {
+      if (isForumBumpStateError(error) && error.code === "STATE_WRITE_FAILED") {
+        throw error;
+      }
       try {
         if (fd != null) fs.closeSync(fd);
       } catch {
@@ -178,35 +200,33 @@ export function createForumBumpStateStore({
     return validateState(data);
   }
 
-  function _requireLoaded() {
-    if (!_state) {
-      throw createStateError("STATE_NOT_FOUND");
-    }
-  }
-
   async function _applyTransition(operation, expectedRevision, transitionFn) {
     return _enqueue(async () => {
       const started = clock.now();
       try {
-        _requireLoaded();
         if (!Number.isInteger(expectedRevision) || expectedRevision < 0) {
           throw createStateError("STATE_ARGUMENT_INVALID", undefined, { operation, expectedRevision });
         }
-        if (_state.revision !== expectedRevision) {
+
+        // 写入前从磁盘重新读取并严格校验，不得仅信内存 _state.revision
+        const diskState = _readAndValidateFromDisk();
+        _state = diskState;
+
+        if (diskState.revision !== expectedRevision) {
           throw createStateError("STATE_REVISION_CONFLICT", undefined, {
             operation,
             expectedRevision,
-            actualRevision: _state.revision,
+            actualRevision: diskState.revision,
           });
         }
 
-        const result = transitionFn(_state);
+        const result = transitionFn(diskState);
         if (!result.ok) {
           throw createStateError(result.errorCode, undefined, result.context ?? { operation });
         }
 
         if (!result.changed) {
-          const snap = cloneState(_state);
+          const snap = cloneState(diskState);
           try {
             logger?.info?.("[ForumBumpState] noop", {
               operation,
@@ -229,7 +249,7 @@ export function createForumBumpStateStore({
           };
         }
 
-        const previousRevision = _state.revision;
+        const previousRevision = diskState.revision;
         const next = cloneState(result.state);
         next.revision = previousRevision + 1;
         validateState(next);

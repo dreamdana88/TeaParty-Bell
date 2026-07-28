@@ -156,8 +156,14 @@ export function completeSuccessTransition(state, input) {
     return fail("STATE_TRANSITION_INVALID", { phase: current.inFlight.phase });
   }
 
+  // 业务日期回退：拒绝，防止额度被重置
+  if (localDate < current.localDate) {
+    return fail("STATE_DATE_ROLLBACK");
+  }
+
   const next = cloneState(current);
-  if (next.localDate !== localDate) {
+  if (localDate > next.localDate) {
+    // 跨日：先归零再 +1
     next.localDate = localDate;
     next.successCount = 0;
   }

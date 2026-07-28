@@ -42,6 +42,19 @@ expectInvalid({ ...base, revision: -1 }, "STATE_INVALID", "负 revision");
 expectInvalid({ ...base, localDate: "2026-13-01" }, "STATE_INVALID", "非法 localDate");
 expectInvalid({ ...base, successCount: -3 }, "STATE_INVALID", "负 successCount");
 expectInvalid({ ...base, lastSuccessAt: "not-iso" }, "STATE_INVALID", "非法 ISO");
+expectInvalid({ ...base, lastSuccessAt: "2026-07-28" }, "STATE_INVALID", "纯日期拒绝");
+expectInvalid({ ...base, lastSuccessAt: "2026-07-28T08:00:00+08:00" }, "STATE_INVALID", "非 Z 时区偏移拒绝");
+expectInvalid({ ...base, lastSuccessAt: "2026-07-28T08:00:00Z" }, "STATE_INVALID", "无毫秒拒绝");
+expectInvalid({ ...base, lastSuccessAt: "2026-02-30T08:00:00.000Z" }, "STATE_INVALID", "无效日期拒绝");
+
+{
+  const ok = {
+    ...base,
+    lastSuccessAt: "2026-07-28T08:00:00.000Z",
+    nextEligibleAt: "2026-07-28T08:40:00.000Z",
+  };
+  assert(validateState(ok).lastSuccessAt === "2026-07-28T08:00:00.000Z", "标准 UTC ISO 接受");
+}
 expectInvalid({ ...base, paused: false, pauseReason: "X" }, "STATE_INVALID", "paused=false + reason");
 expectInvalid({ ...base, paused: true, pauseReason: null }, "STATE_INVALID", "paused=true 无 reason");
 expectInvalid({ ...base, paused: true, pauseReason: "" }, "STATE_INVALID", "空 pauseReason");
