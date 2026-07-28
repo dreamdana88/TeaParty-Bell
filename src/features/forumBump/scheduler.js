@@ -2,6 +2,7 @@
  * Forum Bump 串行限速调度器（环境无关、可离线测试）。
  *
  * 不接入 bot.js / Alert Outbox；不自动 initialize 状态。
+ * 所有 State Store 写操作结果必须检查；失败 fail-closed。
  */
 
 import {
@@ -17,7 +18,6 @@ import {
   successLocalDate,
 } from "./schedulerDecision.js";
 import { validateSchedulerConfig } from "./schedulerConfig.js";
-import { isValidIsoTimestamp } from "./stateSchema.js";
 
 function defaultTimers() {
   return {
@@ -32,6 +32,43 @@ function defaultRandom() {
 
 function defaultCreateOperationId() {
   return `op_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+/**
+ * 安全调用 State Store：同时处理 {success:false} 与 throw。
+ * @param {() => Promise<object>} fn
+ * @returns {Promise<{ ok: boolean, result: object|null, errorCode: string|null }>}
+ */
+export async function safeStateCall(fn) {
+  try {
+    const result = await fn();
+    if (!result || result.success !== true) {
+      return {
+        ok: false,
+        result: result ?? null,
+        errorCode: result?.errorCode || "STATE_WRITE_FAILED",
+      };
+    }
+    return { ok: true, result, errorCode: null };
+  } catch (error) {
+    return {
+      ok: false,
+      result: null,
+      errorCode: typeof error?.code === "string" && error.code
+        ? error.code
+        : "STATE_WRITE_FAILED",
+    };
+  }
+}
+
+function haltNoTimer(status, errorCode, extra = {}) {
+  return {
+    success: false,
+    status,
+    errorCode,
+    nextWakeAt: null,
+    ...extra,
+  };
 }
 
 /**
@@ -98,35 +135,57 @@ export function createForumBumpScheduler({
     clearTimer();
   }
 
+  function clearSchedule() {
+    invalidateTimer();
+    nextWakeAt = null;
+  }
+
   function scheduleWake(targetMs, reason) {
     if (stopping || !started) {
-      nextWakeAt = null;
-      clearTimer();
+      clearSchedule();
       return;
     }
     if (targetMs == null) {
-      nextWakeAt = null;
-      clearTimer();
+      clearSchedule();
       return;
     }
     const now = clock.now();
     nextWakeAt = targetMs;
     const delay = computeTimerDelayMs(now, targetMs);
     if (delay == null) {
-      clearTimer();
+      clearSchedule();
       return;
     }
+    // 使旧 generation 失效并清 handle，再注册新 timer
     invalidateTimer();
     const gen = timerGeneration;
+    const plannedWake = targetMs;
+    nextWakeAt = plannedWake;
     timerHandle = timers.setTimeout(() => {
+      // 本回调已消费 handle
+      if (gen === timerGeneration) {
+        timerHandle = null;
+      }
       if (gen !== timerGeneration) return;
-      // 中间唤醒：若尚未到点，重新分段
       const n = clock.now();
-      if (nextWakeAt != null && n + 50 < nextWakeAt) {
-        scheduleWake(nextWakeAt, reason);
+      if (plannedWake != null && n + 50 < plannedWake) {
+        scheduleWake(plannedWake, reason);
         return;
       }
-      runOnce().catch(() => {});
+      Promise.resolve()
+        .then(() => runOnce())
+        .catch((error) => {
+          try {
+            logger?.error?.("[ForumBumpScheduler] timer runOnce failed", {
+              errorCode: typeof error?.code === "string" ? error.code : "SCHEDULER_UNEXPECTED_FAILED",
+              errorName: typeof error?.name === "string" ? error.name : "Error",
+            });
+          } catch {
+            // ignore
+          }
+          clearSchedule();
+          lastRunStatus = "unexpected_failed";
+        });
     }, delay);
     try {
       logger?.info?.("[ForumBumpScheduler] timer scheduled", {
@@ -141,19 +200,70 @@ export function createForumBumpScheduler({
 
   function armFromDecision(decision) {
     if (!decision || decision.nextWakeAt == null) {
-      invalidateTimer();
-      nextWakeAt = null;
+      clearSchedule();
       return;
     }
     scheduleWake(decision.nextWakeAt, decision.reason);
   }
 
   async function loadStateOrFail() {
-    const loaded = await stateStore.load();
-    if (!loaded.success) {
-      return { ok: false, errorCode: loaded.errorCode || "STATE_READ_FAILED", state: null };
+    const call = await safeStateCall(() => stateStore.load());
+    if (!call.ok) {
+      return { ok: false, errorCode: call.errorCode || "STATE_READ_FAILED", state: null };
     }
-    return { ok: true, state: loaded.state, errorCode: null };
+    return { ok: true, state: call.result.state, errorCode: null };
+  }
+
+  /**
+   * 普通退避路径：deferUntil 必须成功，否则 state_failed。
+   */
+  async function deferOrStateFailed(revision, delayMs, primaryErrorCode = null) {
+    const nextEligibleAt = toUtcIso(clock.now() + delayMs);
+    const def = await safeStateCall(() => stateStore.deferUntil({
+      expectedRevision: revision,
+      nextEligibleAt,
+    }));
+    if (!def.ok) {
+      clearSchedule();
+      return {
+        ok: false,
+        response: haltNoTimer("state_failed", def.errorCode, {
+          primaryErrorCode,
+          stateErrorCode: def.errorCode,
+        }),
+      };
+    }
+    return {
+      ok: true,
+      state: def.result.state,
+      revision: def.result.revision,
+    };
+  }
+
+  /**
+   * 高风险 pause：失败则 state_failed，不得声称 paused。
+   */
+  async function pauseOrStateFailed(revision, reason, primaryErrorCode) {
+    const p = await safeStateCall(() => stateStore.pause({
+      expectedRevision: revision,
+      reason,
+    }));
+    clearSchedule();
+    if (!p.ok) {
+      return haltNoTimer("state_failed", p.errorCode, {
+        primaryErrorCode: primaryErrorCode || reason,
+        stateErrorCode: p.errorCode,
+      });
+    }
+    return {
+      success: false,
+      status: reason === "BUMP_DELETE_FAILED" || primaryErrorCode === "DELETE_FAILED"
+        ? "cleanup_required"
+        : "halted",
+      errorCode: primaryErrorCode || reason,
+      nextWakeAt: null,
+      state: p.result.state,
+    };
   }
 
   async function start() {
@@ -162,9 +272,8 @@ export function createForumBumpScheduler({
     }
     stopping = false;
 
-    // config 已在工厂校验
-    const loaded = await stateStore.load();
-    if (!loaded.success) {
+    const loaded = await safeStateCall(() => stateStore.load());
+    if (!loaded.ok) {
       return {
         success: false,
         errorCode: loaded.errorCode || "STATE_NOT_FOUND",
@@ -172,8 +281,8 @@ export function createForumBumpScheduler({
       };
     }
 
-    const recovery = await stateStore.recoverOnStartup();
-    if (!recovery.success) {
+    const recovery = await safeStateCall(() => stateStore.recoverOnStartup());
+    if (!recovery.ok) {
       return {
         success: false,
         errorCode: recovery.errorCode || "STATE_READ_FAILED",
@@ -181,23 +290,26 @@ export function createForumBumpScheduler({
       };
     }
 
-    if (recovery.recoveryStatus && recovery.recoveryStatus !== "clean") {
+    const recoveryResult = recovery.result;
+    if (recoveryResult.recoveryStatus && recoveryResult.recoveryStatus !== "clean") {
       started = true;
       lastRunStatus = "recovery_required";
+      clearSchedule();
       return {
         success: true,
         started: true,
-        recoveryStatus: recovery.recoveryStatus,
-        cleanupRequired: recovery.cleanupRequired,
+        recoveryStatus: recoveryResult.recoveryStatus,
+        cleanupRequired: recoveryResult.cleanupRequired,
         errorCode: null,
         timerArmed: false,
       };
     }
 
-    const state = recovery.state || loaded.state;
+    const state = recoveryResult.state || loaded.result.state;
     if (state.paused) {
       started = true;
       lastRunStatus = "paused";
+      clearSchedule();
       return {
         success: true,
         started: true,
@@ -210,6 +322,7 @@ export function createForumBumpScheduler({
     if (!config.enabled) {
       started = true;
       lastRunStatus = "disabled";
+      clearSchedule();
       return {
         success: true,
         started: true,
@@ -239,8 +352,7 @@ export function createForumBumpScheduler({
 
   async function stop() {
     stopping = true;
-    invalidateTimer();
-    nextWakeAt = null;
+    clearSchedule();
     if (currentAbort && typeof currentAbort.abort === "function") {
       try {
         currentAbort.abort();
@@ -252,95 +364,125 @@ export function createForumBumpScheduler({
       try {
         await runPromise;
       } catch {
-        // ignore
+        // runOnce 已边界化，这里仅兜底
       }
     }
     started = false;
     stopping = false;
     running = false;
     currentOperationId = null;
+    currentAbort = null;
+    runPromise = null;
     return { success: true };
   }
 
   async function runOnce() {
     if (!started) {
       lastRunStatus = "not_started";
-      return { success: false, status: "not_started", errorCode: "SCHEDULER_NOT_STARTED" };
+      return { success: false, status: "not_started", errorCode: "SCHEDULER_NOT_STARTED", nextWakeAt: null };
     }
     if (stopping) {
       lastRunStatus = "stopping";
-      return { success: false, status: "stopping", errorCode: "SCHEDULER_STOPPING" };
+      return { success: false, status: "stopping", errorCode: "SCHEDULER_STOPPING", nextWakeAt: null };
     }
     if (running) {
       lastRunStatus = "busy";
-      return { success: false, status: "busy", errorCode: "SCHEDULER_BUSY" };
+      return { success: false, status: "busy", errorCode: "SCHEDULER_BUSY", nextWakeAt: null };
     }
 
     running = true;
     const cycle = (async () => {
       try {
         return await executeCycle();
+      } catch (error) {
+        return handleUnexpected(error);
       } finally {
         running = false;
         currentOperationId = null;
         currentAbort = null;
+        runPromise = null;
       }
     })();
     runPromise = cycle;
     const result = await cycle;
-    runPromise = null;
-    lastRunStatus = result.status;
+    lastRunStatus = result?.status ?? "unexpected_failed";
     return result;
+  }
+
+  async function handleUnexpected(error) {
+    try {
+      logger?.error?.("[ForumBumpScheduler] unexpected failure", {
+        errorCode: typeof error?.code === "string" ? error.code : "SCHEDULER_UNEXPECTED_FAILED",
+        errorName: typeof error?.name === "string" ? error.name : "Error",
+      });
+    } catch {
+      // ignore
+    }
+    clearSchedule();
+
+    // 尝试读取状态；若有 inFlight 则 pause
+    const load = await loadStateOrFail();
+    if (!load.ok) {
+      return haltNoTimer("state_failed", load.errorCode || "STATE_READ_FAILED");
+    }
+    if (load.state?.inFlight) {
+      const paused = await pauseOrStateFailed(
+        load.state.revision,
+        "BUMP_UNEXPECTED_FAILED",
+        "SCHEDULER_UNEXPECTED_FAILED",
+      );
+      if (paused.status === "state_failed") {
+        return paused;
+      }
+      return haltNoTimer("unexpected_failed", "SCHEDULER_UNEXPECTED_FAILED", {
+        sentMessageId: load.state.inFlight.sentMessageId ?? null,
+      });
+    }
+    return haltNoTimer("unexpected_failed", "SCHEDULER_UNEXPECTED_FAILED");
   }
 
   async function executeCycle() {
     const load = await loadStateOrFail();
     if (!load.ok) {
-      armFromDecision({ nextWakeAt: null, reason: "halt" });
-      return { success: false, status: "state_failed", errorCode: load.errorCode };
+      clearSchedule();
+      return haltNoTimer("state_failed", load.errorCode);
     }
     let state = load.state;
     let revision = state.revision;
 
     if (state.inFlight) {
-      armFromDecision({ nextWakeAt: null, reason: "halt" });
-      return {
-        success: false,
-        status: "recovery_required",
-        errorCode: "STATE_RECOVERY_REQUIRED",
-      };
+      clearSchedule();
+      return haltNoTimer("recovery_required", "STATE_RECOVERY_REQUIRED");
     }
     if (state.paused) {
-      armFromDecision({ nextWakeAt: null, reason: "paused" });
-      return { success: true, status: "paused", errorCode: null };
+      clearSchedule();
+      return { success: true, status: "paused", errorCode: null, nextWakeAt: null };
     }
 
-    // rollover
     const nowMs = clock.now();
     const localDate = getLocalDate(nowMs, config.timezone);
     if (localDate < state.localDate) {
-      armFromDecision({ nextWakeAt: null, reason: "halt" });
-      return { success: false, status: "state_failed", errorCode: "STATE_DATE_ROLLBACK" };
+      clearSchedule();
+      return haltNoTimer("state_failed", "STATE_DATE_ROLLBACK");
     }
     if (localDate > state.localDate) {
-      const roll = await stateStore.rolloverLocalDate({
+      const roll = await safeStateCall(() => stateStore.rolloverLocalDate({
         expectedRevision: revision,
         localDate,
-      });
-      if (!roll.success) {
-        armFromDecision({ nextWakeAt: null, reason: "halt" });
-        return { success: false, status: "state_failed", errorCode: roll.errorCode };
+      }));
+      if (!roll.ok) {
+        clearSchedule();
+        return haltNoTimer("state_failed", roll.errorCode);
       }
-      state = roll.state;
-      revision = roll.revision;
+      state = roll.result.state;
+      revision = roll.result.revision;
     }
 
     if (!config.enabled) {
-      armFromDecision({ nextWakeAt: null, reason: "disabled" });
-      return { success: true, status: "disabled", errorCode: null };
+      clearSchedule();
+      return { success: true, status: "disabled", errorCode: null, nextWakeAt: null };
     }
 
-    // pre-scan gates via pure decision
     const gate = decideNextWakeAt({
       nowMs: clock.now(),
       config,
@@ -358,10 +500,9 @@ export function createForumBumpScheduler({
     }
 
     if (stopping) {
-      return { success: false, status: "stopping", errorCode: "SCHEDULER_STOPPING" };
+      return { success: false, status: "stopping", errorCode: "SCHEDULER_STOPPING", nextWakeAt: null };
     }
 
-    // scan
     let scanReport;
     try {
       scanReport = await scanCandidates({
@@ -374,22 +515,25 @@ export function createForumBumpScheduler({
         clock,
       });
     } catch (error) {
-      const deferAt = toUtcIso(clock.now() + config.failureBackoffMs);
-      await stateStore.deferUntil({
-        expectedRevision: revision,
-        nextEligibleAt: deferAt,
-      }).catch(() => {});
+      const def = await deferOrStateFailed(
+        revision,
+        config.failureBackoffMs,
+        typeof error?.code === "string" ? error.code : "SCAN_FAILED",
+      );
+      if (!def.ok) return def.response;
+      state = def.state;
+      revision = def.revision;
       const d = decideNextWakeAt({
         nowMs: clock.now(),
         config,
-        state: (await loadStateOrFail()).state || state,
+        state,
         reason: "failure_backoff",
       });
       armFromDecision(d);
       return {
         success: false,
         status: "scan_failed",
-        errorCode: error?.code || "SCAN_FAILED",
+        errorCode: typeof error?.code === "string" ? error.code : "SCAN_FAILED",
         nextWakeAt: d.nextWakeAt,
       };
     }
@@ -399,15 +543,10 @@ export function createForumBumpScheduler({
       || [];
     const first = candidates[0] || null;
     if (!first) {
-      const deferIso = toUtcIso(clock.now() + config.idlePollMs);
-      const def = await stateStore.deferUntil({
-        expectedRevision: revision,
-        nextEligibleAt: deferIso,
-      });
-      if (def.success) {
-        state = def.state;
-        revision = def.revision;
-      }
+      const def = await deferOrStateFailed(revision, config.idlePollMs);
+      if (!def.ok) return def.response;
+      state = def.state;
+      revision = def.revision;
       const d = decideNextWakeAt({
         nowMs: clock.now(),
         config,
@@ -424,10 +563,9 @@ export function createForumBumpScheduler({
     }
 
     if (stopping) {
-      return { success: false, status: "stopping", errorCode: "SCHEDULER_STOPPING" };
+      return { success: false, status: "stopping", errorCode: "SCHEDULER_STOPPING", nextWakeAt: null };
     }
 
-    // bump with lifecycle
     const operationId = createOperationId();
     currentOperationId = operationId;
     let abortController = null;
@@ -440,49 +578,49 @@ export function createForumBumpScheduler({
     const lifecycle = {
       onBeforeSend: async () => {
         const startedAt = toUtcIso(clock.now());
-        const r = await stateStore.beginInFlight({
+        const call = await safeStateCall(() => stateStore.beginInFlight({
           expectedRevision: lifecycleRevision,
           operationId,
           guildId: config.guildId,
           forumChannelId: first.forumChannelId,
           threadId: first.threadId,
           startedAt,
-        });
-        if (!r.success) {
-          const err = new Error(r.errorCode || "STATE_TRANSITION_INVALID");
-          err.code = r.errorCode || "STATE_TRANSITION_INVALID";
+        }));
+        if (!call.ok) {
+          const err = new Error(call.errorCode || "STATE_TRANSITION_INVALID");
+          err.code = call.errorCode || "STATE_TRANSITION_INVALID";
           throw err;
         }
-        lifecycleRevision = r.revision;
+        lifecycleRevision = call.result.revision;
       },
       onMessageSent: async ({ sentMessageId }) => {
         const sentAt = toUtcIso(clock.now());
-        const r = await stateStore.markMessageSent({
+        const call = await safeStateCall(() => stateStore.markMessageSent({
           expectedRevision: lifecycleRevision,
           operationId,
           sentMessageId,
           sentAt,
-        });
-        if (!r.success) {
-          const err = new Error(r.errorCode || "STATE_TRANSITION_INVALID");
-          err.code = r.errorCode || "STATE_TRANSITION_INVALID";
+        }));
+        if (!call.ok) {
+          const err = new Error(call.errorCode || "STATE_TRANSITION_INVALID");
+          err.code = call.errorCode || "STATE_TRANSITION_INVALID";
           throw err;
         }
-        lifecycleRevision = r.revision;
+        lifecycleRevision = call.result.revision;
       },
       onMessageDeleted: async () => {
         const deletedAt = toUtcIso(clock.now());
-        const r = await stateStore.markMessageDeleted({
+        const call = await safeStateCall(() => stateStore.markMessageDeleted({
           expectedRevision: lifecycleRevision,
           operationId,
           deletedAt,
-        });
-        if (!r.success) {
-          const err = new Error(r.errorCode || "STATE_TRANSITION_INVALID");
-          err.code = r.errorCode || "STATE_TRANSITION_INVALID";
+        }));
+        if (!call.ok) {
+          const err = new Error(call.errorCode || "STATE_TRANSITION_INVALID");
+          err.code = call.errorCode || "STATE_TRANSITION_INVALID";
           throw err;
         }
-        lifecycleRevision = r.revision;
+        lifecycleRevision = call.result.revision;
       },
     };
 
@@ -499,23 +637,20 @@ export function createForumBumpScheduler({
       lifecycle,
     });
 
-    // reload revision after bump
     const after = await loadStateOrFail();
     if (after.ok) {
       state = after.state;
       revision = state.revision;
+    } else {
+      // 若 bump 后状态不可读，fail closed
+      clearSchedule();
+      return haltNoTimer("state_failed", after.errorCode);
     }
 
-    // skipped before inFlight
     if (bumpResult.status === "skipped") {
-      const def = await stateStore.deferUntil({
-        expectedRevision: revision,
-        nextEligibleAt: toUtcIso(clock.now() + config.idlePollMs),
-      });
-      if (def.success) {
-        state = def.state;
-        revision = def.revision;
-      }
+      const def = await deferOrStateFailed(revision, config.idlePollMs, bumpResult.errorCode);
+      if (!def.ok) return def.response;
+      state = def.state;
       const d = decideNextWakeAt({
         nowMs: clock.now(), config, state, reason: "skipped",
       });
@@ -529,23 +664,30 @@ export function createForumBumpScheduler({
       };
     }
 
-    // cancelled before send after begin → abandon
     if (bumpResult.status === "cancelled" || bumpResult.errorCode === "BUMP_ABORTED") {
       if (state?.inFlight?.phase === "before_send"
         && state.inFlight.operationId === operationId) {
-        const ab = await stateStore.abandonBeforeSend({
+        const ab = await safeStateCall(() => stateStore.abandonBeforeSend({
           expectedRevision: revision,
           operationId,
-        });
-        if (ab.success) {
-          state = ab.state;
-          revision = ab.revision;
+        }));
+        if (!ab.ok) {
+          clearSchedule();
+          return haltNoTimer("state_failed", ab.errorCode, {
+            primaryErrorCode: bumpResult.errorCode,
+            stateErrorCode: ab.errorCode,
+          });
         }
+        state = ab.result.state;
+        revision = ab.result.revision;
       }
       if (stopping) {
-        armFromDecision({ nextWakeAt: null, reason: "halt" });
-        return { success: true, status: "stopped", errorCode: null };
+        clearSchedule();
+        return { success: true, status: "stopped", errorCode: null, nextWakeAt: null };
       }
+      const def = await deferOrStateFailed(revision, config.failureBackoffMs, bumpResult.errorCode);
+      if (!def.ok) return def.response;
+      state = def.state;
       const d = decideNextWakeAt({
         nowMs: clock.now(), config, state, reason: "failure_backoff",
       });
@@ -558,41 +700,31 @@ export function createForumBumpScheduler({
       };
     }
 
-    // lifecycle before send failed
     if (bumpResult.errorCode === "LIFECYCLE_BEFORE_SEND_FAILED") {
-      armFromDecision({ nextWakeAt: null, reason: "halt" });
-      return {
-        success: false,
-        status: "state_failed",
-        errorCode: "LIFECYCLE_BEFORE_SEND_FAILED",
-      };
+      clearSchedule();
+      return haltNoTimer("state_failed", "LIFECYCLE_BEFORE_SEND_FAILED");
     }
 
-    // send failed after begin
     if (bumpResult.errorCode === "SEND_FAILED") {
       if (state?.inFlight?.phase === "before_send"
         && state.inFlight.operationId === operationId) {
-        const ab = await stateStore.abandonBeforeSend({
+        const ab = await safeStateCall(() => stateStore.abandonBeforeSend({
           expectedRevision: revision,
           operationId,
-        });
-        if (!ab.success) {
-          armFromDecision({ nextWakeAt: null, reason: "halt" });
-          return {
-            success: false,
-            status: "state_failed",
-            errorCode: ab.errorCode,
-          };
+        }));
+        if (!ab.ok) {
+          clearSchedule();
+          return haltNoTimer("state_failed", ab.errorCode, {
+            primaryErrorCode: "SEND_FAILED",
+            stateErrorCode: ab.errorCode,
+          });
         }
-        state = ab.state;
-        revision = ab.revision;
+        state = ab.result.state;
+        revision = ab.result.revision;
       }
-      await stateStore.deferUntil({
-        expectedRevision: revision,
-        nextEligibleAt: toUtcIso(clock.now() + config.failureBackoffMs),
-      });
-      const reloaded = await loadStateOrFail();
-      state = reloaded.state || state;
+      const def = await deferOrStateFailed(revision, config.failureBackoffMs, "SEND_FAILED");
+      if (!def.ok) return def.response;
+      state = def.state;
       const d = decideNextWakeAt({
         nowMs: clock.now(), config, state, reason: "failure_backoff",
       });
@@ -605,64 +737,86 @@ export function createForumBumpScheduler({
       };
     }
 
-    // delete failed / cleanup required
     if (bumpResult.cleanupRequired || bumpResult.errorCode === "DELETE_FAILED") {
-      await stateStore.pause({
-        expectedRevision: revision,
-        reason: "BUMP_DELETE_FAILED",
-      });
-      armFromDecision({ nextWakeAt: null, reason: "halt" });
+      const paused = await pauseOrStateFailed(
+        revision,
+        "BUMP_DELETE_FAILED",
+        "DELETE_FAILED",
+      );
+      if (paused.status === "state_failed") return paused;
       return {
         success: false,
         status: "cleanup_required",
         errorCode: "DELETE_FAILED",
         sentMessageId: bumpResult.sentMessageId,
+        nextWakeAt: null,
       };
     }
 
-    // high risk invalid send result
     if (bumpResult.errorCode === "SEND_RESULT_INVALID"
       || bumpResult.errorCode === "LIFECYCLE_AFTER_SEND_FAILED") {
-      await stateStore.pause({
-        expectedRevision: revision,
-        reason: bumpResult.errorCode,
-      });
-      armFromDecision({ nextWakeAt: null, reason: "halt" });
+      const paused = await pauseOrStateFailed(
+        revision,
+        bumpResult.errorCode,
+        bumpResult.errorCode,
+      );
+      if (paused.status === "state_failed") return paused;
       return {
         success: false,
         status: "halted",
         errorCode: bumpResult.errorCode,
+        nextWakeAt: null,
       };
     }
 
     if (bumpResult.errorCode === "LIFECYCLE_AFTER_DELETE_FAILED") {
-      await stateStore.pause({
-        expectedRevision: revision,
-        reason: "LIFECYCLE_AFTER_DELETE_FAILED",
-      });
-      armFromDecision({ nextWakeAt: null, reason: "halt" });
+      const paused = await pauseOrStateFailed(
+        revision,
+        "LIFECYCLE_AFTER_DELETE_FAILED",
+        "LIFECYCLE_AFTER_DELETE_FAILED",
+      );
+      if (paused.status === "state_failed") return paused;
       return {
         success: false,
         status: "halted",
         errorCode: "LIFECYCLE_AFTER_DELETE_FAILED",
+        nextWakeAt: null,
       };
     }
 
-    // success path
     if (bumpResult.success === true && bumpResult.status === "succeeded") {
       const successAtMs = clock.now();
       const successAt = formatSuccessAtIso(successAtMs);
-      const jitter = computeJitterMs(random(), config.cooldownJitterMs);
-      if (!jitter.ok) {
-        await stateStore.pause({
-          expectedRevision: revision,
-          reason: "SCHEDULER_RANDOM_INVALID",
-        });
-        armFromDecision({ nextWakeAt: null, reason: "halt" });
+      let randomValue;
+      try {
+        randomValue = random();
+      } catch {
+        const paused = await pauseOrStateFailed(
+          revision,
+          "SCHEDULER_RANDOM_INVALID",
+          "SCHEDULER_RANDOM_INVALID",
+        );
+        if (paused.status === "state_failed") return paused;
         return {
           success: false,
           status: "halted",
           errorCode: "SCHEDULER_RANDOM_INVALID",
+          nextWakeAt: null,
+        };
+      }
+      const jitter = computeJitterMs(randomValue, config.cooldownJitterMs);
+      if (!jitter.ok) {
+        const paused = await pauseOrStateFailed(
+          revision,
+          "SCHEDULER_RANDOM_INVALID",
+          "SCHEDULER_RANDOM_INVALID",
+        );
+        if (paused.status === "state_failed") return paused;
+        return {
+          success: false,
+          status: "halted",
+          errorCode: "SCHEDULER_RANDOM_INVALID",
+          nextWakeAt: null,
         };
       }
       const nextEligibleMs = computeNextEligibleAtMs(
@@ -673,65 +827,65 @@ export function createForumBumpScheduler({
       const nextEligibleAt = toUtcIso(nextEligibleMs);
       const doneLocalDate = successLocalDate(successAtMs, config.timezone);
 
-      // reload for latest revision after lifecycle
       const latest = await loadStateOrFail();
       if (!latest.ok) {
-        armFromDecision({ nextWakeAt: null, reason: "halt" });
-        return { success: false, status: "state_failed", errorCode: latest.errorCode };
+        clearSchedule();
+        return haltNoTimer("state_failed", latest.errorCode);
       }
       revision = latest.state.revision;
 
-      const complete = await stateStore.completeSuccess({
+      const complete = await safeStateCall(() => stateStore.completeSuccess({
         expectedRevision: revision,
         operationId,
         localDate: doneLocalDate,
         successAt,
         nextEligibleAt,
-      });
-      if (!complete.success) {
-        await stateStore.pause({
+      }));
+      if (!complete.ok) {
+        const primary = complete.errorCode || "STATE_WRITE_FAILED";
+        const p = await safeStateCall(() => stateStore.pause({
           expectedRevision: revision,
-          reason: complete.errorCode || "STATE_WRITE_FAILED",
+          reason: primary,
+        }));
+        clearSchedule();
+        if (!p.ok) {
+          return haltNoTimer("state_failed", p.errorCode, {
+            primaryErrorCode: primary,
+            stateErrorCode: p.errorCode,
+          });
+        }
+        // complete 已失败：即使 pause 成功也不得伪装成 halted/succeeded
+        return haltNoTimer("state_failed", primary, {
+          primaryErrorCode: primary,
         });
-        armFromDecision({ nextWakeAt: null, reason: "halt" });
-        return {
-          success: false,
-          status: "state_failed",
-          errorCode: complete.errorCode,
-        };
       }
-      state = complete.state;
-      const d = decideNextWakeAt({
-        nowMs: clock.now(),
-        config,
-        state,
-        reason: "ready",
-      });
-      // after success, prefer cooldown-based wake
+      state = complete.result.state;
       const cool = decideNextWakeAt({
         nowMs: clock.now(),
         config,
         state,
         reason: "cooldown",
       });
-      armFromDecision(cool.nextWakeAt != null ? cool : d);
+      armFromDecision(cool);
       return {
         success: true,
         status: "succeeded",
         errorCode: null,
         sentMessageId: bumpResult.sentMessageId,
-        nextWakeAt: cool.nextWakeAt ?? d.nextWakeAt,
+        nextWakeAt: cool.nextWakeAt,
         diagnosticsComplete: bumpResult.diagnosticsComplete,
       };
     }
 
-    // generic failure before inflight (client not ready etc.)
+    // generic failure before inflight
     if (!state?.inFlight) {
-      const def = await stateStore.deferUntil({
-        expectedRevision: revision,
-        nextEligibleAt: toUtcIso(clock.now() + config.failureBackoffMs),
-      });
-      if (def.success) state = def.state;
+      const def = await deferOrStateFailed(
+        revision,
+        config.failureBackoffMs,
+        bumpResult.errorCode || "BUMP_UNEXPECTED_FAILED",
+      );
+      if (!def.ok) return def.response;
+      state = def.state;
       const d = decideNextWakeAt({
         nowMs: clock.now(), config, state, reason: "failure_backoff",
       });
@@ -744,18 +898,20 @@ export function createForumBumpScheduler({
       };
     }
 
-    // unknown with inflight: halt
-    await stateStore.pause({
-      expectedRevision: revision,
-      reason: bumpResult.errorCode || "BUMP_UNEXPECTED_FAILED",
-    });
-    armFromDecision({ nextWakeAt: null, reason: "halt" });
+    // unknown with inflight
+    const paused = await pauseOrStateFailed(
+      revision,
+      bumpResult.errorCode || "BUMP_UNEXPECTED_FAILED",
+      bumpResult.errorCode || "BUMP_UNEXPECTED_FAILED",
+    );
+    if (paused.status === "state_failed") return paused;
     return {
       success: false,
       status: "halted",
       errorCode: bumpResult.errorCode || "BUMP_UNEXPECTED_FAILED",
+      nextWakeAt: null,
     };
-  }
+  };
 
   return {
     start,

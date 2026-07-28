@@ -24,6 +24,13 @@ console.log("\n=== ForumBump scheduler ===\n");
 
 const dirs = [];
 
+function clearScheduleForTest(sched, timers) {
+  // 取消 start 注册的 timer，避免干扰 runOnce 断言
+  for (const t of timers.list()) t.cancelled = true;
+  // 通过 stop/start 太重；直接清 list 并置 nextWakeAt 依赖 runOnce 结果
+  void sched;
+}
+
 function makeConfig(extra = {}) {
   return {
     enabled: true,
@@ -427,6 +434,570 @@ try {
     const st = sched.getStatus();
     assert(!("history" in st), "无 history 字段");
     assert(typeof st.lastRunStatus === "string" || st.lastRunStatus == null, "仅 lastRunStatus");
+  }
+
+  // ---- Review Fix: 状态失败关闭 ----
+  function wrapStore(store, overrides = {}) {
+    return {
+      load: (...a) => (overrides.load ? overrides.load(...a) : store.load(...a)),
+      recoverOnStartup: (...a) => (overrides.recoverOnStartup
+        ? overrides.recoverOnStartup(...a)
+        : store.recoverOnStartup(...a)),
+      getSnapshot: () => store.getSnapshot(),
+      rolloverLocalDate: (...a) => store.rolloverLocalDate(...a),
+      beginInFlight: (...a) => (overrides.beginInFlight
+        ? overrides.beginInFlight(...a)
+        : store.beginInFlight(...a)),
+      markMessageSent: (...a) => store.markMessageSent(...a),
+      markMessageDeleted: (...a) => store.markMessageDeleted(...a),
+      completeSuccess: (...a) => (overrides.completeSuccess
+        ? overrides.completeSuccess(...a)
+        : store.completeSuccess(...a)),
+      pause: (...a) => (overrides.pause ? overrides.pause(...a) : store.pause(...a)),
+      deferUntil: (...a) => (overrides.deferUntil
+        ? overrides.deferUntil(...a)
+        : store.deferUntil(...a)),
+      abandonBeforeSend: (...a) => (overrides.abandonBeforeSend
+        ? overrides.abandonBeforeSend(...a)
+        : store.abandonBeforeSend(...a)),
+    };
+  }
+
+  async function assertNoTimer(sched, timers, label) {
+    assertEqual(sched.getStatus().nextWakeAt, null, `${label} nextWakeAt null`);
+    assertEqual(timers.list().length, 0, `${label} 无活跃 timer`);
+  }
+
+  // Scanner 失败 + deferUntil 失败
+  {
+    const dir = mkdtempSync(join(tmpdir(), "fb-sched-"));
+    dirs.push(dir);
+    const store = await bootStore(dir);
+    const timers = makeTimers();
+    const sched = createForumBumpScheduler({
+      scanCandidates: async () => { throw Object.assign(new Error("scan"), { code: "SCAN_FAILED" }); },
+      bumpService: { bumpThread: async () => ({ status: "skipped" }) },
+      stateStore: wrapStore(store, {
+        deferUntil: async () => ({ success: false, errorCode: "STATE_WRITE_FAILED" }),
+      }),
+      config: makeConfig(),
+      clock: makeClock(),
+      timers,
+      random: () => 0,
+      logger: { info() {}, warn() {}, error() {} },
+    });
+    await sched.start();
+    // clear start timer
+    timers.list().forEach((t) => { t.cancelled = true; });
+    const r = await sched.runOnce();
+    assertEqual(r.status, "state_failed", "scan+defer fail → state_failed");
+    await assertNoTimer(sched, timers, "scan+defer fail");
+  }
+
+  // Scanner 失败 + deferUntil throw
+  {
+    const dir = mkdtempSync(join(tmpdir(), "fb-sched-"));
+    dirs.push(dir);
+    const store = await bootStore(dir);
+    const timers = makeTimers();
+    const sched = createForumBumpScheduler({
+      scanCandidates: async () => { throw new Error("scan boom"); },
+      bumpService: { bumpThread: async () => ({ status: "skipped" }) },
+      stateStore: wrapStore(store, {
+        deferUntil: async () => { throw new Error("defer throw"); },
+      }),
+      config: makeConfig(),
+      clock: makeClock(),
+      timers,
+      random: () => 0,
+      logger: { info() {}, warn() {}, error() {} },
+    });
+    await sched.start();
+    clearScheduleForTest(sched, timers);
+    const r = await sched.runOnce();
+    assertEqual(r.status, "state_failed", "scan+defer throw → state_failed");
+    await assertNoTimer(sched, timers, "scan+defer throw");
+  }
+
+  // 无候选 + deferUntil 失败
+  {
+    const dir = mkdtempSync(join(tmpdir(), "fb-sched-"));
+    dirs.push(dir);
+    const store = await bootStore(dir);
+    const timers = makeTimers();
+    const sched = createForumBumpScheduler({
+      scanCandidates: async () => ({ candidates: [] }),
+      bumpService: { bumpThread: async () => ({ status: "skipped" }) },
+      stateStore: wrapStore(store, {
+        deferUntil: async () => ({ success: false, errorCode: "STATE_REVISION_CONFLICT" }),
+      }),
+      config: makeConfig(),
+      clock: makeClock(),
+      timers,
+      random: () => 0,
+      logger: { info() {}, warn() {}, error() {} },
+    });
+    await sched.start();
+    clearScheduleForTest(sched, timers);
+    const r = await sched.runOnce();
+    assertEqual(r.status, "state_failed", "no_candidate+defer fail");
+    assertEqual(r.errorCode, "STATE_REVISION_CONFLICT", "defer errorCode");
+    await assertNoTimer(sched, timers, "no_candidate defer fail");
+  }
+
+  // skipped + deferUntil 失败
+  {
+    const dir = mkdtempSync(join(tmpdir(), "fb-sched-"));
+    dirs.push(dir);
+    const store = await bootStore(dir);
+    const timers = makeTimers();
+    const sched = createForumBumpScheduler({
+      scanCandidates: async () => ({
+        candidates: [{ threadId: T, forumChannelId: F }],
+      }),
+      bumpService: {
+        bumpThread: async () => ({
+          status: "skipped",
+          success: false,
+          errorCode: "NOT_SILENT_ENOUGH",
+          skipReason: "NOT_SILENT_ENOUGH",
+        }),
+      },
+      stateStore: wrapStore(store, {
+        deferUntil: async () => ({ success: false, errorCode: "STATE_WRITE_FAILED" }),
+      }),
+      config: makeConfig(),
+      clock: makeClock(),
+      timers,
+      random: () => 0,
+      createOperationId: () => "op-skip",
+      logger: { info() {}, warn() {}, error() {} },
+    });
+    await sched.start();
+    clearScheduleForTest(sched, timers);
+    const r = await sched.runOnce();
+    assertEqual(r.status, "state_failed", "skipped+defer fail");
+    await assertNoTimer(sched, timers, "skipped defer fail");
+  }
+
+  // SEND_FAILED + abandon 成功但 deferUntil 失败
+  {
+    const dir = mkdtempSync(join(tmpdir(), "fb-sched-"));
+    dirs.push(dir);
+    const store = await bootStore(dir);
+    const timers = makeTimers();
+    let deferCalls = 0;
+    const sched = createForumBumpScheduler({
+      scanCandidates: async () => ({
+        candidates: [{ threadId: T, forumChannelId: F }],
+      }),
+      bumpService: {
+        bumpThread: async ({ lifecycle }) => {
+          if (lifecycle?.onBeforeSend) await lifecycle.onBeforeSend({});
+          return {
+            status: "failed",
+            success: false,
+            cleanupRequired: false,
+            errorCode: "SEND_FAILED",
+            sentMessageId: null,
+          };
+        },
+      },
+      stateStore: wrapStore(store, {
+        deferUntil: async (...a) => {
+          deferCalls += 1;
+          return { success: false, errorCode: "STATE_WRITE_FAILED" };
+        },
+      }),
+      config: makeConfig(),
+      clock: makeClock(),
+      timers,
+      random: () => 0,
+      createOperationId: () => "op-sf",
+      logger: { info() {}, warn() {}, error() {} },
+    });
+    await sched.start();
+    clearScheduleForTest(sched, timers);
+    const r = await sched.runOnce();
+    assertEqual(r.status, "state_failed", "SEND_FAILED+defer fail");
+    assert(deferCalls >= 1, "调用了 deferUntil");
+    await assertNoTimer(sched, timers, "send fail defer fail");
+  }
+
+  // DELETE_FAILED + pause 失败
+  {
+    const dir = mkdtempSync(join(tmpdir(), "fb-sched-"));
+    dirs.push(dir);
+    const store = await bootStore(dir);
+    const timers = makeTimers();
+    const sched = createForumBumpScheduler({
+      scanCandidates: async () => ({
+        candidates: [{ threadId: T, forumChannelId: F }],
+      }),
+      bumpService: {
+        bumpThread: async ({ lifecycle }) => {
+          if (lifecycle?.onBeforeSend) await lifecycle.onBeforeSend({});
+          if (lifecycle?.onMessageSent) {
+            await lifecycle.onMessageSent({ sentMessageId: M });
+          }
+          return {
+            status: "failed",
+            success: false,
+            cleanupRequired: true,
+            errorCode: "DELETE_FAILED",
+            sentMessageId: M,
+          };
+        },
+      },
+      stateStore: wrapStore(store, {
+        pause: async () => ({ success: false, errorCode: "STATE_WRITE_FAILED" }),
+      }),
+      config: makeConfig(),
+      clock: makeClock(),
+      timers,
+      random: () => 0,
+      createOperationId: () => "op-df",
+      logger: { info() {}, warn() {}, error() {} },
+    });
+    await sched.start();
+    clearScheduleForTest(sched, timers);
+    const r = await sched.runOnce();
+    assertEqual(r.status, "state_failed", "DELETE+pause fail");
+    assertEqual(r.primaryErrorCode, "DELETE_FAILED", "primary DELETE");
+    assertEqual(r.stateErrorCode, "STATE_WRITE_FAILED", "state error");
+    await assertNoTimer(sched, timers, "delete pause fail");
+  }
+
+  // SEND_RESULT_INVALID + pause 失败
+  {
+    const dir = mkdtempSync(join(tmpdir(), "fb-sched-"));
+    dirs.push(dir);
+    const store = await bootStore(dir);
+    const timers = makeTimers();
+    const sched = createForumBumpScheduler({
+      scanCandidates: async () => ({
+        candidates: [{ threadId: T, forumChannelId: F }],
+      }),
+      bumpService: {
+        bumpThread: async ({ lifecycle }) => {
+          if (lifecycle?.onBeforeSend) await lifecycle.onBeforeSend({});
+          return {
+            status: "failed",
+            success: false,
+            cleanupRequired: false,
+            errorCode: "SEND_RESULT_INVALID",
+            sentMessageId: null,
+          };
+        },
+      },
+      stateStore: wrapStore(store, {
+        pause: async () => ({ success: false, errorCode: "STATE_PAUSED" }),
+      }),
+      config: makeConfig(),
+      clock: makeClock(),
+      timers,
+      random: () => 0,
+      createOperationId: () => "op-sri",
+      logger: { info() {}, warn() {}, error() {} },
+    });
+    await sched.start();
+    clearScheduleForTest(sched, timers);
+    const r = await sched.runOnce();
+    assertEqual(r.status, "state_failed", "SRI+pause fail");
+    assertEqual(r.primaryErrorCode, "SEND_RESULT_INVALID", "primary SRI");
+    await assertNoTimer(sched, timers, "sri pause fail");
+  }
+
+  // completeSuccess 失败 + pause 成功 → state_failed
+  {
+    const dir = mkdtempSync(join(tmpdir(), "fb-sched-"));
+    dirs.push(dir);
+    const store = await bootStore(dir);
+    const timers = makeTimers();
+    const sched = createForumBumpScheduler({
+      scanCandidates: async () => ({
+        candidates: [{ threadId: T, forumChannelId: F }],
+      }),
+      bumpService: {
+        bumpThread: async ({ lifecycle }) => {
+          if (lifecycle?.onBeforeSend) await lifecycle.onBeforeSend({});
+          if (lifecycle?.onMessageSent) {
+            await lifecycle.onMessageSent({ sentMessageId: M });
+          }
+          if (lifecycle?.onMessageDeleted) await lifecycle.onMessageDeleted({});
+          return {
+            status: "succeeded",
+            success: true,
+            cleanupRequired: false,
+            sentMessageId: M,
+            diagnosticsComplete: true,
+          };
+        },
+      },
+      stateStore: wrapStore(store, {
+        completeSuccess: async () => ({ success: false, errorCode: "STATE_REVISION_CONFLICT" }),
+      }),
+      config: makeConfig(),
+      clock: makeClock(),
+      timers,
+      random: () => 0,
+      createOperationId: () => "op-cs",
+      logger: { info() {}, warn() {}, error() {} },
+    });
+    await sched.start();
+    clearScheduleForTest(sched, timers);
+    const r = await sched.runOnce();
+    assertEqual(r.status, "state_failed", "complete fail+pause ok → state_failed");
+    assertEqual(r.primaryErrorCode, "STATE_REVISION_CONFLICT", "primary complete error");
+    await store.load();
+    assertEqual(store.getSnapshot().paused, true, "pause 成功");
+    await assertNoTimer(sched, timers, "complete fail");
+  }
+
+  // completeSuccess 失败 + pause 失败
+  {
+    const dir = mkdtempSync(join(tmpdir(), "fb-sched-"));
+    dirs.push(dir);
+    const store = await bootStore(dir);
+    const timers = makeTimers();
+    const sched = createForumBumpScheduler({
+      scanCandidates: async () => ({
+        candidates: [{ threadId: T, forumChannelId: F }],
+      }),
+      bumpService: {
+        bumpThread: async ({ lifecycle }) => {
+          if (lifecycle?.onBeforeSend) await lifecycle.onBeforeSend({});
+          if (lifecycle?.onMessageSent) {
+            await lifecycle.onMessageSent({ sentMessageId: M });
+          }
+          if (lifecycle?.onMessageDeleted) await lifecycle.onMessageDeleted({});
+          return {
+            status: "succeeded",
+            success: true,
+            cleanupRequired: false,
+            sentMessageId: M,
+          };
+        },
+      },
+      stateStore: wrapStore(store, {
+        completeSuccess: async () => ({ success: false, errorCode: "STATE_WRITE_FAILED" }),
+        pause: async () => ({ success: false, errorCode: "STATE_REVISION_CONFLICT" }),
+      }),
+      config: makeConfig(),
+      clock: makeClock(),
+      timers,
+      random: () => 0,
+      createOperationId: () => "op-cs2",
+      logger: { info() {}, warn() {}, error() {} },
+    });
+    await sched.start();
+    clearScheduleForTest(sched, timers);
+    const r = await sched.runOnce();
+    assertEqual(r.status, "state_failed", "complete+pause both fail");
+    assertEqual(r.primaryErrorCode, "STATE_WRITE_FAILED", "primary");
+    assertEqual(r.stateErrorCode, "STATE_REVISION_CONFLICT", "stateError");
+    await assertNoTimer(sched, timers, "both fail");
+  }
+
+  // ---- 意外异常边界 ----
+  {
+    const dir = mkdtempSync(join(tmpdir(), "fb-sched-"));
+    dirs.push(dir);
+    const store = await bootStore(dir);
+    const timers = makeTimers();
+    const sched = createForumBumpScheduler({
+      scanCandidates: async () => ({
+        candidates: [{ threadId: T, forumChannelId: F }],
+      }),
+      bumpService: { bumpThread: async () => ({ status: "skipped" }) },
+      stateStore: store,
+      config: makeConfig(),
+      clock: makeClock(),
+      timers,
+      random: () => 0,
+      createOperationId: () => { throw new Error("opid boom"); },
+      logger: { info() {}, warn() {}, error() {} },
+    });
+    await sched.start();
+    clearScheduleForTest(sched, timers);
+    const r = await sched.runOnce();
+    assertEqual(r.status, "unexpected_failed", "createOperationId throw");
+    assertEqual(r.errorCode, "SCHEDULER_UNEXPECTED_FAILED", "unexpected code");
+    assertEqual(sched.getStatus().running, false, "running false");
+    assertEqual(sched.getStatus().lastRunStatus, "unexpected_failed", "lastRunStatus");
+    await assertNoTimer(sched, timers, "opid throw");
+  }
+
+  {
+    const dir = mkdtempSync(join(tmpdir(), "fb-sched-"));
+    dirs.push(dir);
+    const store = await bootStore(dir);
+    const timers = makeTimers();
+    const sched = createForumBumpScheduler({
+      scanCandidates: async () => ({
+        candidates: [{ threadId: T, forumChannelId: F }],
+      }),
+      bumpService: {
+        bumpThread: async () => { throw new Error("bump boom"); },
+      },
+      stateStore: store,
+      config: makeConfig(),
+      clock: makeClock(),
+      timers,
+      random: () => 0,
+      createOperationId: () => "op-x",
+      logger: { info() {}, warn() {}, error() {} },
+    });
+    await sched.start();
+    clearScheduleForTest(sched, timers);
+    let threw = false;
+    let r;
+    try {
+      r = await sched.runOnce();
+    } catch {
+      threw = true;
+    }
+    assert(!threw, "runOnce 不裸抛");
+    assertEqual(r.status, "unexpected_failed", "bump throw → unexpected");
+    assertEqual(sched.getStatus().running, false, "running cleared");
+    await assertNoTimer(sched, timers, "bump throw");
+  }
+
+  {
+    const dir = mkdtempSync(join(tmpdir(), "fb-sched-"));
+    dirs.push(dir);
+    const store = await bootStore(dir);
+    const timers = makeTimers();
+    const sched = createForumBumpScheduler({
+      scanCandidates: async () => ({
+        candidates: [{ threadId: T, forumChannelId: F }],
+      }),
+      bumpService: {
+        bumpThread: async ({ lifecycle }) => {
+          if (lifecycle?.onBeforeSend) await lifecycle.onBeforeSend({});
+          if (lifecycle?.onMessageSent) {
+            await lifecycle.onMessageSent({ sentMessageId: M });
+          }
+          if (lifecycle?.onMessageDeleted) await lifecycle.onMessageDeleted({});
+          return {
+            status: "succeeded",
+            success: true,
+            cleanupRequired: false,
+            sentMessageId: M,
+          };
+        },
+      },
+      stateStore: store,
+      config: makeConfig(),
+      clock: makeClock(),
+      timers,
+      random: () => { throw new Error("rng"); },
+      createOperationId: () => "op-rng",
+      logger: { info() {}, warn() {}, error() {} },
+    });
+    await sched.start();
+    clearScheduleForTest(sched, timers);
+    const r = await sched.runOnce();
+    // random throw is caught in success path → pause SCHEDULER_RANDOM_INVALID or unexpected
+    assert(
+      r.status === "halted" || r.status === "state_failed" || r.status === "unexpected_failed",
+      "random throw 稳定失败",
+    );
+    await assertNoTimer(sched, timers, "random throw");
+  }
+
+  // dailyLimit / cooldown 不扫描
+  {
+    const dir = mkdtempSync(join(tmpdir(), "fb-sched-"));
+    dirs.push(dir);
+    const store = await bootStore(dir);
+    // 人为把 successCount 拉满
+    await store.load();
+    // 用多次 complete 太重：直接写文件
+    const path = join(dir, "state.json");
+    const { readFileSync, writeFileSync } = await import("fs");
+    const s = JSON.parse(readFileSync(path, "utf8"));
+    s.successCount = 10;
+    s.revision = 0;
+    writeFileSync(path, `${JSON.stringify(s, null, 2)}\n`);
+    let scans = 0;
+    const sched = createForumBumpScheduler({
+      scanCandidates: async () => {
+        scans += 1;
+        return { candidates: [] };
+      },
+      bumpService: { bumpThread: async () => ({ status: "skipped" }) },
+      stateStore: store,
+      config: makeConfig({ dailyLimit: 10 }),
+      clock: makeClock(),
+      timers: makeTimers(),
+      random: () => 0,
+      logger: { info() {}, warn() {} },
+    });
+    await sched.start();
+    const r = await sched.runOnce();
+    assertEqual(r.status, "daily_limit", "达上限");
+    assertEqual(scans, 0, "达上限不扫描");
+  }
+
+  {
+    const dir = mkdtempSync(join(tmpdir(), "fb-sched-"));
+    dirs.push(dir);
+    const store = await bootStore(dir);
+    const path = join(dir, "state.json");
+    const { readFileSync, writeFileSync } = await import("fs");
+    const s = JSON.parse(readFileSync(path, "utf8"));
+    s.nextEligibleAt = "2099-01-01T00:00:00.000Z";
+    writeFileSync(path, `${JSON.stringify(s, null, 2)}\n`);
+    let scans = 0;
+    const sched = createForumBumpScheduler({
+      scanCandidates: async () => {
+        scans += 1;
+        return { candidates: [] };
+      },
+      bumpService: { bumpThread: async () => ({ status: "skipped" }) },
+      stateStore: store,
+      config: makeConfig(),
+      clock: makeClock(),
+      timers: makeTimers(),
+      random: () => 0,
+      logger: { info() {}, warn() {} },
+    });
+    await sched.start();
+    const r = await sched.runOnce();
+    assertEqual(r.status, "cooldown", "冷却中");
+    assertEqual(scans, 0, "冷却不扫描");
+  }
+
+  // recovery 启动无 timer
+  {
+    const dir = mkdtempSync(join(tmpdir(), "fb-sched-"));
+    dirs.push(dir);
+    const store = await bootStore(dir);
+    await store.load();
+    await store.beginInFlight({
+      expectedRevision: 0,
+      operationId: "stuck",
+      guildId: G,
+      forumChannelId: F,
+      threadId: T,
+      startedAt: "2026-07-28T12:00:00.000Z",
+    });
+    const timers = makeTimers();
+    const sched = createForumBumpScheduler({
+      scanCandidates: async () => ({ candidates: [] }),
+      bumpService: { bumpThread: async () => ({ status: "skipped" }) },
+      stateStore: store,
+      config: makeConfig(),
+      clock: makeClock(),
+      timers,
+      random: () => 0,
+      logger: { info() {}, warn() {} },
+    });
+    const st = await sched.start();
+    assertEqual(st.recoveryStatus, "manual_review_required", "before_send recovery");
+    assertEqual(st.timerArmed, false, "recovery 无 timer");
+    assertEqual(timers.list().length, 0, "recovery 无活跃 timer");
   }
 
 } finally {
