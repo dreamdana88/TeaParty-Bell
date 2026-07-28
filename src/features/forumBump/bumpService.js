@@ -40,6 +40,29 @@ function isAborted(signal) {
 }
 
 /**
+ * Client 在任何 Discord fetch/send 前必须可用且 ready。
+ * fake client 可实现 isReady() => true。
+ * @param {object|null|undefined} client
+ * @returns {boolean}
+ */
+export function isClientReadyForBump(client) {
+  if (!client || typeof client.channels?.fetch !== "function") {
+    return false;
+  }
+  if (typeof client.isReady === "function") {
+    try {
+      if (client.isReady() === false) return false;
+    } catch {
+      return false;
+    }
+  }
+  if (!client.user) {
+    return false;
+  }
+  return true;
+}
+
+/**
  * 可中断 sleep：使用注入的 sleep，已 abort 时尽快返回。
  * 不依赖真实 setTimeout，便于离线测试。
  */
@@ -249,10 +272,24 @@ export function createForumBumpService({
       return base;
     }
 
-    if (!client.channels?.fetch) {
+    if (!isClientReadyForBump(client)) {
       base.status = "failed";
-      base.errorCode = "BUMP_UNEXPECTED_FAILED";
+      base.success = false;
+      base.cleanupRequired = false;
+      base.errorCode = "CLIENT_NOT_READY";
       base.durationMs = Math.max(0, clock.now() - startedAt);
+      try {
+        logger?.warn?.("[ForumBump] client not ready", {
+          operation: "forum-bump",
+          status: "failed",
+          guildId,
+          forumChannelId,
+          threadId,
+          errorCode: "CLIENT_NOT_READY",
+        });
+      } catch {
+        // ignore
+      }
       return base;
     }
 
@@ -419,9 +456,57 @@ export function createForumBumpService({
       ? sentMessage.id
       : null;
     if (!sentMessageId) {
+      // send 已返回对象但缺少合法 id：尝试清理一次，不得当普通 SEND_FAILED 直接返回。
+      if (sentMessage && typeof sentMessage.delete === "function") {
+        const cleaned = await tryDeleteOnce(sentMessage);
+        base.status = "failed";
+        base.success = false;
+        base.sentMessageId = null;
+        if (cleaned) {
+          base.cleanupRequired = false;
+          base.errorCode = "SEND_RESULT_INVALID";
+        } else {
+          base.cleanupRequired = true;
+          base.errorCode = "DELETE_FAILED";
+        }
+        base.durationMs = Math.max(0, clock.now() - startedAt);
+        try {
+          logger?.error?.("[ForumBump] send result missing message id", {
+            operation: "forum-bump",
+            status: "failed",
+            guildId,
+            forumChannelId,
+            threadId,
+            errorCode: base.errorCode,
+            cleanupRequired: base.cleanupRequired,
+            contentLength,
+          });
+        } catch {
+          // ignore
+        }
+        return base;
+      }
+
       base.status = "failed";
-      base.errorCode = "SEND_FAILED";
+      base.success = false;
+      base.cleanupRequired = false;
+      base.sentMessageId = null;
+      base.errorCode = "SEND_RESULT_INVALID";
       base.durationMs = Math.max(0, clock.now() - startedAt);
+      try {
+        logger?.error?.("[ForumBump] send result missing message id and delete", {
+          operation: "forum-bump",
+          status: "failed",
+          guildId,
+          forumChannelId,
+          threadId,
+          errorCode: "SEND_RESULT_INVALID",
+          cleanupRequired: false,
+          contentLength,
+        });
+      } catch {
+        // ignore
+      }
       return base;
     }
     base.sentMessageId = sentMessageId;

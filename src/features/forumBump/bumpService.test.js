@@ -4,6 +4,7 @@ import {
   FORUM_BUMP_DELETE_DELAY_MS,
   FORUM_BUMP_AFTER_DELETE_SETTLE_MS,
   createForumBumpService,
+  isClientReadyForBump,
 } from "./bumpService.js";
 
 const GUILD = "111111111111111111";
@@ -99,6 +100,7 @@ function makeHarness({
   let phase = "before";
   const client = {
     user: { id: "bot" },
+    isReady: () => true,
     channels: {
       fetch: async (id, options) => {
         fetchCount += 1;
@@ -521,6 +523,135 @@ console.log("\n=== ForumBump bumpService ===\n");
 // 无状态写入（无 fs）
 {
   assert(true, "无状态 Store/Outbox 调用（服务无 import）");
+}
+
+// ---- Client Ready ----
+{
+  assertEqual(isClientReadyForBump(null), false, "null client not ready");
+  assertEqual(isClientReadyForBump({}), false, "无 channels.fetch not ready");
+  assertEqual(
+    isClientReadyForBump({ channels: { fetch: async () => {} }, isReady: () => false, user: { id: "b" } }),
+    false,
+    "isReady false",
+  );
+  assertEqual(
+    isClientReadyForBump({ channels: { fetch: async () => {} }, isReady: () => true }),
+    false,
+    "missing user not ready",
+  );
+  assertEqual(
+    isClientReadyForBump({ channels: { fetch: async () => {} }, isReady: () => true, user: { id: "b" } }),
+    true,
+    "ready fake client",
+  );
+}
+
+{
+  const h = makeHarness();
+  h.client.isReady = () => false;
+  let fetchCalls = 0;
+  const origFetch = h.client.channels.fetch;
+  h.client.channels.fetch = async (...args) => {
+    fetchCalls += 1;
+    return origFetch(...args);
+  };
+  const r = await call(makeService(h));
+  assertEqual(r.status, "failed", "unready status failed");
+  assertEqual(r.success, false, "unready success false");
+  assertEqual(r.cleanupRequired, false, "unready no cleanup");
+  assertEqual(r.errorCode, "CLIENT_NOT_READY", "CLIENT_NOT_READY");
+  assertEqual(fetchCalls, 0, "unready 不 fetch");
+  assertEqual(h.sendCount, 0, "unready 不 send");
+}
+
+{
+  const h = makeHarness();
+  h.client.user = null;
+  let fetchCalls = 0;
+  const origFetch = h.client.channels.fetch;
+  h.client.channels.fetch = async (...args) => {
+    fetchCalls += 1;
+    return origFetch(...args);
+  };
+  const r = await call(makeService(h));
+  assertEqual(r.errorCode, "CLIENT_NOT_READY", "missing user → CLIENT_NOT_READY");
+  assertEqual(fetchCalls, 0, "missing user 不 fetch");
+  assertEqual(h.sendCount, 0, "missing user 不 send");
+}
+
+{
+  const h = makeHarness();
+  // isReady 省略时只要有 user + fetch 即可（兼容仅部分实现的 fake）
+  delete h.client.isReady;
+  const r = await call(makeService(h));
+  assertEqual(r.status, "succeeded", "无 isReady 但有 user 可执行");
+}
+
+// ---- send 返回对象但缺少合法 id ----
+{
+  let deleteCount = 0;
+  let sendCount = 0;
+  const h = makeHarness({
+    sendImpl: async () => {
+      sendCount += 1;
+      return {
+        // 无 id
+        delete: async () => {
+          deleteCount += 1;
+        },
+      };
+    },
+  });
+  const r = await call(makeService(h));
+  assertEqual(r.status, "failed", "无 id 删除成功 status");
+  assertEqual(r.success, false, "无 id 删除成功 success");
+  assertEqual(r.cleanupRequired, false, "无 id 删除成功 cleanup false");
+  assertEqual(r.errorCode, "SEND_RESULT_INVALID", "SEND_RESULT_INVALID");
+  assertEqual(r.sentMessageId, null, "无 id sentMessageId null");
+  assertEqual(sendCount, 1, "无 id 不重发");
+  assertEqual(deleteCount, 1, "无 id 删除一次");
+  const logBlob = JSON.stringify(h.logs);
+  assert(!logBlob.includes(FORUM_BUMP_CONTENT), "无 id 日志无正文");
+}
+
+{
+  let deleteCount = 0;
+  let sendCount = 0;
+  const h = makeHarness({
+    sendImpl: async () => {
+      sendCount += 1;
+      return {
+        id: "", // 非法空 id
+        delete: async () => {
+          deleteCount += 1;
+          throw new Error("del fail");
+        },
+      };
+    },
+  });
+  const r = await call(makeService(h));
+  assertEqual(r.status, "failed", "无 id 删除失败 status");
+  assertEqual(r.success, false, "无 id 删除失败 success");
+  assertEqual(r.cleanupRequired, true, "无 id 删除失败 cleanup true");
+  assertEqual(r.errorCode, "DELETE_FAILED", "无 id 删除失败 DELETE_FAILED");
+  assertEqual(sendCount, 1, "删除失败不重发");
+  assertEqual(deleteCount, 1, "删除失败只 delete 一次");
+}
+
+{
+  let sendCount = 0;
+  const h = makeHarness({
+    sendImpl: async () => {
+      sendCount += 1;
+      return { id: null }; // 无 delete 方法
+    },
+  });
+  const r = await call(makeService(h));
+  assertEqual(r.status, "failed", "无 id 无 delete status");
+  assertEqual(r.success, false, "无 id 无 delete success");
+  assertEqual(r.cleanupRequired, false, "无 id 无 delete cleanup false");
+  assertEqual(r.errorCode, "SEND_RESULT_INVALID", "无 id 无 delete SEND_RESULT_INVALID");
+  assertEqual(sendCount, 1, "无 delete 不重发");
 }
 
 console.log(`\nForumBump bumpService: ${passed} passed / ${failed} failed`);
