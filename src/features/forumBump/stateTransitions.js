@@ -214,6 +214,57 @@ export function resumeTransition(state) {
  * @param {object} state
  * @param {object} input
  */
+/**
+ * 放弃 before_send 阶段的 inFlight（确认未发出合法消息）。
+ * @param {object} state
+ * @param {object} input
+ */
+export function abandonBeforeSendTransition(state, input) {
+  const current = validateState(state);
+  const { operationId } = input ?? {};
+  if (typeof operationId !== "string") {
+    return fail("STATE_ARGUMENT_INVALID");
+  }
+  const miss = requireInFlight(current, operationId);
+  if (miss) return miss;
+  if (current.inFlight.phase !== "before_send") {
+    return fail("STATE_TRANSITION_INVALID", { phase: current.inFlight.phase });
+  }
+  const next = cloneState(current);
+  next.inFlight = null;
+  return ok(next);
+}
+
+/**
+ * 仅允许将 nextEligibleAt 向后推迟。
+ * @param {object} state
+ * @param {object} input
+ */
+export function deferUntilTransition(state, input) {
+  const current = validateState(state);
+  const { nextEligibleAt } = input ?? {};
+  if (!isValidIsoTimestamp(nextEligibleAt)) {
+    return fail("STATE_ARGUMENT_INVALID");
+  }
+  if (current.paused) {
+    return fail("STATE_PAUSED");
+  }
+  if (current.inFlight) {
+    return fail("STATE_INFLIGHT_EXISTS");
+  }
+  if (current.nextEligibleAt != null) {
+    if (!isValidIsoTimestamp(current.nextEligibleAt)) {
+      return fail("STATE_INVALID");
+    }
+    if (Date.parse(current.nextEligibleAt) >= Date.parse(nextEligibleAt)) {
+      return ok(current, false);
+    }
+  }
+  const next = cloneState(current);
+  next.nextEligibleAt = nextEligibleAt;
+  return ok(next);
+}
+
 export function rolloverLocalDateTransition(state, input) {
   const current = validateState(state);
   const localDate = input?.localDate;

@@ -1,8 +1,10 @@
 import { createInitialState } from "./stateSchema.js";
 import {
+  abandonBeforeSendTransition,
   beginInFlightTransition,
   classifyRecovery,
   completeSuccessTransition,
+  deferUntilTransition,
   markMessageDeletedTransition,
   markMessageSentTransition,
   pauseTransition,
@@ -244,6 +246,33 @@ let state = createInitialState("2026-07-28");
     operationId: "op", deletedAt: TS2,
   }).state;
   assertEqual(classifyRecovery(s).recoveryStatus, "reconciliation_required", "after_delete");
+}
+
+// abandonBeforeSend / deferUntil
+{
+  let s = createInitialState("2026-07-28");
+  s = beginInFlightTransition(s, {
+    operationId: "op", guildId: G, forumChannelId: F, threadId: T, startedAt: TS,
+  }).state;
+  const ab = abandonBeforeSendTransition(s, { operationId: "op" });
+  assert(ab.ok && ab.state.inFlight === null, "abandon before_send");
+  s = markMessageSentTransition(
+    beginInFlightTransition(createInitialState("2026-07-28"), {
+      operationId: "op2", guildId: G, forumChannelId: F, threadId: T, startedAt: TS,
+    }).state,
+    { operationId: "op2", sentMessageId: M, sentAt: TS2 },
+  ).state;
+  assertEqual(
+    abandonBeforeSendTransition(s, { operationId: "op2" }).errorCode,
+    "STATE_TRANSITION_INVALID",
+    "after_send 不可 abandon",
+  );
+  const d1 = deferUntilTransition(createInitialState("2026-07-28"), {
+    nextEligibleAt: TS3,
+  });
+  assert(d1.ok && d1.state.nextEligibleAt === TS3, "deferUntil 写入");
+  const d2 = deferUntilTransition(d1.state, { nextEligibleAt: TS2 });
+  assertEqual(d2.changed, false, "不得缩短冷却");
 }
 
 // 恒定体积：100 次 complete 后字段固定

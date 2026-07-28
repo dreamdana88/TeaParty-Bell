@@ -26,8 +26,10 @@ import {
   validateState,
 } from "./stateSchema.js";
 import {
+  abandonBeforeSendTransition,
   beginInFlightTransition,
   completeSuccessTransition,
+  deferUntilTransition,
   markMessageDeletedTransition,
   markMessageSentTransition,
   pauseTransition,
@@ -444,6 +446,16 @@ export function createForumBumpStateStore({
       rolloverLocalDateTransition(state, { localDate }));
   }
 
+  async function abandonBeforeSend({ expectedRevision, operationId } = {}) {
+    return _applyTransition("abandonBeforeSend", expectedRevision, (state) =>
+      abandonBeforeSendTransition(state, { operationId }));
+  }
+
+  async function deferUntil({ expectedRevision, nextEligibleAt } = {}) {
+    return _applyTransition("deferUntil", expectedRevision, (state) =>
+      deferUntilTransition(state, { nextEligibleAt }));
+  }
+
   async function recoverOnStartup() {
     return _enqueue(async () => {
       try {
@@ -520,6 +532,8 @@ export function createForumBumpStateStore({
     pause,
     resume,
     rolloverLocalDate,
+    abandonBeforeSend,
+    deferUntil,
     recoverOnStartup,
   };
 }

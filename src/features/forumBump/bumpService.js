@@ -246,6 +246,7 @@ export function createForumBumpService({
     threadId,
     policy = {},
     signal,
+    lifecycle,
   } = {}) {
     const startedAt = clock.now();
     const base = emptyResultBase();
@@ -418,6 +419,32 @@ export function createForumBumpService({
       return base;
     }
 
+    // ---- lifecycle: onBeforeSend（资格通过后、send 前）----
+    if (lifecycle && typeof lifecycle.onBeforeSend === "function") {
+      try {
+        await lifecycle.onBeforeSend({
+          guildId,
+          forumChannelId,
+          threadId,
+          before,
+        });
+      } catch (error) {
+        base.status = "failed";
+        base.success = false;
+        base.cleanupRequired = false;
+        base.errorCode = "LIFECYCLE_BEFORE_SEND_FAILED";
+        base.durationMs = Math.max(0, clock.now() - startedAt);
+        return base;
+      }
+    }
+
+    if (isAborted(signal)) {
+      base.status = "cancelled";
+      base.errorCode = "BUMP_ABORTED";
+      base.durationMs = Math.max(0, clock.now() - startedAt);
+      return base;
+    }
+
     // ---- send ----
     let sentMessage = null;
     let sentMessageId = null;
@@ -511,6 +538,27 @@ export function createForumBumpService({
     }
     base.sentMessageId = sentMessageId;
 
+    // ---- lifecycle: onMessageSent ----
+    if (lifecycle && typeof lifecycle.onMessageSent === "function") {
+      try {
+        await lifecycle.onMessageSent({
+          guildId,
+          forumChannelId,
+          threadId,
+          sentMessageId,
+        });
+      } catch {
+        const cleaned = await tryDeleteOnce(sentMessage);
+        base.status = "failed";
+        base.success = false;
+        base.cleanupRequired = !cleaned;
+        base.errorCode = cleaned ? "LIFECYCLE_AFTER_SEND_FAILED" : "DELETE_FAILED";
+        base.diagnosticsComplete = false;
+        base.durationMs = Math.max(0, clock.now() - startedAt);
+        return base;
+      }
+    }
+
     // ---- afterSend snapshot (diagnostic only) ----
     const warnings = [];
     let afterSend = null;
@@ -559,6 +607,28 @@ export function createForumBumpService({
         // ignore
       }
       return base;
+    }
+
+    // ---- lifecycle: onMessageDeleted（delete 成功后、afterDelete 诊断前）----
+    if (lifecycle && typeof lifecycle.onMessageDeleted === "function") {
+      try {
+        await lifecycle.onMessageDeleted({
+          guildId,
+          forumChannelId,
+          threadId,
+          sentMessageId,
+        });
+      } catch {
+        base.status = "failed";
+        base.success = false;
+        base.cleanupRequired = false;
+        base.errorCode = "LIFECYCLE_AFTER_DELETE_FAILED";
+        base.warnings = warnings;
+        base.diagnosticsComplete = false;
+        base.abortedAfterSend = abortedAfterSend;
+        base.durationMs = Math.max(0, clock.now() - startedAt);
+        return base;
+      }
     }
 
     // ---- afterDelete settle + snapshot ----

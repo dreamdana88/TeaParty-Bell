@@ -587,6 +587,58 @@ console.log("\n=== ForumBump bumpService ===\n");
   assertEqual(r.status, "succeeded", "无 isReady 但有 user 可执行");
 }
 
+// lifecycle hooks
+{
+  const h = makeHarness();
+  const order = [];
+  let send = 0;
+  h.thread.send = async (payload) => {
+    send += 1;
+    h.thread._lastPayload = payload;
+    return {
+      id: MSG,
+      delete: async () => {},
+    };
+  };
+  const service = createForumBumpService({
+    client: h.client, clock: h.clock, sleep: h.sleep, logger: h.logger,
+  });
+  const r = await service.bumpThread({
+    guildId: GUILD,
+    forumChannelId: FORUM,
+    threadId: THREAD,
+    policy: { silenceDays: 30, excludedTagIds: [], skipPinned: true },
+    lifecycle: {
+      onBeforeSend: async () => { order.push("before"); },
+      onMessageSent: async () => { order.push("sent"); },
+      onMessageDeleted: async () => { order.push("deleted"); },
+    },
+  });
+  assertEqual(r.status, "succeeded", "lifecycle 成功");
+  assertEqual(order.join(","), "before,sent,deleted", "lifecycle 顺序");
+  assertEqual(send, 1, "lifecycle send 1");
+}
+
+{
+  const h = makeHarness();
+  let send = 0;
+  h.thread.send = async () => { send += 1; return { id: MSG, delete: async () => {} }; };
+  const service = createForumBumpService({
+    client: h.client, clock: h.clock, sleep: async () => {}, logger: h.logger,
+  });
+  const r = await service.bumpThread({
+    guildId: GUILD,
+    forumChannelId: FORUM,
+    threadId: THREAD,
+    policy: { silenceDays: 30, excludedTagIds: [], skipPinned: true },
+    lifecycle: {
+      onBeforeSend: async () => { throw new Error("nope"); },
+    },
+  });
+  assertEqual(r.errorCode, "LIFECYCLE_BEFORE_SEND_FAILED", "beforeSend 失败");
+  assertEqual(send, 0, "beforeSend 失败不 send");
+}
+
 // ---- send 返回对象但缺少合法 id ----
 {
   let deleteCount = 0;
