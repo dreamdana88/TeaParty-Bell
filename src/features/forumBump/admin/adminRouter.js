@@ -1,6 +1,12 @@
 /**
  * Forum Bump 管理员面板 Interaction Router。
  * 只处理 /顶帖 面板 及本面板 customId；直接调用 Runtime 控制接口。
+ *
+ * Interaction 3 秒响应：
+ * - Slash：立即 deferReply(ephemeral) → editReply
+ * - 编辑按钮：无 I/O，立即 showModal（用 session draft）
+ * - 暂停/恢复/保存/取消：立即 deferUpdate → editReply
+ * - Modal 提交：本地解析，直接 ephemeral reply
  */
 
 import { Events, MessageFlags, PermissionFlagsBits } from "discord.js";
@@ -28,7 +34,6 @@ const SESSION_EXPIRED = "面板已过期，请重新执行「/顶帖 面板」�
 const SESSION_MISMATCH = "该操作只能由打开面板的管理员继续，请重新打开顶帖面板。";
 const REVISION_STALE = "配置已被其他操作更新，请重新打开顶帖面板。";
 const GENERIC = "处理顶帖面板失败，请稍后重试。";
-const DISABLED_HINT = "Forum 顶帖当前为 disabled，只能查看状态，不能修改。";
 
 function safeErrorFields(error) {
   return {
@@ -107,39 +112,62 @@ export function createForumBumpAdminRouter({
     };
   }
 
-  async function respondEphemeral(interaction, payload) {
+  function sessionDeniedMessage(code) {
+    return code === "SESSION_EXPIRED" ? SESSION_EXPIRED : SESSION_MISMATCH;
+  }
+
+  /**
+   * 首次 ephemeral reply（未 defer 时）。
+   */
+  async function replyEphemeral(interaction, payload) {
     if (destroyed) return;
     const data = typeof payload === "string" ? { content: payload } : payload;
     try {
       if (interaction?.deferred || interaction?.replied) {
-        if (typeof interaction.editReply === "function") {
-          await interaction.editReply(data);
-          return;
-        }
-        if (typeof interaction.followUp === "function") {
-          await interaction.followUp({ ...data, flags: MessageFlags.Ephemeral });
-          return;
-        }
+        await interaction.editReply(data);
+        return;
       }
-      if (typeof interaction?.reply === "function") {
-        await interaction.reply({ ...data, flags: MessageFlags.Ephemeral });
-      }
+      await interaction.reply({ ...data, flags: MessageFlags.Ephemeral });
     } catch (error) {
-      log("warn", "ephemeral 响应失败", safeErrorFields(error));
+      log("warn", "replyEphemeral 失败", safeErrorFields(error));
     }
   }
 
-  async function updateEphemeral(interaction, payload) {
+  /**
+   * 已 defer 后更新面板内容。
+   */
+  async function editReplyPanel(interaction, payload) {
     if (destroyed) return;
     const data = typeof payload === "string" ? { content: payload } : payload;
     try {
-      if (typeof interaction?.update === "function" && !interaction.deferred && !interaction.replied) {
-        await interaction.update(data);
+      if (typeof interaction.editReply === "function") {
+        await interaction.editReply(data);
         return;
       }
-      await respondEphemeral(interaction, data);
     } catch (error) {
-      log("warn", "update 响应失败", safeErrorFields(error));
+      log("warn", "editReply 失败", safeErrorFields(error));
+    }
+  }
+
+  async function deferReplyEphemeral(interaction) {
+    if (interaction?.deferred || interaction?.replied) return true;
+    try {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      return true;
+    } catch (error) {
+      log("warn", "deferReply 失败", safeErrorFields(error));
+      return false;
+    }
+  }
+
+  async function deferUpdateOnce(interaction) {
+    if (interaction?.deferred || interaction?.replied) return true;
+    try {
+      await interaction.deferUpdate();
+      return true;
+    } catch (error) {
+      log("warn", "deferUpdate 失败", safeErrorFields(error));
+      return false;
     }
   }
 
@@ -210,12 +238,18 @@ export function createForumBumpAdminRouter({
     );
   }
 
+  /**
+   * /顶帖 面板：立即 deferReply，再读 Runtime。
+   */
   async function handleSlashPanel(interaction) {
     const denied = accessFailure(interaction);
     if (denied) {
-      await respondEphemeral(interaction, denied.message);
+      await replyEphemeral(interaction, denied.message);
       return;
     }
+
+    if (!(await deferReplyEphemeral(interaction))) return;
+
     const actor = actorFrom(interaction);
     try {
       const snap = await forumBumpRuntime.getControlSnapshot();
@@ -223,19 +257,25 @@ export function createForumBumpAdminRouter({
       const nameMap = await resolveForumNames(snap.forumChannelIds ?? []);
       const content = buildPanelContent(snap, { forumNameMap: nameMap });
       const components = buildPanelComponents(snap, session.sessionId);
-      await respondEphemeral(interaction, { content, components });
+      await editReplyPanel(interaction, { content, components });
     } catch (error) {
       log("error", "打开面板失败", safeErrorFields(error));
-      await respondEphemeral(interaction, GENERIC);
+      await editReplyPanel(interaction, { content: GENERIC, components: [] });
     }
   }
 
-  async function refreshPanelMessage(interaction, sessionId, notice = null) {
+  /**
+   * 已 defer 后刷新面板（仅 editReply）。
+   */
+  async function refreshPanelAfterDefer(interaction, sessionId, notice = null) {
     const { content, components } = await snapshotPanelPayload(sessionId);
     const text = notice ? `${notice}\n\n${content}` : content;
-    await updateEphemeral(interaction, { content: text, components });
+    await editReplyPanel(interaction, { content: text, components });
   }
 
+  /**
+   * 编辑按钮：禁止 Runtime I/O；用 session draft 立即 showModal。
+   */
   async function handleEditButton(interaction, sessionId) {
     const actor = actorFrom(interaction);
     const check = sessions.assertOwner(sessionId, {
@@ -243,45 +283,24 @@ export function createForumBumpAdminRouter({
       guildId: interaction.guildId,
     });
     if (!check.ok) {
-      await updateEphemeral(interaction, {
-        content: check.errorCode === "SESSION_EXPIRED" ? SESSION_EXPIRED : SESSION_MISMATCH,
-        components: [],
-      });
+      await replyEphemeral(interaction, sessionDeniedMessage(check.errorCode));
       return;
     }
-    const snap = await forumBumpRuntime.getControlSnapshot();
-    if (snap.mode === "disabled") {
-      await updateEphemeral(interaction, { content: DISABLED_HINT, components: [] });
-      return;
-    }
-    // 同步最新 draft，并锚定当前 revision（防旧写）
-    sessions.updateDraft(sessionId, {
-      dailyLimit: snap.dailyLimit,
-      activeStart: snap.activeStart,
-      activeEnd: snap.activeEnd,
-      silenceDays: snap.silenceDays,
-      forumChannelIds: snap.forumChannelIds ?? [],
-    });
-    sessions.touchRevision?.(sessionId, snap.dynamicConfigRevision ?? 0);
 
-    const modal = buildConfigModal(
-      sessions.get(sessionId)?.draft ?? {
-        dailyLimit: snap.dailyLimit,
-        activeStart: snap.activeStart,
-        activeEnd: snap.activeEnd,
-        silenceDays: snap.silenceDays,
-      },
-      sessionId,
-    );
+    const draft = sessions.get(sessionId)?.draft;
+    const modal = buildConfigModal(draft, sessionId);
     if (!modal) {
-      await updateEphemeral(interaction, { content: GENERIC, components: [] });
+      await replyEphemeral(interaction, GENERIC);
       return;
     }
     try {
       await interaction.showModal(modal);
     } catch (error) {
       log("warn", "showModal 失败", safeErrorFields(error));
-      await respondEphemeral(interaction, GENERIC);
+      // showModal 失败时可能尚未确认
+      if (!interaction.deferred && !interaction.replied) {
+        await replyEphemeral(interaction, GENERIC);
+      }
     }
   }
 
@@ -289,6 +308,9 @@ export function createForumBumpAdminRouter({
     sessions.touchRevision?.(sessionId, revision);
   }
 
+  /**
+   * 暂停 / 恢复：立即 deferUpdate，再 Runtime。
+   */
   async function handlePauseResume(interaction, sessionId, action) {
     const actor = actorFrom(interaction);
     const check = sessions.assertOwner(sessionId, {
@@ -296,54 +318,59 @@ export function createForumBumpAdminRouter({
       guildId: interaction.guildId,
     });
     if (!check.ok) {
-      await updateEphemeral(interaction, {
-        content: check.errorCode === "SESSION_EXPIRED" ? SESSION_EXPIRED : SESSION_MISMATCH,
-        components: [],
-      });
+      await replyEphemeral(interaction, sessionDeniedMessage(check.errorCode));
       return;
     }
 
-    const snap = await forumBumpRuntime.getControlSnapshot();
-    if (action === CUSTOM_IDS.resume) {
-      if (snap.paused && snap.pauseReason !== "ADMIN_PAUSED") {
-        await refreshPanelMessage(
-          interaction,
-          sessionId,
-          `无法恢复：${snap.pauseReason || "安全故障暂停"}`,
-        );
+    if (!(await deferUpdateOnce(interaction))) return;
+
+    try {
+      const snap = await forumBumpRuntime.getControlSnapshot();
+      if (action === CUSTOM_IDS.resume) {
+        if (snap.paused && snap.pauseReason !== "ADMIN_PAUSED") {
+          await refreshPanelAfterDefer(
+            interaction,
+            sessionId,
+            `无法恢复：${snap.pauseReason || "安全故障暂停"}`,
+          );
+          return;
+        }
+        const result = await forumBumpRuntime.resumeByAdmin({
+          actorId: actor.actorId,
+          actorTag: actor.actorTag,
+          source: actor.source,
+        });
+        if (!result.success) {
+          await refreshPanelAfterDefer(interaction, sessionId, safeRuntimeErrorMessage(result));
+          return;
+        }
+        const after = await forumBumpRuntime.getControlSnapshot();
+        setSessionRevision(sessionId, after.dynamicConfigRevision ?? 0);
+        await refreshPanelAfterDefer(interaction, sessionId, "已恢复自动顶帖。");
         return;
       }
-      const result = await forumBumpRuntime.resumeByAdmin({
+
+      const result = await forumBumpRuntime.pauseByAdmin({
         actorId: actor.actorId,
         actorTag: actor.actorTag,
         source: actor.source,
       });
       if (!result.success) {
-        await refreshPanelMessage(interaction, sessionId, safeRuntimeErrorMessage(result));
+        await refreshPanelAfterDefer(interaction, sessionId, safeRuntimeErrorMessage(result));
         return;
       }
-      // 刷新 session revision
       const after = await forumBumpRuntime.getControlSnapshot();
       setSessionRevision(sessionId, after.dynamicConfigRevision ?? 0);
-      await refreshPanelMessage(interaction, sessionId, "已恢复自动顶帖。");
-      return;
+      await refreshPanelAfterDefer(interaction, sessionId, "已暂停自动顶帖。");
+    } catch (error) {
+      log("error", "暂停/恢复失败", safeErrorFields(error));
+      await editReplyPanel(interaction, { content: GENERIC, components: [] });
     }
-
-    // pause
-    const result = await forumBumpRuntime.pauseByAdmin({
-      actorId: actor.actorId,
-      actorTag: actor.actorTag,
-      source: actor.source,
-    });
-    if (!result.success) {
-      await refreshPanelMessage(interaction, sessionId, safeRuntimeErrorMessage(result));
-      return;
-    }
-    const after = await forumBumpRuntime.getControlSnapshot();
-    setSessionRevision(sessionId, after.dynamicConfigRevision ?? 0);
-    await refreshPanelMessage(interaction, sessionId, "已暂停自动顶帖。");
   }
 
+  /**
+   * Modal 提交：仅本地解析，直接 ephemeral reply。
+   */
   async function handleModal(interaction, sessionId) {
     const actor = actorFrom(interaction);
     const check = sessions.assertOwner(sessionId, {
@@ -351,7 +378,7 @@ export function createForumBumpAdminRouter({
       guildId: interaction.guildId,
     });
     if (!check.ok) {
-      await respondEphemeral(interaction, check.errorCode === "SESSION_EXPIRED" ? SESSION_EXPIRED : SESSION_MISMATCH);
+      await replyEphemeral(interaction, sessionDeniedMessage(check.errorCode));
       return;
     }
 
@@ -363,7 +390,7 @@ export function createForumBumpAdminRouter({
     };
     const parsed = parseModalFields(fields);
     if (!parsed.ok) {
-      await respondEphemeral(interaction, parsed.safeMessage);
+      await replyEphemeral(interaction, parsed.safeMessage);
       return;
     }
 
@@ -371,12 +398,15 @@ export function createForumBumpAdminRouter({
     const draft = sessions.get(sessionId)?.draft;
     const page = buildForumSelectPage(draft, sessionId);
     if (!page) {
-      await respondEphemeral(interaction, GENERIC);
+      await replyEphemeral(interaction, GENERIC);
       return;
     }
-    await respondEphemeral(interaction, page);
+    await replyEphemeral(interaction, page);
   }
 
+  /**
+   * 频道选择：仅本地 draft 更新，用 update 作为首次响应（无 Runtime I/O）。
+   */
   async function handleChannelSelect(interaction, sessionId) {
     const actor = actorFrom(interaction);
     const check = sessions.assertOwner(sessionId, {
@@ -384,10 +414,7 @@ export function createForumBumpAdminRouter({
       guildId: interaction.guildId,
     });
     if (!check.ok) {
-      await updateEphemeral(interaction, {
-        content: check.errorCode === "SESSION_EXPIRED" ? SESSION_EXPIRED : SESSION_MISMATCH,
-        components: [],
-      });
+      await replyEphemeral(interaction, sessionDeniedMessage(check.errorCode));
       return;
     }
 
@@ -398,22 +425,33 @@ export function createForumBumpAdminRouter({
       values = [];
     }
     if (values.length === 0) {
-      await updateEphemeral(interaction, {
-        content: "请至少选择一个 Forum 频道。",
-        components: buildForumSelectPage(sessions.get(sessionId)?.draft, sessionId)?.components ?? [],
-      });
+      try {
+        await interaction.update({
+          content: "请至少选择一个 Forum 频道。",
+          components: buildForumSelectPage(sessions.get(sessionId)?.draft, sessionId)?.components ?? [],
+        });
+      } catch (error) {
+        log("warn", "channel select update 失败", safeErrorFields(error));
+      }
       return;
     }
 
     sessions.updateDraft(sessionId, { forumChannelIds: values });
     const draft = sessions.get(sessionId)?.draft;
     const page = buildForumSelectPage(draft, sessionId);
-    await updateEphemeral(interaction, {
-      content: `${page.content}\n\n已选择 ${values.length} 个频道。`,
-      components: page.components,
-    });
+    try {
+      await interaction.update({
+        content: `${page.content}\n\n已选择 ${values.length} 个频道。`,
+        components: page.components,
+      });
+    } catch (error) {
+      log("warn", "channel select update 失败", safeErrorFields(error));
+    }
   }
 
+  /**
+   * 保存：立即 deferUpdate，再 Runtime。
+   */
   async function handleSave(interaction, sessionId) {
     const actor = actorFrom(interaction);
     const check = sessions.assertOwner(sessionId, {
@@ -421,65 +459,68 @@ export function createForumBumpAdminRouter({
       guildId: interaction.guildId,
     });
     if (!check.ok) {
-      await updateEphemeral(interaction, {
-        content: check.errorCode === "SESSION_EXPIRED" ? SESSION_EXPIRED : SESSION_MISMATCH,
-        components: [],
-      });
+      await replyEphemeral(interaction, sessionDeniedMessage(check.errorCode));
       return;
     }
 
-    const session = check.session;
-    const live = await forumBumpRuntime.getControlSnapshot();
-    if ((live.dynamicConfigRevision ?? 0) !== (session.dynamicConfigRevision ?? 0)) {
-      await updateEphemeral(interaction, {
-        content: REVISION_STALE,
-        components: [],
+    if (!(await deferUpdateOnce(interaction))) return;
+
+    try {
+      const session = sessions.get(sessionId) ?? check.session;
+      const live = await forumBumpRuntime.getControlSnapshot();
+      if ((live.dynamicConfigRevision ?? 0) !== (session.dynamicConfigRevision ?? 0)) {
+        sessions.deleteSession(sessionId);
+        await editReplyPanel(interaction, { content: REVISION_STALE, components: [] });
+        return;
+      }
+
+      const draft = session.draft;
+      if (!Array.isArray(draft.forumChannelIds) || draft.forumChannelIds.length === 0) {
+        await editReplyPanel(interaction, {
+          content: "请至少选择一个 Forum 频道后再保存。",
+          components: buildForumSelectPage(draft, sessionId)?.components ?? [],
+        });
+        return;
+      }
+
+      const patch = {
+        dailyLimit: draft.dailyLimit,
+        activeStart: draft.activeStart,
+        activeEnd: draft.activeEnd,
+        silenceDays: draft.silenceDays,
+        forumChannelIds: [...draft.forumChannelIds],
+      };
+
+      const result = await forumBumpRuntime.updateDynamicConfig(patch, {
+        actorId: actor.actorId,
+        actorTag: actor.actorTag,
+        source: actor.source,
       });
+
+      if (!result.success) {
+        const newSession = openSessionFromSnap(live, actor.actorId);
+        sessions.deleteSession(sessionId);
+        await refreshPanelAfterDefer(
+          interaction,
+          newSession.sessionId,
+          safeRuntimeErrorMessage(result),
+        );
+        return;
+      }
+
       sessions.deleteSession(sessionId);
-      return;
+      const after = await forumBumpRuntime.getControlSnapshot();
+      const newSession = openSessionFromSnap(after, actor.actorId);
+      await refreshPanelAfterDefer(interaction, newSession.sessionId, "配置已保存。");
+    } catch (error) {
+      log("error", "保存配置失败", safeErrorFields(error));
+      await editReplyPanel(interaction, { content: GENERIC, components: [] });
     }
-
-    const draft = session.draft;
-    if (!Array.isArray(draft.forumChannelIds) || draft.forumChannelIds.length === 0) {
-      await updateEphemeral(interaction, {
-        content: "请至少选择一个 Forum 频道后再保存。",
-        components: buildForumSelectPage(draft, sessionId)?.components ?? [],
-      });
-      return;
-    }
-
-    const patch = {
-      dailyLimit: draft.dailyLimit,
-      activeStart: draft.activeStart,
-      activeEnd: draft.activeEnd,
-      silenceDays: draft.silenceDays,
-      forumChannelIds: [...draft.forumChannelIds],
-    };
-
-    const result = await forumBumpRuntime.updateDynamicConfig(patch, {
-      actorId: actor.actorId,
-      actorTag: actor.actorTag,
-      source: actor.source,
-    });
-
-    if (!result.success) {
-      // 旧配置保留；重建面板
-      const newSession = openSessionFromSnap(live, actor.actorId);
-      sessions.deleteSession(sessionId);
-      await refreshPanelMessage(
-        interaction,
-        newSession.sessionId,
-        safeRuntimeErrorMessage(result),
-      );
-      return;
-    }
-
-    sessions.deleteSession(sessionId);
-    const after = await forumBumpRuntime.getControlSnapshot();
-    const newSession = openSessionFromSnap(after, actor.actorId);
-    await refreshPanelMessage(interaction, newSession.sessionId, "配置已保存。");
   }
 
+  /**
+   * 取消：立即 deferUpdate，再刷新面板。
+   */
   async function handleCancel(interaction, sessionId) {
     const actor = actorFrom(interaction);
     const check = sessions.assertOwner(sessionId, {
@@ -487,16 +528,21 @@ export function createForumBumpAdminRouter({
       guildId: interaction.guildId,
     });
     if (!check.ok) {
-      await updateEphemeral(interaction, {
-        content: check.errorCode === "SESSION_EXPIRED" ? SESSION_EXPIRED : SESSION_MISMATCH,
-        components: [],
-      });
+      await replyEphemeral(interaction, sessionDeniedMessage(check.errorCode));
       return;
     }
-    sessions.deleteSession(sessionId);
-    const snap = await forumBumpRuntime.getControlSnapshot();
-    const newSession = openSessionFromSnap(snap, actor.actorId);
-    await refreshPanelMessage(interaction, newSession.sessionId, "已取消编辑。");
+
+    if (!(await deferUpdateOnce(interaction))) return;
+
+    try {
+      sessions.deleteSession(sessionId);
+      const snap = await forumBumpRuntime.getControlSnapshot();
+      const newSession = openSessionFromSnap(snap, actor.actorId);
+      await refreshPanelAfterDefer(interaction, newSession.sessionId, "已取消编辑。");
+    } catch (error) {
+      log("error", "取消编辑失败", safeErrorFields(error));
+      await editReplyPanel(interaction, { content: GENERIC, components: [] });
+    }
   }
 
   async function dispatch(interaction) {
@@ -511,13 +557,13 @@ export function createForumBumpAdminRouter({
 
     const denied = accessFailure(interaction);
     if (denied) {
-      await respondEphemeral(interaction, denied.message);
+      await replyEphemeral(interaction, denied.message);
       return;
     }
 
     const parsed = parseCustomId(interaction.customId);
     if (!parsed) {
-      await respondEphemeral(interaction, SESSION_EXPIRED);
+      await replyEphemeral(interaction, SESSION_EXPIRED);
       return;
     }
 
@@ -561,14 +607,13 @@ export function createForumBumpAdminRouter({
 
   function onInteractionCreate(interaction) {
     if (!started || destroyed) return;
-    // 快速过滤
     const isOurs = isPanelSlash(interaction)
       || (interaction?.customId && isForumBumpCustomId(interaction.customId));
     if (!isOurs) return;
 
     void dispatch(interaction).catch((error) => {
       log("error", "未捕获异常", safeErrorFields(error));
-      void respondEphemeral(interaction, GENERIC);
+      void replyEphemeral(interaction, GENERIC);
     });
   }
 

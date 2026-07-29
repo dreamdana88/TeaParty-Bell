@@ -5,6 +5,7 @@ import { EventEmitter } from "events";
 import {
   ApplicationCommandType,
   ChannelType,
+  MessageFlags,
   PermissionFlagsBits,
 } from "discord.js";
 import {
@@ -243,12 +244,23 @@ function makeRuntime(overrides = {}) {
     dynamicConfigError: null,
     ...overrides.snap,
   };
-  const calls = { update: [], pause: [], resume: [] };
+  const calls = { update: [], pause: [], resume: [], snapshot: 0 };
+  const delayMs = overrides.delayMs ?? 0;
+  async function maybeDelay() {
+    if (delayMs > 0) {
+      await new Promise((r) => setTimeout(r, delayMs));
+    }
+  }
   return {
     calls,
-    getControlSnapshot: async () => ({ ...snap, forumChannelIds: [...snap.forumChannelIds] }),
+    getControlSnapshot: async () => {
+      calls.snapshot += 1;
+      await maybeDelay();
+      return { ...snap, forumChannelIds: [...snap.forumChannelIds] };
+    },
     updateDynamicConfig: async (patch, actor) => {
       calls.update.push({ patch, actor });
+      await maybeDelay();
       if (overrides.updateResult) return overrides.updateResult;
       snap = {
         ...snap,
@@ -260,12 +272,14 @@ function makeRuntime(overrides = {}) {
     },
     pauseByAdmin: async (actor) => {
       calls.pause.push(actor);
+      await maybeDelay();
       if (overrides.pauseResult) return overrides.pauseResult;
       snap = { ...snap, paused: true, pauseReason: "ADMIN_PAUSED" };
       return { success: true, paused: true, pauseReason: "ADMIN_PAUSED" };
     },
     resumeByAdmin: async (actor) => {
       calls.resume.push(actor);
+      await maybeDelay();
       if (overrides.resumeResult) return overrides.resumeResult;
       if (snap.pauseReason !== "ADMIN_PAUSED") {
         return { success: false, errorCode: "STATE_RECOVERY_REQUIRED", pauseReason: snap.pauseReason };
@@ -278,7 +292,7 @@ function makeRuntime(overrides = {}) {
 }
 
 function baseInteraction(extra = {}) {
-  return {
+  const ix = {
     id: `ix_${Math.random().toString(36).slice(2)}`,
     guildId: G,
     channelId: "555555555555555555",
@@ -290,30 +304,65 @@ function baseInteraction(extra = {}) {
     inGuild: () => true,
     replied: false,
     deferred: false,
+    ackLog: [],
+    lastReply: null,
+    lastUpdate: null,
+    lastFollowUp: null,
+    shownModal: null,
     reply: async function reply(payload) {
+      this.ackLog.push({ op: "reply", payload });
       this.replied = true;
       this.lastReply = payload;
       return payload;
     },
+    deferReply: async function deferReply(opts) {
+      this.ackLog.push({ op: "deferReply", opts });
+      this.deferred = true;
+      return undefined;
+    },
+    deferUpdate: async function deferUpdate() {
+      this.ackLog.push({ op: "deferUpdate" });
+      this.deferred = true;
+      return undefined;
+    },
     editReply: async function editReply(payload) {
+      this.ackLog.push({ op: "editReply", payload });
       this.lastReply = payload;
       return payload;
     },
     followUp: async function followUp(payload) {
+      this.ackLog.push({ op: "followUp", payload });
       this.lastFollowUp = payload;
       return payload;
     },
     update: async function update(payload) {
+      this.ackLog.push({ op: "update", payload });
       this.lastUpdate = payload;
       this.replied = true;
       return payload;
     },
     showModal: async function showModal(modal) {
+      this.ackLog.push({ op: "showModal" });
+      this.replied = true;
       this.shownModal = modal;
       return modal;
     },
     ...extra,
   };
+  return ix;
+}
+
+function firstAck(ix) {
+  return ix.ackLog[0]?.op ?? null;
+}
+
+function ackOps(ix) {
+  return ix.ackLog.map((x) => x.op);
+}
+
+function isEphemeralFlags(flags) {
+  // MessageFlags.Ephemeral === 64
+  return flags === 64 || flags === MessageFlags.Ephemeral;
 }
 
 {
@@ -336,11 +385,14 @@ function baseInteraction(extra = {}) {
     },
   });
   await router._dispatch(ix);
-  assert(ix.replied, "面板 slash 已回复");
+  assertEqual(firstAck(ix), "deferReply", "slash 先 deferReply");
+  assert(ix.deferred, "slash deferred");
   assert(String(ix.lastReply?.content || "").includes("顶帖控制面板"), "面板内容");
   assert(String(ix.lastReply?.content || "").includes("execute"), "显示 mode");
   assert(String(ix.lastReply?.content || "").includes("论坛A") || String(ix.lastReply?.content || "").includes(F), "频道展示");
   assert(ix.lastReply?.components?.length >= 1, "有按钮");
+  assert(ackOps(ix).includes("editReply"), "最终 editReply");
+  assertEqual(ackOps(ix).filter((o) => o === "deferReply" || o === "reply").length, 1, "slash 只确认一次");
 
   // 非管理员
   const denied = baseInteraction({
@@ -351,6 +403,8 @@ function baseInteraction(extra = {}) {
   });
   await router._dispatch(denied);
   assert(String(denied.lastReply?.content || "").includes("管理员"), "非管理员拒绝");
+  assertEqual(firstAck(denied), "reply", "拒绝路径直接 reply");
+  assert(isEphemeralFlags(denied.ackLog[0]?.payload?.flags), "拒绝仍 ephemeral");
 
   router.destroy();
   // destroy 后不再处理
@@ -360,7 +414,7 @@ function baseInteraction(extra = {}) {
     options: { getSubcommand: () => FORUM_BUMP_PANEL_SUBCOMMAND_NAME },
   });
   await router._dispatch(after);
-  assert(!after.replied, "destroy 后不处理");
+  assertEqual(after.ackLog.length, 0, "destroy 后不处理");
 }
 
 // 暂停 / 恢复
@@ -402,10 +456,12 @@ function baseInteraction(extra = {}) {
     customId,
   });
   await router._dispatch(pauseIx);
+  assertEqual(firstAck(pauseIx), "deferUpdate", "暂停先 deferUpdate");
   assertEqual(runtime.calls.pause.length, 1, "pauseByAdmin 调用");
   assertEqual(runtime.calls.pause[0].source, "discord_admin_panel", "actor source");
-  const pauseContent = pauseIx.lastUpdate?.content || pauseIx.lastReply?.content || "";
+  const pauseContent = pauseIx.lastReply?.content || "";
   assert(pauseContent.includes("已暂停") || pauseContent.includes("管理员暂停"), "暂停后面板更新");
+  assert(ackOps(pauseIx).includes("editReply"), "暂停后 editReply");
 
   // 再次暂停幂等
   const snap = await runtime.getControlSnapshot();
@@ -432,7 +488,8 @@ function baseInteraction(extra = {}) {
     customId: buildCustomId("btn", CUSTOM_IDS.resume, session2.sessionId),
   });
   await router._dispatch(resumeIx);
-  const resumeText = resumeIx.lastUpdate?.content || resumeIx.lastReply?.content || "";
+  assertEqual(firstAck(resumeIx), "deferUpdate", "恢复先 deferUpdate");
+  const resumeText = resumeIx.lastReply?.content || "";
   assert(
     resumeText.includes("无法恢复") || resumeText.includes("DELETE_FAILED") || resumeText.includes("安全"),
     "安全故障拒绝恢复",
@@ -452,8 +509,10 @@ function baseInteraction(extra = {}) {
     customId: buildCustomId("btn", CUSTOM_IDS.resume, session3.sessionId),
   });
   await router._dispatch(resumeOk);
+  assertEqual(firstAck(resumeOk), "deferUpdate", "成功恢复先 deferUpdate");
   assertEqual(runtime.calls.resume.length, 1, "resume 调用");
   assertEqual((await runtime.getControlSnapshot()).paused, false, "已恢复");
+  assert(ackOps(resumeOk).includes("editReply"), "恢复后 editReply");
 
   router.destroy();
 }
@@ -490,6 +549,7 @@ function baseInteraction(extra = {}) {
     customId: buildCustomId("btn", CUSTOM_IDS.save, session.sessionId),
   });
   await router._dispatch(saveIx);
+  assertEqual(firstAck(saveIx), "deferUpdate", "保存先 deferUpdate");
   assertEqual(runtime.calls.update.length, 1, "updateDynamicConfig 一次");
   const patch = runtime.calls.update[0].patch;
   assertEqual(patch.dailyLimit, 5, "patch dailyLimit");
@@ -498,6 +558,7 @@ function baseInteraction(extra = {}) {
   assertEqual(patch.silenceDays, 14, "patch silence");
   assertEqual(patch.forumChannelIds.join(","), `${F},${F2}`, "完整 forum 列表");
   assertEqual(runtime.calls.update[0].actor.source, "discord_admin_panel", "actorContext");
+  assert(ackOps(saveIx).includes("editReply"), "保存后 editReply");
 
   // revision 过期
   const stale = store.createSession({
@@ -518,7 +579,8 @@ function baseInteraction(extra = {}) {
     customId: buildCustomId("btn", CUSTOM_IDS.save, stale.sessionId),
   });
   await router._dispatch(staleIx);
-  const staleText = staleIx.lastUpdate?.content || staleIx.lastReply?.content || "";
+  assertEqual(firstAck(staleIx), "deferUpdate", "过期保存仍先 deferUpdate");
+  const staleText = staleIx.lastReply?.content || "";
   assert(staleText.includes("配置已被其他操作更新"), "revision 过期提示");
   assertEqual(runtime.calls.update.length, 1, "过期不调用 update");
 
@@ -552,7 +614,8 @@ function baseInteraction(extra = {}) {
     customId: buildCustomId("btn", CUSTOM_IDS.save, sFail.sessionId),
   });
   await router2._dispatch(failIx);
-  const failText = failIx.lastUpdate?.content || failIx.lastReply?.content || "";
+  assertEqual(firstAck(failIx), "deferUpdate", "失败保存先 deferUpdate");
+  const failText = failIx.lastReply?.content || "";
   assert(failText.includes("间隔") || failText.includes("失败") || failText.includes("30"), "安全错误提示");
   assert(!failText.includes("stack"), "无 stack");
   assertEqual((await failRt.getControlSnapshot()).dailyLimit, 3, "旧 dailyLimit 保持");
@@ -585,8 +648,10 @@ function baseInteraction(extra = {}) {
     customId: buildCustomId("btn", CUSTOM_IDS.cancel, sCancel.sessionId),
   });
   await router3._dispatch(cancelIx);
+  assertEqual(firstAck(cancelIx), "deferUpdate", "取消先 deferUpdate");
   assertEqual(cancelRt.calls.update.length, 0, "取消不 update");
   assertEqual((await cancelRt.getControlSnapshot()).dailyLimit, 3, "取消保持配置");
+  assert(ackOps(cancelIx).includes("editReply"), "取消后 editReply");
 
   router.destroy();
   router2.destroy();
@@ -672,7 +737,204 @@ function baseInteraction(extra = {}) {
     options: { getSubcommand: () => null },
   });
   await router._dispatch(foreign);
-  assert(!foreign.replied, "不处理人工发言命令");
+  assertEqual(foreign.ackLog.length, 0, "不处理人工发言命令");
+  router.destroy();
+}
+
+// ---------- Interaction 3 秒安全：延迟 Runtime ----------
+{
+  const client = makeClient();
+  const runtime = makeRuntime({ delayMs: 80 });
+  const store = createForumBumpPanelSessionStore({ now: () => Date.now() });
+  const router = createForumBumpAdminRouter({
+    client,
+    guildId: G,
+    forumBumpRuntime: runtime,
+    logger: { info() {}, warn() {}, error() {} },
+    sessionStore: store,
+  });
+  router.start();
+
+  // Slash：Runtime Promise 完成前已 deferReply
+  {
+    const ix = baseInteraction({
+      isChatInputCommand: () => true,
+      commandName: FORUM_BUMP_ROOT_COMMAND_NAME,
+      options: { getSubcommand: () => FORUM_BUMP_PANEL_SUBCOMMAND_NAME },
+    });
+    let snapStarted = false;
+    let deferredBeforeSnap = false;
+    const origSnap = runtime.getControlSnapshot.bind(runtime);
+    runtime.getControlSnapshot = async () => {
+      snapStarted = true;
+      deferredBeforeSnap = ix.deferred === true && firstAck(ix) === "deferReply";
+      return origSnap();
+    };
+    await router._dispatch(ix);
+    assert(snapStarted, "调用了 getControlSnapshot");
+    assert(deferredBeforeSnap, "Runtime 前已 deferReply");
+    assert(ackOps(ix).includes("editReply"), "延迟后 editReply");
+    assertEqual(
+      ackOps(ix).filter((o) => o === "deferReply" || o === "reply" || o === "deferUpdate" || o === "showModal").length,
+      1,
+      "slash 仅一次确认",
+    );
+    assert(isEphemeralFlags(ix.ackLog.find((a) => a.op === "deferReply")?.opts?.flags), "deferReply ephemeral");
+    runtime.getControlSnapshot = origSnap;
+  }
+
+  // 编辑按钮：showModal 前无 Runtime 调用
+  {
+    const session = store.createSession({
+      actorId: ACTOR,
+      guildId: G,
+      dynamicConfigRevision: 0,
+      draft: {
+        dailyLimit: 3,
+        activeStart: "10:00",
+        activeEnd: "22:00",
+        silenceDays: 30,
+        forumChannelIds: [F],
+      },
+    });
+    const snapsBefore = runtime.calls.snapshot;
+    const ix = baseInteraction({
+      isButton: () => true,
+      customId: buildCustomId("btn", CUSTOM_IDS.edit, session.sessionId),
+    });
+    await router._dispatch(ix);
+    assertEqual(firstAck(ix), "showModal", "编辑首次响应 showModal");
+    assertEqual(runtime.calls.snapshot, snapsBefore, "编辑前无 Runtime snapshot");
+    assertEqual(runtime.calls.update.length, 0, "编辑前无 update");
+    assert(ix.shownModal, "已 showModal");
+  }
+
+  // 暂停：Runtime 前已 deferUpdate
+  {
+    const session = store.createSession({
+      actorId: ACTOR,
+      guildId: G,
+      dynamicConfigRevision: 0,
+      draft: {
+        dailyLimit: 3,
+        activeStart: "10:00",
+        activeEnd: "22:00",
+        silenceDays: 30,
+        forumChannelIds: [F],
+      },
+    });
+    const ix = baseInteraction({
+      isButton: () => true,
+      customId: buildCustomId("btn", CUSTOM_IDS.pause, session.sessionId),
+    });
+    let deferredBeforePause = false;
+    const origPause = runtime.pauseByAdmin.bind(runtime);
+    runtime.pauseByAdmin = async (actor) => {
+      deferredBeforePause = ix.deferred === true && firstAck(ix) === "deferUpdate";
+      return origPause(actor);
+    };
+    await router._dispatch(ix);
+    assert(deferredBeforePause, "pause Runtime 前已 deferUpdate");
+    assert(ackOps(ix).includes("editReply"), "pause 后 editReply");
+    assertEqual(
+      ackOps(ix).filter((o) => o === "deferUpdate" || o === "reply" || o === "showModal").length,
+      1,
+      "pause 仅一次确认",
+    );
+    runtime.pauseByAdmin = origPause;
+  }
+
+  // 恢复：Runtime 前已 deferUpdate
+  {
+    runtime._setSnap({ paused: true, pauseReason: "ADMIN_PAUSED" });
+    const session = store.createSession({
+      actorId: ACTOR,
+      guildId: G,
+      dynamicConfigRevision: 0,
+      draft: {
+        dailyLimit: 3,
+        activeStart: "10:00",
+        activeEnd: "22:00",
+        silenceDays: 30,
+        forumChannelIds: [F],
+      },
+    });
+    const ix = baseInteraction({
+      isButton: () => true,
+      customId: buildCustomId("btn", CUSTOM_IDS.resume, session.sessionId),
+    });
+    let deferredBeforeResume = false;
+    const origResume = runtime.resumeByAdmin.bind(runtime);
+    runtime.resumeByAdmin = async (actor) => {
+      deferredBeforeResume = ix.deferred === true && firstAck(ix) === "deferUpdate";
+      return origResume(actor);
+    };
+    await router._dispatch(ix);
+    assert(deferredBeforeResume, "resume Runtime 前已 deferUpdate");
+    assert(ackOps(ix).includes("editReply"), "resume 后 editReply");
+    runtime.resumeByAdmin = origResume;
+  }
+
+  // 保存：Runtime 前已 deferUpdate；revision 防护仍有效
+  {
+    runtime._setSnap({
+      paused: false,
+      pauseReason: null,
+      dynamicConfigRevision: 3,
+      dailyLimit: 3,
+    });
+    const session = store.createSession({
+      actorId: ACTOR,
+      guildId: G,
+      dynamicConfigRevision: 3,
+      draft: {
+        dailyLimit: 5,
+        activeStart: "08:00",
+        activeEnd: "13:00",
+        silenceDays: 30,
+        forumChannelIds: [F],
+      },
+    });
+    const ix = baseInteraction({
+      isButton: () => true,
+      customId: buildCustomId("btn", CUSTOM_IDS.save, session.sessionId),
+    });
+    let deferredBeforeUpdate = false;
+    const origUpd = runtime.updateDynamicConfig.bind(runtime);
+    runtime.updateDynamicConfig = async (patch, actor) => {
+      deferredBeforeUpdate = ix.deferred === true && firstAck(ix) === "deferUpdate";
+      return origUpd(patch, actor);
+    };
+    await router._dispatch(ix);
+    assert(deferredBeforeUpdate, "save Runtime 前已 deferUpdate");
+    assert(ackOps(ix).includes("editReply"), "save 后 editReply");
+    runtime.updateDynamicConfig = origUpd;
+
+    // 旧写防护
+    const stale = store.createSession({
+      actorId: ACTOR,
+      guildId: G,
+      dynamicConfigRevision: 1,
+      draft: {
+        dailyLimit: 4,
+        activeStart: "10:00",
+        activeEnd: "22:00",
+        silenceDays: 30,
+        forumChannelIds: [F],
+      },
+    });
+    runtime._setSnap({ dynamicConfigRevision: 9 });
+    const updatesBefore = runtime.calls.update.length;
+    const staleIx = baseInteraction({
+      isButton: () => true,
+      customId: buildCustomId("btn", CUSTOM_IDS.save, stale.sessionId),
+    });
+    await router._dispatch(staleIx);
+    assertEqual(firstAck(staleIx), "deferUpdate", "旧写仍先 deferUpdate");
+    assertEqual(runtime.calls.update.length, updatesBefore, "旧写不调用 update");
+    assert(String(staleIx.lastReply?.content || "").includes("配置已被其他操作更新"), "旧写提示");
+  }
+
   router.destroy();
 }
 
