@@ -1200,13 +1200,14 @@ try {
     await assertNoTimer(sched, timers, "B2 rearm fail");
   }
 
-  // B.3 Timer callback 入口 clock.now 抛异常
+  // B.3 Timer callback 入口 clock.now 抛异常 → onCycleResult
   {
     const dir = mkdtempSync(join(tmpdir(), "fb-sched-"));
     dirs.push(dir);
     const store = await bootStore(dir);
     const clock = makeClock();
     const timers = makeTimers();
+    const cycleResults = [];
     let nowThrows = false;
     const clockWrap = {
       now: () => {
@@ -1223,6 +1224,7 @@ try {
       timers,
       random: () => 0,
       logger: { info() {}, warn() {}, error() {} },
+      onCycleResult: (r) => { cycleResults.push(r); },
     });
     await sched.start();
     assert(timers.list().length >= 1, "B3: start 有 timer");
@@ -1241,6 +1243,11 @@ try {
     assertEqual(sched.getStatus().nextWakeAt, null, "B3: nextWakeAt null");
     assertEqual(timers.list().length, 0, "B3: 无活跃 timer");
     assertEqual(sched.getStatus().lastRunStatus, "unexpected_failed", "B3: lastRunStatus");
+    const timerResults = cycleResults.filter((r) => r.source === "timer");
+    assertEqual(timerResults.length, 1, "B3: onCycleResult 一次 source=timer");
+    assertEqual(timerResults[0].status, "unexpected_failed", "B3: status");
+    assertEqual(timerResults[0].errorCode, "SCHEDULER_UNEXPECTED_FAILED", "B3: errorCode");
+    assertEqual(timerResults[0].nextWakeAt, null, "B3: result nextWakeAt null");
   }
 
   // B.4 提前触发后重新 schedule 时 setTimeout 抛异常
@@ -1253,6 +1260,7 @@ try {
     let throwOnArm = false;
     let scans = 0;
     let bumps = 0;
+    const cycleResults = [];
     const timers = {
       setTimeout(fn, ms) {
         if (throwOnArm) throw new Error("early rearm boom");
@@ -1277,6 +1285,7 @@ try {
       clock,
       timers,
       random: () => 0,
+      onCycleResult: (r) => { cycleResults.push(r); },
       logger: { info() {}, warn() {}, error() {} },
     });
     await sched.start();
@@ -1296,6 +1305,101 @@ try {
     assertEqual(sched.getStatus().nextWakeAt, null, "B4: nextWakeAt null");
     assertEqual(baseTimers.list().length, 0, "B4: 无活跃 timer");
     assertEqual(sched.getStatus().lastRunStatus, "unexpected_failed", "B4: lastRunStatus");
+    const timerRes = cycleResults.filter((r) => r.source === "timer");
+    assertEqual(timerRes.length, 1, "B4: onCycleResult 一次 source=timer");
+    assertEqual(timerRes[0].status, "unexpected_failed", "B4: status");
+    assertEqual(timerRes[0].errorCode, "SCHEDULER_UNEXPECTED_FAILED", "B4: errorCode");
+    assertEqual(timerRes[0].nextWakeAt, null, "B4: result nextWakeAt");
+  }
+
+  // B.4b 提前触发后 scheduleWake 内 clock.now 抛异常
+  {
+    const dir = mkdtempSync(join(tmpdir(), "fb-sched-"));
+    dirs.push(dir);
+    const store = await bootStore(dir);
+    let t = Date.parse("2026-07-28T12:00:00.000Z");
+    let boomOnNow = false;
+    const clock = {
+      now: () => {
+        if (boomOnNow) throw new Error("now in rearm");
+        return t;
+      },
+    };
+    const timers = makeTimers();
+    const cycleResults = [];
+    const sched = createForumBumpScheduler({
+      scanCandidates: async () => ({ candidates: [] }),
+      bumpService: { bumpThread: async () => ({ status: "skipped" }) },
+      stateStore: store,
+      config: makeConfig({ idlePollMs: 60_000 }),
+      clock,
+      timers,
+      random: () => 0,
+      logger: { info() {}, warn() {}, error() {} },
+      onCycleResult: (r) => { cycleResults.push(r); },
+    });
+    await sched.start();
+    clearScheduleForTest(sched, timers);
+    await sched.runOnce();
+    assert(timers.list().length === 1, "B4b: idle timer");
+    // early fire: clock not advanced, but rearm will call clock.now → boom
+    boomOnNow = true;
+    let unhandled = 0;
+    const onUR = () => { unhandled += 1; };
+    process.on("unhandledRejection", onUR);
+    try {
+      await flushAllTimers(timers);
+      await tick();
+      await tick();
+    } finally {
+      process.removeListener("unhandledRejection", onUR);
+    }
+    assertEqual(unhandled, 0, "B4b: 无 unhandled rejection");
+    const timerRes = cycleResults.filter((r) => r.source === "timer");
+    assertEqual(timerRes.length, 1, "B4b: emit 一次");
+    assertEqual(timerRes[0].status, "unexpected_failed", "B4b: status");
+    assertEqual(timerRes[0].errorCode, "SCHEDULER_UNEXPECTED_FAILED", "B4b: code");
+    assertEqual(timerRes[0].source, "timer", "B4b: source");
+    assertEqual(sched.getStatus().nextWakeAt, null, "B4b: nextWakeAt null");
+    assertEqual(timers.list().length, 0, "B4b: 无 timer");
+  }
+
+  // B.5 runOnce 内 arm 失败只 emit 一次（不双重 source=timer）
+  {
+    const dir = mkdtempSync(join(tmpdir(), "fb-sched-"));
+    dirs.push(dir);
+    const store = await bootStore(dir);
+    const baseTimers = makeTimers();
+    let allowArm = true;
+    const cycleResults = [];
+    const timers = {
+      setTimeout(fn, ms) {
+        if (!allowArm) throw new Error("rearm boom");
+        return baseTimers.setTimeout(fn, ms);
+      },
+      clearTimeout: (h) => baseTimers.clearTimeout(h),
+      list: () => baseTimers.list(),
+    };
+    const sched = createForumBumpScheduler({
+      scanCandidates: async () => ({ candidates: [] }),
+      bumpService: { bumpThread: async () => ({ status: "skipped" }) },
+      stateStore: store,
+      config: makeConfig(),
+      clock: makeClock(),
+      timers,
+      random: () => 0,
+      logger: { info() {}, warn() {}, error() {} },
+      onCycleResult: (r) => { cycleResults.push(r); },
+    });
+    await sched.start();
+    clearScheduleForTest(sched, baseTimers);
+    allowArm = false;
+    const r = await sched.runOnce();
+    assertEqual(r.status, "unexpected_failed", "B5: runOnce arm fail");
+    assertEqual(cycleResults.length, 1, "B5: 只 emit 一次");
+    assertEqual(cycleResults[0].source, undefined, "B5: runOnce 路径无 source=timer 重复");
+    // runOnce 返回的 result 可能无 source 字段（armAfterBusiness halt）
+    assertEqual(cycleResults[0].status, "unexpected_failed", "B5: status");
   }
 
   // C.1 markMessageSent 返回失败

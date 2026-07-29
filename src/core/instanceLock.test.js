@@ -1,15 +1,21 @@
 /**
- * 跨进程单实例锁测试（含 initializing 窗口与子进程竞争）。
+ * 实例锁 Review Fix2：原子发布 + 非法锁 fail-closed + 真并发互斥。
  */
-import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync } from "fs";
+import {
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+  existsSync,
+  readFileSync,
+  mkdirSync,
+} from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { spawnSync } from "child_process";
+import { spawn, spawnSync } from "child_process";
 import { pathToFileURL } from "url";
 import {
   createInstanceLock,
   INSTANCE_LOCK_BUSY_EXIT_CODE,
-  STALE_PARTIAL_MIN_AGE_MS,
 } from "./instanceLock.js";
 
 let passed = 0;
@@ -22,206 +28,207 @@ function assertEqual(a, e, l) {
   assert(a === e, `${l} (got ${JSON.stringify(a)})`);
 }
 
-console.log("\n=== instanceLock (review fix) ===\n");
+console.log("\n=== instanceLock Fix2 ===\n");
 
 const dirs = [];
+const lockModuleUrl = pathToFileURL(
+  join(process.cwd(), "src/core/instanceLock.js"),
+).href;
+
+function parseCanonical(lockPath) {
+  const raw = readFileSync(lockPath, "utf8");
+  const data = JSON.parse(raw);
+  return data;
+}
+
+await (async function main() {
 try {
-  // 基础获取/释放
+  // 基础获取/释放 + payload 完整
   {
-    const dir = mkdtempSync(join(tmpdir(), "il-"));
+    const dir = mkdtempSync(join(tmpdir(), "il2-"));
     dirs.push(dir);
     const lockPath = join(dir, "t.lock");
     const lock = createInstanceLock({ lockPath, pid: 111 });
     const a = lock.acquire();
-    assert(a.acquired, "首次获取成功");
-    assert(typeof a.ownerToken === "string" && a.ownerToken.length >= 8, "有 ownerToken");
-    assert(existsSync(lockPath), "锁文件存在");
-    const disk = JSON.parse(readFileSync(lockPath, "utf8"));
-    assertEqual(disk.pid, 111, "磁盘 pid");
-    assertEqual(disk.ownerToken, a.ownerToken, "磁盘 ownerToken");
+    assert(a.acquired, "首次获取");
+    assert(existsSync(lockPath), "canonical 存在");
+    const disk = parseCanonical(lockPath);
+    assertEqual(disk.pid, 111, "pid");
+    assert(typeof disk.ownerToken === "string" && disk.ownerToken.length >= 8, "ownerToken");
+    assert(typeof disk.acquiredAt === "string", "acquiredAt");
     lock.release();
-    assert(!existsSync(lockPath), "释放后删除");
-    const b = createInstanceLock({ lockPath, pid: 222 });
-    assert(b.acquire().acquired, "释放后可再获取");
-    b.release();
+    assert(!existsSync(lockPath), "释放删除");
   }
 
-  // 完整活锁冲突
+  // 活 PID busy
   {
-    const dir = mkdtempSync(join(tmpdir(), "il-"));
+    const dir = mkdtempSync(join(tmpdir(), "il2-"));
     dirs.push(dir);
     const lockPath = join(dir, "t.lock");
-    const alive = createInstanceLock({
-      lockPath,
-      pid: 1,
-      isProcessAlive: (p) => p === 1,
+    const a = createInstanceLock({
+      lockPath, pid: 1, isProcessAlive: (p) => p === 1,
     });
-    alive.acquire();
+    a.acquire();
     let threw = false;
     try {
       createInstanceLock({
-        lockPath,
-        pid: 2,
-        isProcessAlive: (p) => p === 1,
+        lockPath, pid: 2, isProcessAlive: (p) => p === 1,
       }).acquire();
     } catch (e) {
       threw = true;
-      assertEqual(e.exitCode, INSTANCE_LOCK_BUSY_EXIT_CODE, "busy exit 78");
+      assertEqual(e.exitCode, 78, "busy 78");
       assertEqual(e.code, "INSTANCE_LOCK_BUSY", "INSTANCE_LOCK_BUSY");
     }
-    assert(threw, "第二把锁失败");
-    assert(existsSync(lockPath), "B 不得删除 A 的锁");
-    alive.release();
+    assert(threw, "第二把失败");
+    assert(existsSync(lockPath), "锁仍在");
+    const disk = parseCanonical(lockPath);
+    assertEqual(disk.pid, 1, "owner 仍是 A");
+    a.release();
   }
 
-  // initializing 窗口：创建后延迟写 payload，B 不得删除
+  // 原子发布：temp 写完、link 前 — canonical 不存在；最终仅一方持锁且 payload 完整
   {
-    const dir = mkdtempSync(join(tmpdir(), "il-init-"));
+    const dir = mkdtempSync(join(tmpdir(), "il2-atom-"));
     dirs.push(dir);
     const lockPath = join(dir, "t.lock");
-    let releasedGate = false;
-    const lockA = createInstanceLock({
-      lockPath,
-      pid: 10,
-      isProcessAlive: (p) => p === 10 || p === process.pid,
-      writePayloadDelayMs: 80,
-      afterCreateBeforeWrite: () => {
-        // 此时文件已存在但 payload 可能为空
-        try {
-          createInstanceLock({
-            lockPath,
-            pid: 11,
-            isProcessAlive: () => true,
-            sleepSync: () => {}, // 不真正等待，立即判定
-          }).acquire();
-          failed++;
-          console.error("  FAIL: B 在 initializing 窗口应失败");
-        } catch (e) {
-          assertEqual(e.code, "INSTANCE_LOCK_BUSY", "initializing → busy");
-          assert(existsSync(lockPath), "B 不得删除 initializing 锁");
-          releasedGate = true;
-        }
-      },
-    });
-    const a = lockA.acquire();
-    assert(a.acquired, "A 最终持锁");
-    assert(releasedGate, "B 在窗口内尝试过");
-    assert(existsSync(lockPath), "最终只有 A 锁文件");
-    const disk = JSON.parse(readFileSync(lockPath, "utf8"));
-    assertEqual(disk.pid, 10, "最终 owner 是 A");
-    lockA.release();
+    let sawCanonicalBeforePublish = false;
+    let sawIncomplete = false;
+    let aOk = false;
+    let bCode = null;
+    let holder = null;
+
+    try {
+      const a = createInstanceLock({
+        lockPath,
+        pid: 20,
+        isProcessAlive: (p) => p === 20 || p === 21,
+        afterTempWriteBeforePublish: () => {
+          if (existsSync(lockPath)) {
+            sawCanonicalBeforePublish = true;
+            try {
+              const raw = readFileSync(lockPath, "utf8");
+              if (!raw.trim()) sawIncomplete = true;
+              else parseCanonical(lockPath);
+            } catch {
+              sawIncomplete = true;
+            }
+          }
+          try {
+            const b = createInstanceLock({
+              lockPath,
+              pid: 21,
+              isProcessAlive: (p) => p === 20 || p === 21,
+            });
+            b.acquire();
+            bCode = "acquired";
+            holder = b;
+          } catch (e) {
+            bCode = e.code;
+          }
+        },
+      });
+      a.acquire();
+      aOk = true;
+      holder = a;
+    } catch {
+      aOk = false;
+    }
+
+    assert(!sawCanonicalBeforePublish, "link 前无 canonical 路径");
+    assert(!sawIncomplete, "从未出现不完整 canonical");
+    const winners = (aOk ? 1 : 0) + (bCode === "acquired" ? 1 : 0);
+    assertEqual(winners, 1, "恰好一个 winner");
+    if (aOk) {
+      assertEqual(bCode, "INSTANCE_LOCK_BUSY", "A 胜 → B busy");
+    } else {
+      assertEqual(bCode, "acquired", "B 胜 → A 失败");
+    }
+    assert(existsSync(lockPath), "canonical 存在");
+    const disk = parseCanonical(lockPath);
+    assert(typeof disk.ownerToken === "string" && disk.ownerToken.length >= 8, "payload 完整");
+    holder?.release?.();
   }
 
-  // 近期空锁/残缺不得立即回收
-  {
-    const dir = mkdtempSync(join(tmpdir(), "il-partial-"));
+  // 非法 canonical：空/残缺/缺字段 — 无论年龄，不 reclaim
+  for (const [label, content] of [
+    ["空文件", ""],
+    ["部分 JSON", "{not-json"],
+    ["缺 ownerToken", JSON.stringify({ pid: 1, acquiredAt: "x" })],
+    ["非法 ownerToken", JSON.stringify({ pid: 1, ownerToken: "short", acquiredAt: "x" })],
+  ]) {
+    const dir = mkdtempSync(join(tmpdir(), "il2-inv-"));
     dirs.push(dir);
     const lockPath = join(dir, "t.lock");
-    writeFileSync(lockPath, ""); // 空文件
+    writeFileSync(lockPath, content);
+    const before = readFileSync(lockPath);
     let threw = false;
     try {
       createInstanceLock({
         lockPath,
-        pid: 20,
-        now: () => Date.now(),
-        sleepSync: () => {},
+        pid: 99,
         isProcessAlive: () => false,
       }).acquire();
     } catch (e) {
       threw = true;
-      assertEqual(e.code, "INSTANCE_LOCK_BUSY", "近期空锁 busy");
+      assertEqual(e.code, "INSTANCE_LOCK_INVALID", `${label} → INVALID`);
+      assertEqual(e.exitCode, 78, `${label} exit 78`);
     }
-    assert(threw, "近期空锁不回收");
-    assert(existsSync(lockPath), "空锁文件仍在");
+    assert(threw, `${label} 抛错`);
+    assertEqual(readFileSync(lockPath).toString(), before.toString(), `${label} 文件不变`);
   }
 
-  // 足够老的残缺锁可 reclaim
+  // 合法死 PID reclaim
   {
-    const dir = mkdtempSync(join(tmpdir(), "il-old-"));
+    const dir = mkdtempSync(join(tmpdir(), "il2-dead-"));
     dirs.push(dir);
     const lockPath = join(dir, "t.lock");
-    writeFileSync(lockPath, "{not-json");
-    // 伪造 mtime 无法跨平台简单设置，用 now 偏移
-    const base = Date.now();
-    const lock = createInstanceLock({
-      lockPath,
-      pid: 30,
-      now: () => base + STALE_PARTIAL_MIN_AGE_MS + 100,
-      sleepSync: () => {},
-      isProcessAlive: () => false,
-    });
-    // fileAgeMs = now - mtime；mtime 是真实写文件时间 ~base，age ~ STALE+100 → reclaim
-    assert(lock.acquire().acquired, "陈旧残缺锁可回收");
-    lock.release();
-  }
-
-  // 合法死 PID 可回收
-  {
-    const dir = mkdtempSync(join(tmpdir(), "il-dead-"));
-    dirs.push(dir);
-    const lockPath = join(dir, "t.lock");
-    writeFileSync(lockPath, JSON.stringify({
+    writeFileSync(lockPath, `${JSON.stringify({
       pid: 999999,
       ownerToken: "deadtoken12345678",
       acquiredAt: "2020-01-01T00:00:00.000Z",
-    }));
+    })}\n`);
     const lock = createInstanceLock({
       lockPath,
       pid: 42,
       isProcessAlive: () => false,
     });
-    assert(lock.acquire().acquired, "死 PID 可回收");
+    const r = lock.acquire();
+    assert(r.acquired, "死 PID reclaim");
+    const disk = parseCanonical(lockPath);
+    assertEqual(disk.pid, 42, "新 owner pid");
+    assert(disk.ownerToken !== "deadtoken12345678", "新 ownerToken");
     lock.release();
   }
 
-  // 旧 owner release 不得删除新 owner 的锁
+  // ownerToken 不匹配 release 不删
   {
-    const dir = mkdtempSync(join(tmpdir(), "il-release-"));
+    const dir = mkdtempSync(join(tmpdir(), "il2-rel-"));
     dirs.push(dir);
     const lockPath = join(dir, "t.lock");
-    const a = createInstanceLock({ lockPath, pid: 50, isProcessAlive: () => false });
+    const a = createInstanceLock({ lockPath, pid: 50, isProcessAlive: (p) => p === 50 });
     a.acquire();
-    // 模拟 A 崩溃：内存 held 但磁盘被 B reclaim
-    // 我们手动：A 记下 token，B reclaim
-    const aToken = a.getOwnerToken();
-    // 强制 A 内存状态保持 held，但磁盘被替换
-    const b = createInstanceLock({
-      lockPath,
-      pid: 51,
-      isProcessAlive: (p) => p === 51, // A(50) 死了
-    });
-    // A 还 held 时 B 获取：A pid 50 在 isProcessAlive 对 B 来说是 false
-    // 但 A 的 fd 仍开着 - B 会 rename reclaim
-    // 先让 A 假装崩溃：仅释放内存标记但不删文件 — 使用内部 hack
-    // 更简单：写死 PID 文件，A 用不同路径...
-    // 方案：A release 时磁盘已是 B
-    a.release(); // 正常释放
-    b.acquire();
-    const bToken = b.getOwnerToken();
-    // 构造假 A：held=true 的锁对象无法，改测：手动 release 逻辑
-    const staleA = createInstanceLock({ lockPath, pid: 50, isProcessAlive: () => true });
-    // 不 acquire，直接模拟错误 release：调用 release 在 held=false 时 no-op
-    // 直接 unlink 保护：写入后用不匹配 token 的 release
-    // 重新：A 持锁，复制 token，B 无法获取 while A alive
-    b.release();
-    const a2 = createInstanceLock({ lockPath, pid: 60, isProcessAlive: (p) => p === 60 });
-    a2.acquire();
-    // 篡改：在 A2 持锁时，用旧进程的 release 模拟
     const zombie = createInstanceLock({ lockPath, pid: 50, isProcessAlive: () => false });
-    // zombie 未 held，release 应 false
-    const r = zombie.release();
-    assertEqual(r.released, false, "未持锁 release 不删");
+    assertEqual(zombie.release().released, false, "未持锁不删");
     assert(existsSync(lockPath), "锁仍在");
-    // 强制：将 zombie 内部标记无法，改为手动检查 release 核对 token
-    // 用 a2.release 后 ok
-    a2.release();
-    void aToken;
-    void bToken;
+    a.release();
   }
 
-  // 子进程：父持锁，子 exit 78
+  // 发布前崩溃：只遗留 temp，不阻塞
   {
-    const dir = mkdtempSync(join(tmpdir(), "il-sub-"));
+    const dir = mkdtempSync(join(tmpdir(), "il2-temp-"));
+    dirs.push(dir);
+    const lockPath = join(dir, "t.lock");
+    const temp = join(dir, `.t.lock.tmp.orphanjunk12`);
+    writeFileSync(temp, "orphan");
+    const lock = createInstanceLock({ lockPath, pid: 70 });
+    assert(lock.acquire().acquired, "遗留 temp 不阻塞");
+    assert(existsSync(lockPath), "canonical 正常");
+    lock.release();
+  }
+
+  // 子进程：父持锁，子 78；释放后可获取
+  {
+    const dir = mkdtempSync(join(tmpdir(), "il2-sub-"));
     dirs.push(dir);
     const lockPath = join(dir, "p.lock");
     const parent = createInstanceLock({
@@ -230,11 +237,6 @@ try {
       isProcessAlive: (p) => p === process.pid,
     });
     parent.acquire();
-
-    const lockModuleUrl = pathToFileURL(
-      join(process.cwd(), "src/core/instanceLock.js"),
-    ).href;
-
     const childScript = join(dir, "child.mjs");
     writeFileSync(childScript, `
 import { createInstanceLock } from ${JSON.stringify(lockModuleUrl)};
@@ -249,22 +251,14 @@ try {
   process.exit(e.exitCode ?? 1);
 }
 `);
-    const r = spawnSync(process.execPath, [childScript, lockPath], {
-      encoding: "utf8",
-      cwd: process.cwd(),
-    });
+    const r = spawnSync(process.execPath, [childScript, lockPath], { cwd: process.cwd() });
     assertEqual(r.status, 78, "子进程 exit 78");
     parent.release();
-
     const child2 = join(dir, "child2.mjs");
     writeFileSync(child2, `
 import { createInstanceLock } from ${JSON.stringify(lockModuleUrl)};
 try {
-  const l = createInstanceLock({
-    lockPath: process.argv[2],
-    pid: 3,
-    isProcessAlive: () => false,
-  });
+  const l = createInstanceLock({ lockPath: process.argv[2], pid: 3, isProcessAlive: () => false });
   l.acquire();
   l.release();
   process.exit(0);
@@ -272,64 +266,137 @@ try {
   process.exit(e.exitCode ?? 1);
 }
 `);
-    const r2 = spawnSync(process.execPath, [child2, lockPath], {
-      encoding: "utf8",
-      cwd: process.cwd(),
-    });
-    assertEqual(r2.status, 0, "释放后可获取");
+    assertEqual(
+      spawnSync(process.execPath, [child2, lockPath], { cwd: process.cwd() }).status,
+      0,
+      "释放后可获取",
+    );
   }
 
-  // 两个子进程同时竞争 — 只有一个成功（持锁短 sleep 后释放）
+  // 真并发互斥：同步屏障，胜者等 gate，败者必须在胜者 release 前 exit 78
   {
-    const dir = mkdtempSync(join(tmpdir(), "il-race-"));
+    const dir = mkdtempSync(join(tmpdir(), "il2-race-"));
     dirs.push(dir);
     const lockPath = join(dir, "race.lock");
-    const lockModuleUrl = pathToFileURL(
-      join(process.cwd(), "src/core/instanceLock.js"),
-    ).href;
+    const gatePath = join(dir, "gate.txt");
+    const resultDir = join(dir, "results");
+    mkdirSync(resultDir);
+
     const raceScript = join(dir, "race.mjs");
     writeFileSync(raceScript, `
 import { createInstanceLock } from ${JSON.stringify(lockModuleUrl)};
-import { writeFileSync } from "fs";
-const out = process.argv[3];
-const holdMs = Number(process.argv[4] || 150);
+import { writeFileSync, existsSync, readFileSync } from "fs";
+import { setTimeout as sleep } from "timers/promises";
+
+const lockPath = process.argv[2];
+const gatePath = process.argv[3];
+const outPath = process.argv[4];
+const readyPath = process.argv[5];
+const goPath = process.argv[6];
+
+// 就绪
+writeFileSync(readyPath, "1");
+// 等 go
+while (!existsSync(goPath)) {
+  await sleep(5);
+}
 try {
-  const l = createInstanceLock({ lockPath: process.argv[2] });
+  const l = createInstanceLock({ lockPath });
   l.acquire();
-  writeFileSync(out, "WIN");
-  const end = Date.now() + holdMs;
-  while (Date.now() < end) { /* hold */ }
+  writeFileSync(outPath, JSON.stringify({
+    role: "winner",
+    pid: process.pid,
+    at: Date.now(),
+  }));
+  // 等待父进程 release gate
+  while (!existsSync(gatePath)) {
+    await sleep(10);
+  }
   l.release();
   process.exit(0);
 } catch (e) {
-  writeFileSync(out, "LOSE");
+  writeFileSync(outPath, JSON.stringify({
+    role: "busy",
+    code: e.code,
+    exitCode: e.exitCode,
+    at: Date.now(),
+  }));
   process.exit(e.exitCode ?? 1);
 }
 `);
-    const out1 = join(dir, "o1.txt");
-    const out2 = join(dir, "o2.txt");
-    const { spawn } = await import("child_process");
-    const c1 = spawn(process.execPath, [raceScript, lockPath, out1, "200"], { cwd: process.cwd() });
-    const c2 = spawn(process.execPath, [raceScript, lockPath, out2, "200"], { cwd: process.cwd() });
-    const codes = await Promise.all([
-      new Promise((res) => c1.on("exit", (code) => res(code))),
-      new Promise((res) => c2.on("exit", (code) => res(code))),
-    ]);
-    const wins = codes.filter((c) => c === 0).length;
-    const loses = codes.filter((c) => c === 78).length;
-    // 若第二进程在第一释放后才启动，可能两个都成功；至少保证不同时双持锁：
-    // 两个 exit 0 时检查输出文件时间线；这里要求至少有一个 busy 或只有一个 win
-    assert(
-      (wins === 1 && loses === 1) || wins === 1,
-      `竞争结果合理 (wins=${wins}, loses=${loses}, codes=${JSON.stringify(codes)})`,
-    );
-    // 强约束：不能两个都 0 且同时写 WIN（若都 0，第二是释放后获取的合法串行）
-    if (wins === 2) {
-      assert(true, "串行获取两次成功（释放后）");
-    } else {
-      assert(wins === 1, "竞争仅一个成功");
-      assert(loses === 1, "竞争一个 busy 78");
+
+    const ready1 = join(dir, "ready1");
+    const ready2 = join(dir, "ready2");
+    const go = join(dir, "go");
+    const out1 = join(resultDir, "1.json");
+    const out2 = join(resultDir, "2.json");
+
+    const c1 = spawn(process.execPath, [raceScript, lockPath, gatePath, out1, ready1, go], {
+      cwd: process.cwd(),
+      stdio: "ignore",
+    });
+    const c2 = spawn(process.execPath, [raceScript, lockPath, gatePath, out2, ready2, go], {
+      cwd: process.cwd(),
+      stdio: "ignore",
+    });
+
+    // 等两子进程就绪
+    const waitReady = async (p) => {
+      for (let i = 0; i < 200; i += 1) {
+        if (existsSync(p)) return;
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      throw new Error("ready timeout");
+    };
+    await waitReady(ready1);
+    await waitReady(ready2);
+    // 同时开闸
+    writeFileSync(go, "1");
+
+    // 等两个结果文件之一出现 winner，且另一为 busy（在 release gate 前）
+    let r1 = null;
+    let r2 = null;
+    for (let i = 0; i < 300; i += 1) {
+      if (existsSync(out1) && existsSync(out2)) {
+        r1 = JSON.parse(readFileSync(out1, "utf8"));
+        r2 = JSON.parse(readFileSync(out2, "utf8"));
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 10));
     }
+    assert(r1 && r2, "两进程均产出结果");
+    const roles = [r1.role, r2.role].sort();
+    assertEqual(roles.join(","), "busy,winner", "恰好 1 winner + 1 busy");
+    const winnerCount = [r1, r2].filter((x) => x.role === "winner").length;
+    const busyCount = [r1, r2].filter((x) => x.role === "busy").length;
+    assertEqual(winnerCount, 1, "winnerCount=1");
+    assertEqual(busyCount, 1, "busyCount=1");
+    const busy = r1.role === "busy" ? r1 : r2;
+    assertEqual(busy.exitCode, 78, "败者 exitCode 78");
+    // 败者必须在 gate 前结束（gate 尚不存在）
+    assert(!existsSync(gatePath), "败者结束时 gate 未开（持锁区间不重叠）");
+
+    // 放行胜者
+    writeFileSync(gatePath, "1");
+    const waitExit = (child, ms) => new Promise((res) => {
+      if (child.exitCode != null || child.signalCode != null) {
+        res(child.exitCode);
+        return;
+      }
+      const t = setTimeout(() => {
+        try { child.kill(); } catch { /* */ }
+        res(child.exitCode ?? -1);
+      }, ms);
+      child.once("exit", (code) => {
+        clearTimeout(t);
+        res(code);
+      });
+    });
+    const codes = await Promise.all([waitExit(c1, 5000), waitExit(c2, 5000)]);
+    const exitWins = codes.filter((c) => c === 0).length;
+    const exitBusy = codes.filter((c) => c === 78).length;
+    assertEqual(exitWins, 1, "进程 winner exit 0");
+    assertEqual(exitBusy, 1, "进程 busy exit 78");
   }
 } finally {
   for (const d of dirs) {
@@ -337,5 +404,6 @@ try {
   }
 }
 
-console.log(`\ninstanceLock: ${passed} passed / ${failed} failed`);
+console.log(`\ninstanceLock Fix2: ${passed} passed / ${failed} failed`);
 if (failed > 0) process.exitCode = 1;
+})();

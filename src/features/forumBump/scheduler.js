@@ -191,10 +191,29 @@ export function createForumBumpScheduler({
     }
   }
 
-  function handleTimerUnexpected(error) {
+  /**
+   * Timer 基础设施异常。
+   * @param {unknown} error
+   * @param {{ emitResult?: boolean }} [opts]
+   *   emitResult=true：Timer 回调入口外层失败，需 emit 一次（runOnce 尚未运行）
+   *   emitResult=false：runOnce 内 arm 失败，由 runOnce 结束统一 emit，避免重复
+   */
+  function handleTimerUnexpected(error, opts = {}) {
+    const emitResult = opts.emitResult === true;
     logTimerUnexpected(error);
     clearSchedule();
     lastRunStatus = "unexpected_failed";
+    const result = {
+      success: false,
+      status: "unexpected_failed",
+      errorCode: "SCHEDULER_UNEXPECTED_FAILED",
+      nextWakeAt: null,
+      source: "timer",
+    };
+    if (emitResult) {
+      emitCycleResult(result);
+    }
+    return result;
   }
 
   /**
@@ -241,7 +260,10 @@ export function createForumBumpScheduler({
           await runOnce();
         })
         .catch((error) => {
-          handleTimerUnexpected(error);
+          // runOnce 路径内异常已由 runOnce emit；此处覆盖 runOnce 之前的入口异常
+          // 若 error 来自 runOnce 内部已 emit 的路径：runOnce 不 throw（边界化）
+          // 因此此处均为 Timer 入口 / early re-arm 异常 → 需要 emit
+          handleTimerUnexpected(error, { emitResult: true });
         });
     };
 
@@ -278,7 +300,9 @@ export function createForumBumpScheduler({
       scheduleWake(decision.nextWakeAt, decision.reason);
       return { ok: true };
     } catch (error) {
-      handleTimerUnexpected(error);
+      // runOnce / armAfterBusiness 路径：不在此 emit，由 runOnce 返回后统一 emit
+      // start 首次 arm：不 emit 周期结果（由 Runtime 处理 startResult）
+      handleTimerUnexpected(error, { emitResult: false });
       return { ok: false, errorCode: "SCHEDULER_UNEXPECTED_FAILED" };
     }
   }

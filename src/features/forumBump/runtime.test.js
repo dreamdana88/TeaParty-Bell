@@ -627,6 +627,114 @@ try {
     assertEqual(critical, 1, `${status} 告警失败致命`);
     await rt.stop();
   }
+
+  // Timer 回调入口异常 → Runtime 收到 unexpected_failed 告警
+  {
+    const dir = mkdtempSync(join(tmpdir(), "fb-rt-timer-"));
+    dirs.push(dir);
+    const statePath = join(dir, "state.json");
+    const store = createForumBumpStateStore({
+      statePath,
+      logger: { info() {}, warn() {}, error() {} },
+    });
+    await store.initialize({ localDate: "2026-07-28" });
+    const clock = {
+      t: Date.parse("2026-07-28T12:00:00.000Z"),
+      boom: false,
+      now() {
+        if (this.boom) throw new Error("timer clock boom");
+        return this.t;
+      },
+    };
+    const timers = makeTimers();
+    const alerts = [];
+    const { createForumBumpScheduler } = await import("./scheduler.js");
+    const rt = createForumBumpRuntime({
+      client: { user: { id: "bot" } },
+      config: { forumBump: makeFb("execute", { statePath }) },
+      logger: { info() {}, warn() {}, error() {} },
+      clock,
+      timers,
+      createStateStoreFn: () => store,
+      createBumpServiceFn: () => ({ bumpThread: async () => ({ status: "skipped" }) }),
+      createSchedulerFn: (deps) => createForumBumpScheduler(deps),
+      scanCandidatesFn: async () => ({ candidates: [] }),
+      alertNotifier: {
+        notifyFailure: async (k, m, d) => { alerts.push({ k, d }); },
+        notifyRecovery: async () => {},
+      },
+    });
+    await rt.start();
+    assert(timers.list().length >= 1, "有 timer");
+    clock.boom = true;
+    await timers.flush();
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    assert(
+      alerts.some((a) => a.k === "forum_bump_scheduler_unexpected_failed"),
+      "Timer 入口异常 → unexpected_failed 告警",
+    );
+    assertEqual(timers.list().length, 0, "无活跃 timer");
+    await rt.stop();
+  }
+
+  // Timer 入口异常 + notifyFailure 失败 → fatal
+  {
+    const dir = mkdtempSync(join(tmpdir(), "fb-rt-timer-fatal-"));
+    dirs.push(dir);
+    const statePath = join(dir, "state.json");
+    const store = createForumBumpStateStore({
+      statePath,
+      logger: { info() {}, warn() {}, error() {} },
+    });
+    await store.initialize({ localDate: "2026-07-28" });
+    const clock = {
+      t: Date.parse("2026-07-28T12:00:00.000Z"),
+      boom: false,
+      now() {
+        if (this.boom) throw new Error("timer clock boom");
+        return this.t;
+      },
+    };
+    const timers = makeTimers();
+    let critical = 0;
+    let unhandled = 0;
+    const onUR = () => { unhandled += 1; };
+    process.on("unhandledRejection", onUR);
+    try {
+      const { createForumBumpScheduler } = await import("./scheduler.js");
+      const rt = createForumBumpRuntime({
+        client: { user: { id: "bot" } },
+        config: { forumBump: makeFb("execute", { statePath }) },
+        logger: { info() {}, warn() {}, error() {} },
+        clock,
+        timers,
+        createStateStoreFn: () => store,
+        createBumpServiceFn: () => ({ bumpThread: async () => ({ status: "skipped" }) }),
+        createSchedulerFn: (deps) => createForumBumpScheduler(deps),
+        scanCandidatesFn: async () => ({ candidates: [] }),
+        alertNotifier: {
+          notifyFailure: async () => { throw new Error("disk full"); },
+          notifyRecovery: async () => {},
+        },
+        onCriticalFailure: () => { critical += 1; },
+      });
+      await rt.start();
+      clock.boom = true;
+      await timers.flush();
+      await new Promise((r) => setImmediate(r));
+      await new Promise((r) => setImmediate(r));
+      await new Promise((r) => setImmediate(r));
+      assertEqual(critical, 1, "Timer 告警失败 → critical 一次");
+      assertEqual(rt.getStatus().fatal, true, "Runtime fatal");
+      assertEqual(timers.list().length, 0, "无下一 timer");
+      assertEqual(unhandled, 0, "无 unhandled rejection");
+      await rt.stop();
+    } finally {
+      process.removeListener("unhandledRejection", onUR);
+    }
+  }
 } finally {
   for (const d of dirs) {
     try { rmSync(d, { recursive: true, force: true }); } catch { /* */ }

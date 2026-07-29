@@ -1,11 +1,15 @@
 /**
- * 跨进程单实例锁（文件独占创建 + ownerToken + 安全陈旧回收）。
+ * 跨进程单实例锁：原子发布完整 owner payload。
  *
- * 语义：
- * - 未读到合法 owner payload ≠ 陈旧锁（视为 initializing / busy）
- * - 只有确认 owner PID 已死亡后才能回收
- * - 回收通过 rename claim，避免多进程同时 unlink
- * - release 必须核对 pid + ownerToken
+ * 发布路径：
+ *   1. 同目录写临时文件（完整 JSON）
+ *   2. fsync + close
+ *   3. linkSync(temp → canonical)  — no-overwrite 原子发布
+ *   4. 删除临时文件
+ *
+ * canonical 一旦可见即含完整合法 payload。
+ * 非法 canonical → INSTANCE_LOCK_INVALID / exit 78，不自动回收。
+ * 合法死 PID → rename claim 后重新原子发布。
  */
 
 import {
@@ -17,18 +21,14 @@ import {
   existsSync,
   mkdirSync,
   renameSync,
-  statSync,
+  linkSync,
+  fsyncSync,
+  readdirSync,
 } from "fs";
 import { randomBytes } from "crypto";
-import { dirname, join } from "path";
+import { dirname, basename, join } from "path";
 
 export const INSTANCE_LOCK_BUSY_EXIT_CODE = 78;
-
-/** 新建锁后 payload 尚不可读时的最长等待（ms） */
-export const INITIALIZING_WAIT_MS = 200;
-export const INITIALIZING_RETRY_MS = 25;
-/** 残缺/空锁在此年龄内不得回收 */
-export const STALE_PARTIAL_MIN_AGE_MS = 2000;
 
 export class InstanceLockError extends Error {
   /**
@@ -55,15 +55,6 @@ function defaultIsProcessAlive(pid) {
   }
 }
 
-function defaultSleepSync(ms) {
-  if (ms <= 0) return;
-  const end = Date.now() + ms;
-  // 无依赖的同步等待（仅用于短重试）
-  while (Date.now() < end) {
-    // spin
-  }
-}
-
 function newOwnerToken() {
   try {
     return randomBytes(16).toString("hex");
@@ -72,153 +63,212 @@ function newOwnerToken() {
   }
 }
 
+function isValidPayload(data) {
+  if (!data || typeof data !== "object") return false;
+  if (typeof data.pid !== "number" || !Number.isInteger(data.pid) || data.pid <= 0) {
+    return false;
+  }
+  if (typeof data.ownerToken !== "string" || data.ownerToken.length < 8) {
+    return false;
+  }
+  if (data.acquiredAt != null && typeof data.acquiredAt !== "string") {
+    return false;
+  }
+  return true;
+}
+
 /**
  * @param {object} options
  * @param {string} options.lockPath
  * @param {number} [options.pid]
  * @param {(pid:number)=>boolean} [options.isProcessAlive]
  * @param {()=>number} [options.now]
- * @param {(ms:number)=>void} [options.sleepSync]
  * @param {()=>string} [options.createOwnerToken]
- * @param {number} [options.writePayloadDelayMs] 测试用：创建后延迟写 payload
- * @param {()=>void} [options.afterCreateBeforeWrite] 测试钩子：独占创建后、写 payload 前
+ * @param {()=>void} [options.afterTempWriteBeforePublish] 测试：临时文件已写好、尚未 link 到 canonical
+ * @param {()=>void} [options.afterPublish] 测试：canonical 发布后
  */
 export function createInstanceLock({
   lockPath,
   pid = process.pid,
   isProcessAlive = defaultIsProcessAlive,
   now = () => Date.now(),
-  sleepSync = defaultSleepSync,
   createOwnerToken = newOwnerToken,
-  writePayloadDelayMs = 0,
-  afterCreateBeforeWrite = null,
+  afterTempWriteBeforePublish = null,
+  afterPublish = null,
 } = {}) {
   if (!lockPath || typeof lockPath !== "string") {
     throw new TypeError("createInstanceLock 需要 lockPath");
   }
 
   let held = false;
-  let fd = null;
   let ownerToken = null;
+  const lockDir = dirname(lockPath);
+  const lockBase = basename(lockPath);
 
   function ensureParentDir() {
-    mkdirSync(dirname(lockPath), { recursive: true });
+    mkdirSync(lockDir, { recursive: true });
+  }
+
+  function tempPathFor(token) {
+    return join(lockDir, `.${lockBase}.tmp.${token}`);
+  }
+
+  function claimPathFor(token) {
+    return join(lockDir, `.${lockBase}.claim.${token}`);
   }
 
   /**
-   * @returns {{ pid: number, ownerToken: string, acquiredAt: string }|null}
+   * @returns {{ ok: true, payload: object } | { ok: false, reason: 'missing'|'invalid' }}
    */
-  function readLockPayload() {
+  function readCanonical() {
+    if (!existsSync(lockPath)) {
+      return { ok: false, reason: "missing" };
+    }
+    let raw;
     try {
-      const raw = readFileSync(lockPath, "utf8");
-      if (!raw || !String(raw).trim()) return null;
-      const data = JSON.parse(raw);
-      if (typeof data?.pid !== "number" || !Number.isInteger(data.pid)) return null;
-      if (typeof data?.ownerToken !== "string" || data.ownerToken.length < 8) return null;
-      return {
+      raw = readFileSync(lockPath, "utf8");
+    } catch {
+      return { ok: false, reason: "invalid" };
+    }
+    if (!raw || !String(raw).trim()) {
+      return { ok: false, reason: "invalid" };
+    }
+    let data;
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      return { ok: false, reason: "invalid" };
+    }
+    if (!isValidPayload(data)) {
+      return { ok: false, reason: "invalid" };
+    }
+    return {
+      ok: true,
+      payload: {
         pid: data.pid,
         ownerToken: data.ownerToken,
         acquiredAt: typeof data.acquiredAt === "string" ? data.acquiredAt : null,
-      };
-    } catch {
-      return null;
-    }
-  }
-
-  function fileAgeMs() {
-    try {
-      const st = statSync(lockPath);
-      return Math.max(0, now() - st.mtimeMs);
-    } catch {
-      return null;
-    }
+      },
+    };
   }
 
   function busy(message, code = "INSTANCE_LOCK_BUSY") {
     throw new InstanceLockError(message, code, INSTANCE_LOCK_BUSY_EXIT_CODE);
   }
 
-  /**
-   * 在 initializing 窗口内重试读 payload。
-   * 使用尝试次数而非注入的 now() 截止，避免测试冻结时钟导致死循环。
-   * @returns {{ pid: number, ownerToken: string, acquiredAt: string }|null}
-   */
-  function waitForPayload() {
-    const maxAttempts = Math.max(1, Math.ceil(INITIALIZING_WAIT_MS / INITIALIZING_RETRY_MS));
-    let payload = readLockPayload();
-    for (let i = 0; !payload && i < maxAttempts; i += 1) {
-      sleepSync(INITIALIZING_RETRY_MS);
-      payload = readLockPayload();
+  function invalid(message) {
+    throw new InstanceLockError(message, "INSTANCE_LOCK_INVALID", INSTANCE_LOCK_BUSY_EXIT_CODE);
+  }
+
+  function safeUnlink(p) {
+    try {
+      if (p && existsSync(p)) unlinkSync(p);
+    } catch {
+      // ignore
     }
-    return payload;
   }
 
   /**
-   * 原子 claim 陈旧锁：rename 走，再 wx 创建新锁。
-   * 多进程同时回收时只有一个 rename 成功。
-   * @returns {boolean} 是否 claim 成功并完成新 payload 写入
+   * 将完整 payload 原子发布到 canonical lockPath。
+   * @returns {string} ownerToken
    */
-  function tryReclaimStale() {
-    const claimPath = join(
-      dirname(lockPath),
-      `${lockPath.split(/[/\\]/).pop()}.claim.${createOwnerToken()}`,
-    );
+  function publishPayload() {
+    const token = createOwnerToken();
+    const tempPath = tempPathFor(token);
+    const body = `${JSON.stringify({
+      pid,
+      ownerToken: token,
+      acquiredAt: new Date(now()).toISOString(),
+    })}\n`;
+
+    let fd = null;
+    try {
+      fd = openSync(tempPath, "wx");
+      writeFileSync(fd, body, "utf8");
+      try {
+        fsyncSync(fd);
+      } catch {
+        // 部分环境/FS 可能不支持 fsync；payload 已完整写入
+      }
+      closeSync(fd);
+      fd = null;
+
+      if (typeof afterTempWriteBeforePublish === "function") {
+        afterTempWriteBeforePublish({ tempPath, lockPath, token });
+      }
+
+      // 原子 no-overwrite 发布：canonical 已存在则 EEXIST
+      linkSync(tempPath, lockPath);
+    } catch (err) {
+      if (fd != null) {
+        try { closeSync(fd); } catch { /* */ }
+      }
+      safeUnlink(tempPath);
+      throw err;
+    }
+
+    safeUnlink(tempPath);
+
+    if (typeof afterPublish === "function") {
+      afterPublish({ lockPath, token });
+    }
+
+    return token;
+  }
+
+  /**
+   * 原子 reclaim：rename 移走旧锁，再 publish 新锁。
+   * @returns {boolean}
+   */
+  function tryReclaimDead(existingPayload) {
+    if (!existingPayload || isProcessAlive(existingPayload.pid)) {
+      return false;
+    }
+
+    const claimToken = createOwnerToken();
+    const claimPath = claimPathFor(claimToken);
     try {
       renameSync(lockPath, claimPath);
     } catch {
-      // 已被其他进程 claim 或锁消失
       return false;
     }
-    // 已成功移走旧锁；尝试独占创建新锁
+
     try {
-      const token = createOwnerToken();
-      fd = openSync(lockPath, "wx");
-      const payload = JSON.stringify({
-        pid,
-        ownerToken: token,
-        acquiredAt: new Date(now()).toISOString(),
-      });
-      writeFileSync(fd, `${payload}\n`, "utf8");
+      const token = publishPayload();
       ownerToken = token;
       held = true;
-      try {
-        unlinkSync(claimPath);
-      } catch {
-        // 清理 claim 失败不影响持锁
-      }
+      safeUnlink(claimPath);
       return true;
     } catch {
-      // 创建失败：尽量恢复 claim 文件以免锁永久丢失
+      // 发布失败：若 canonical 仍不存在，尽量还原 claim
       try {
-        if (!existsSync(lockPath)) {
+        if (!existsSync(lockPath) && existsSync(claimPath)) {
           renameSync(claimPath, lockPath);
         } else {
-          unlinkSync(claimPath);
+          safeUnlink(claimPath);
         }
       } catch {
         // ignore
       }
-      if (fd != null) {
-        try { closeSync(fd); } catch { /* */ }
-        fd = null;
-      }
       return false;
     }
   }
 
-  function writeOwnerPayload(token) {
-    if (typeof afterCreateBeforeWrite === "function") {
-      afterCreateBeforeWrite();
+  /**
+   * 清理本模块命名的遗留临时文件（不删其他文件）。
+   */
+  function cleanupOrphanTemps() {
+    try {
+      const names = readdirSync(lockDir);
+      const prefixTmp = `.${lockBase}.tmp.`;
+      for (const name of names) {
+        if (name.startsWith(prefixTmp)) {
+          safeUnlink(join(lockDir, name));
+        }
+      }
+    } catch {
+      // ignore
     }
-    if (writePayloadDelayMs > 0) {
-      sleepSync(writePayloadDelayMs);
-    }
-    const payload = JSON.stringify({
-      pid,
-      ownerToken: token,
-      acquiredAt: new Date(now()).toISOString(),
-    });
-    writeFileSync(fd, `${payload}\n`, "utf8");
   }
 
   /**
@@ -229,18 +279,19 @@ export function createInstanceLock({
       return { acquired: true, lockPath, pid, ownerToken, reentrant: true };
     }
     ensureParentDir();
+    cleanupOrphanTemps();
 
-    // 最多：直接创建；失败后处理 busy / reclaim 再试一次
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
-        const token = createOwnerToken();
-        fd = openSync(lockPath, "wx");
-        writeOwnerPayload(token);
+        const token = publishPayload();
         ownerToken = token;
         held = true;
         return { acquired: true, lockPath, pid, ownerToken };
       } catch (err) {
+        if (err instanceof InstanceLockError) throw err;
+
         if (err?.code !== "EEXIST") {
+          // link 失败且非 EEXIST
           throw new InstanceLockError(
             `无法创建实例锁：${err?.code ?? err?.message ?? "unknown"}`,
             "INSTANCE_LOCK_IO_FAILED",
@@ -248,22 +299,17 @@ export function createInstanceLock({
           );
         }
 
-        // 锁文件存在：先等待 initializing 写完 payload
-        let existing = waitForPayload();
-
-        if (!existing) {
-          // 仍不可读：年轻 → busy；够老 → 按残缺陈旧锁 reclaim
-          const age = fileAgeMs();
-          if (age == null || age < STALE_PARTIAL_MIN_AGE_MS) {
-            busy("实例锁正在初始化或被其他进程持有");
-          }
-          // 明确陈旧的残缺锁
-          if (tryReclaimStale()) {
-            return { acquired: true, lockPath, pid, ownerToken };
-          }
-          busy("实例锁竞争失败（残缺锁回收）");
+        // canonical 已存在
+        const read = readCanonical();
+        if (read.reason === "invalid") {
+          invalid("实例锁文件非法或损坏，拒绝自动回收，请人工检查");
+        }
+        if (read.reason === "missing") {
+          // 竞态：存在性变化，重试
+          continue;
         }
 
+        const existing = read.payload;
         if (existing.pid === pid && held) {
           return { acquired: true, lockPath, pid, ownerToken, reentrant: true };
         }
@@ -272,12 +318,11 @@ export function createInstanceLock({
           busy(`另一个 TeaParty-Bell 进程正在运行（pid=${existing.pid}）`);
         }
 
-        // owner 已死亡（或同 pid 但本进程未 held → 崩溃残留）
+        // 死 PID 或崩溃残留（同 pid 但本进程未 held）
         if (!isProcessAlive(existing.pid) || existing.pid === pid) {
-          if (tryReclaimStale()) {
+          if (tryReclaimDead(existing)) {
             return { acquired: true, lockPath, pid, ownerToken };
           }
-          // 其他进程抢到了
           busy("实例锁竞争失败");
         }
 
@@ -294,30 +339,16 @@ export function createInstanceLock({
     const myPid = pid;
     held = false;
     ownerToken = null;
-    if (fd != null) {
-      try {
-        closeSync(fd);
-      } catch {
-        // ignore
-      }
-      fd = null;
-    }
 
-    // 仅当磁盘仍是自己时删除
-    const existing = existsSync(lockPath) ? readLockPayload() : null;
+    const read = readCanonical();
     if (
-      existing
-      && existing.pid === myPid
-      && existing.ownerToken === myToken
+      read.ok
+      && read.payload.pid === myPid
+      && read.payload.ownerToken === myToken
     ) {
-      try {
-        unlinkSync(lockPath);
-      } catch {
-        // ignore
-      }
+      safeUnlink(lockPath);
       return { released: true };
     }
-    // 不是自己的锁：不得删除
     return { released: false, reason: "owner_mismatch" };
   }
 
@@ -337,5 +368,7 @@ export function createInstanceLock({
     get lockPath() {
       return lockPath;
     },
+    /** 测试用 */
+    _readCanonical: readCanonical,
   };
 }
