@@ -109,7 +109,8 @@ export function createForumBumpScheduler({
     throw new TypeError("createForumBumpScheduler 需要 stateStore");
   }
 
-  const config = validateSchedulerConfig(rawConfig);
+  /** 可热替换的调度配置（validate 后的规范化对象） */
+  let config = validateSchedulerConfig(rawConfig);
 
   function emitCycleResult(result) {
     if (typeof onCycleResult !== "function") return;
@@ -972,42 +973,47 @@ export function createForumBumpScheduler({
     if (bumpResult.success === true && bumpResult.status === "succeeded") {
       const successAtMs = clock.now();
       const successAt = formatSuccessAtIso(successAtMs);
-      let randomValue;
-      try {
-        randomValue = random();
-      } catch {
-        const paused = await pauseOrStateFailed(
-          revision,
-          "SCHEDULER_RANDOM_INVALID",
-          "SCHEDULER_RANDOM_INVALID",
-        );
-        if (paused.status === "state_failed") return paused;
-        return {
-          success: false,
-          status: "halted",
-          errorCode: "SCHEDULER_RANDOM_INVALID",
-          nextWakeAt: null,
-        };
-      }
-      const jitter = computeJitterMs(randomValue, config.cooldownJitterMs);
-      if (!jitter.ok) {
-        const paused = await pauseOrStateFailed(
-          revision,
-          "SCHEDULER_RANDOM_INVALID",
-          "SCHEDULER_RANDOM_INVALID",
-        );
-        if (paused.status === "state_failed") return paused;
-        return {
-          success: false,
-          status: "halted",
-          errorCode: "SCHEDULER_RANDOM_INVALID",
-          nextWakeAt: null,
-        };
+      // 成功间隔 = 自动间隔（cooldownMs）；抖动为 0 时不调用 random，避免无意义故障面
+      let jitterMs = 0;
+      if (config.cooldownJitterMs > 0) {
+        let randomValue;
+        try {
+          randomValue = random();
+        } catch {
+          const paused = await pauseOrStateFailed(
+            revision,
+            "SCHEDULER_RANDOM_INVALID",
+            "SCHEDULER_RANDOM_INVALID",
+          );
+          if (paused.status === "state_failed") return paused;
+          return {
+            success: false,
+            status: "halted",
+            errorCode: "SCHEDULER_RANDOM_INVALID",
+            nextWakeAt: null,
+          };
+        }
+        const jitter = computeJitterMs(randomValue, config.cooldownJitterMs);
+        if (!jitter.ok) {
+          const paused = await pauseOrStateFailed(
+            revision,
+            "SCHEDULER_RANDOM_INVALID",
+            "SCHEDULER_RANDOM_INVALID",
+          );
+          if (paused.status === "state_failed") return paused;
+          return {
+            success: false,
+            status: "halted",
+            errorCode: "SCHEDULER_RANDOM_INVALID",
+            nextWakeAt: null,
+          };
+        }
+        jitterMs = jitter.jitterMs;
       }
       const nextEligibleMs = computeNextEligibleAtMs(
         successAtMs,
         config.cooldownMs,
-        jitter.jitterMs,
+        jitterMs,
       );
       const nextEligibleAt = toUtcIso(nextEligibleMs);
       const doneLocalDate = successLocalDate(successAtMs, config.timezone);
@@ -1089,10 +1095,124 @@ export function createForumBumpScheduler({
     };
   };
 
+  /**
+   * 等待当前 runOnce / 异常恢复结束（不取消进行中的 send/delete）。
+   */
+  async function waitUntilIdle() {
+    if (runPromise) {
+      try {
+        await runPromise;
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  function getConfig() {
+    return { ...config, forumChannelIds: [...config.forumChannelIds], excludedTagIds: [...config.excludedTagIds] };
+  }
+
+  /**
+   * 热替换调度配置（调用方负责在 idle 后调用）。
+   * @param {object} nextRaw
+   */
+  function replaceConfig(nextRaw) {
+    config = validateSchedulerConfig(nextRaw);
+    return getConfig();
+  }
+
+  /**
+   * 按当前配置与磁盘状态清除旧 timer 并重新 arm。
+   * paused / recovery 则无 timer。
+   */
+  async function rescheduleFromState({ reason = "ready" } = {}) {
+    if (!started || stopping) {
+      clearSchedule();
+      return { success: true, timerArmed: false, nextWakeAt: null, reason: "not_started" };
+    }
+    const loaded = await loadStateOrFail();
+    if (!loaded.ok) {
+      clearSchedule();
+      lastRunStatus = "state_failed";
+      return {
+        success: false,
+        timerArmed: false,
+        nextWakeAt: null,
+        errorCode: loaded.errorCode,
+        reason: "state_failed",
+      };
+    }
+    const state = loaded.state;
+    if (state.paused) {
+      clearSchedule();
+      return {
+        success: true,
+        timerArmed: false,
+        nextWakeAt: null,
+        reason: "paused",
+        pauseReason: state.pauseReason ?? null,
+      };
+    }
+    if (state.inFlight) {
+      clearSchedule();
+      return {
+        success: true,
+        timerArmed: false,
+        nextWakeAt: null,
+        reason: "in_flight",
+      };
+    }
+    const decision = decideNextWakeAt({
+      nowMs: clock.now(),
+      config,
+      state,
+      reason,
+    });
+    if (decision.nextWakeAt == null) {
+      clearSchedule();
+      return { success: true, timerArmed: false, nextWakeAt: null, reason: decision.reason };
+    }
+    try {
+      const armed = armFromDecision(decision);
+      if (!armed.ok) {
+        clearSchedule();
+        lastRunStatus = "unexpected_failed";
+        return {
+          success: false,
+          timerArmed: false,
+          nextWakeAt: null,
+          errorCode: "SCHEDULER_UNEXPECTED_FAILED",
+          reason: "arm_failed",
+        };
+      }
+      return {
+        success: true,
+        timerArmed: true,
+        nextWakeAt: decision.nextWakeAt,
+        reason: decision.reason,
+      };
+    } catch {
+      clearSchedule();
+      lastRunStatus = "unexpected_failed";
+      return {
+        success: false,
+        timerArmed: false,
+        nextWakeAt: null,
+        errorCode: "SCHEDULER_UNEXPECTED_FAILED",
+        reason: "arm_failed",
+      };
+    }
+  }
+
   return {
     start,
     stop,
     runOnce,
     getStatus,
+    getConfig,
+    replaceConfig,
+    waitUntilIdle,
+    rescheduleFromState,
+    clearSchedule,
   };
 }

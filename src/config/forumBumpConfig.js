@@ -13,6 +13,8 @@ import {
   SchedulerConfigError,
 } from "../features/forumBump/schedulerConfig.js";
 import { FORUM_BUMP_STATE_PATH } from "../features/forumBump/stateSchema.js";
+import { FORUM_BUMP_DYNAMIC_CONFIG_PATH } from "../features/forumBump/dynamicConfigSchema.js";
+import { computeAutoInterval } from "../features/forumBump/autoInterval.js";
 import { ConfigError } from "./configError.js";
 
 export const FORUM_BUMP_MODES = Object.freeze(["disabled", "dry_run", "execute"]);
@@ -30,6 +32,7 @@ export const FORUM_BUMP_DEFAULTS = Object.freeze({
   activeStart: "10:00",
   activeEnd: "22:00",
   statePath: FORUM_BUMP_STATE_PATH,
+  dynamicConfigPath: FORUM_BUMP_DYNAMIC_CONFIG_PATH,
   dailyLimitMin: 1,
   dailyLimitMax: 10,
 });
@@ -238,6 +241,22 @@ export function loadForumBumpConfig(env = process.env, options = {}) {
   const rawStatePath = (env.FORUM_BUMP_STATE_PATH ?? "").trim() || FORUM_BUMP_DEFAULTS.statePath;
   const statePath = resolve(projectRoot, rawStatePath);
 
+  const rawDynamicConfigPath = (env.FORUM_BUMP_DYNAMIC_CONFIG_PATH ?? "").trim()
+    || FORUM_BUMP_DEFAULTS.dynamicConfigPath;
+  const dynamicConfigPath = resolve(projectRoot, rawDynamicConfigPath);
+
+  // 部署层校验自动间隔（动态配置也会再次校验）
+  if (mode === "dry_run" || mode === "execute") {
+    const interval = computeAutoInterval(activeStart, activeEnd, dailyLimit);
+    if (!interval.ok) {
+      throw new ConfigError(
+        interval.safeMessage || "Forum Bump 自动间隔配置非法",
+        interval.errorCode || "forum_bump_interval_invalid",
+        78,
+      );
+    }
+  }
+
   if (mode === "dry_run" || mode === "execute") {
     if (forumChannelIds.length === 0) {
       throw new ConfigError(
@@ -256,6 +275,14 @@ export function loadForumBumpConfig(env = process.env, options = {}) {
     }
   }
 
+  // 成功顶帖间隔由自动算法决定；env 冷却仅兼容保留（deprecated）
+  const auto = (mode === "dry_run" || mode === "execute")
+    ? computeAutoInterval(activeStart, activeEnd, dailyLimit)
+    : null;
+  const autoIntervalMs = auto?.ok
+    ? auto.intervalMs
+    : cooldownMinutes * 60 * 1000;
+
   return {
     mode,
     guildId: (env.DISCORD_GUILD_ID ?? "").trim() || null,
@@ -264,8 +291,12 @@ export function loadForumBumpConfig(env = process.env, options = {}) {
     silenceDays,
     skipPinned,
     dailyLimit,
+    /** @deprecated 成功间隔改用 autoIntervalMs；保留供兼容读取 */
     cooldownMs: cooldownMinutes * 60 * 1000,
+    /** @deprecated 成功路径不再使用抖动 */
     cooldownJitterMs: cooldownJitterMinutes * 60 * 1000,
+    autoIntervalMs,
+    autoIntervalMinutes: auto?.ok ? auto.intervalMinutes : null,
     idlePollMs: idlePollMinutes * 60 * 1000,
     failureBackoffMs: failureBackoffMinutes * 60 * 1000,
     timezone,
@@ -273,6 +304,8 @@ export function loadForumBumpConfig(env = process.env, options = {}) {
     activeEnd,
     statePath,
     statePathRelative: rawStatePath.replace(/\\/g, "/"),
+    dynamicConfigPath,
+    dynamicConfigPathRelative: rawDynamicConfigPath.replace(/\\/g, "/"),
   };
 }
 
@@ -286,6 +319,18 @@ export function toSchedulerConfig(fb, opts = {}) {
   if (mode === "disabled") {
     throw new SchedulerConfigError("SCHEDULER_CONFIG_INVALID", "disabled 模式不创建 Scheduler 配置");
   }
+  // 成功顶帖间隔 = 自动间隔；抖动强制 0（禁止挤出时间窗的随机）
+  let autoIntervalMs = fb.autoIntervalMs;
+  if (!Number.isInteger(autoIntervalMs) || autoIntervalMs <= 0) {
+    const auto = computeAutoInterval(fb.activeStart, fb.activeEnd, fb.dailyLimit);
+    if (!auto.ok) {
+      throw new SchedulerConfigError(
+        auto.errorCode || "SCHEDULER_CONFIG_INVALID",
+        auto.safeMessage || "自动间隔非法",
+      );
+    }
+    autoIntervalMs = auto.intervalMs;
+  }
   return {
     enabled: true,
     mode: mode === "dry_run" ? "dry_run" : "execute",
@@ -295,12 +340,39 @@ export function toSchedulerConfig(fb, opts = {}) {
     excludedTagIds: fb.excludedTagIds,
     skipPinned: fb.skipPinned,
     dailyLimit: fb.dailyLimit,
-    cooldownMs: fb.cooldownMs,
-    cooldownJitterMs: fb.cooldownJitterMs,
+    // Scheduler 内部 cooldownMs 承载自动间隔（语义：成功后最短间隔）
+    cooldownMs: autoIntervalMs,
+    cooldownJitterMs: 0,
     idlePollMs: fb.idlePollMs,
     failureBackoffMs: fb.failureBackoffMs,
     timezone: fb.timezone,
     activeStart: fb.activeStart,
     activeEnd: fb.activeEnd,
   };
+}
+
+/**
+ * 将动态配置四项叠加到部署基线（mode/timezone/statePath 等不可覆盖）。
+ * @param {object} baseForumBump loadForumBumpConfig 结果
+ * @param {object} dynamicDoc 已校验动态配置
+ */
+export function applyDynamicConfigOverlay(baseForumBump, dynamicDoc) {
+  const next = {
+    ...baseForumBump,
+    dailyLimit: dynamicDoc.dailyLimit,
+    activeStart: dynamicDoc.activeStart,
+    activeEnd: dynamicDoc.activeEnd,
+    forumChannelIds: [...dynamicDoc.forumChannelIds],
+    silenceDays: dynamicDoc.silenceDays,
+  };
+  const auto = computeAutoInterval(next.activeStart, next.activeEnd, next.dailyLimit);
+  if (!auto.ok) {
+    throw new SchedulerConfigError(
+      auto.errorCode || "SCHEDULER_CONFIG_INVALID",
+      auto.safeMessage || "自动间隔非法",
+    );
+  }
+  next.autoIntervalMs = auto.intervalMs;
+  next.autoIntervalMinutes = auto.intervalMinutes;
+  return next;
 }

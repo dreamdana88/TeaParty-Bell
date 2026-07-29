@@ -25,6 +25,7 @@ console.log("\n=== forumBump runtime ===\n");
 const dirs = [];
 
 function makeFb(mode, extra = {}) {
+  const cooldownMs = extra.cooldownMs ?? 60_000;
   return {
     mode,
     guildId: G,
@@ -33,8 +34,10 @@ function makeFb(mode, extra = {}) {
     silenceDays: 30,
     skipPinned: true,
     dailyLimit: 3,
-    cooldownMs: 60_000,
+    cooldownMs,
     cooldownJitterMs: 0,
+    // 测试注入短自动间隔，避免 00:00–23:59 算出超长间隔
+    autoIntervalMs: extra.autoIntervalMs ?? cooldownMs,
     idlePollMs: 30_000,
     failureBackoffMs: 15_000,
     timezone: "UTC",
