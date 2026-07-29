@@ -91,6 +91,7 @@ export function createForumBumpScheduler({
   timers = defaultTimers(),
   random = defaultRandom,
   createOperationId = defaultCreateOperationId,
+  onCycleResult = null,
   config: rawConfig,
 } = {}) {
   if (typeof scanCandidates !== "function") {
@@ -104,6 +105,32 @@ export function createForumBumpScheduler({
   }
 
   const config = validateSchedulerConfig(rawConfig);
+
+  function emitCycleResult(result) {
+    if (typeof onCycleResult !== "function") return;
+    try {
+      const ret = onCycleResult(result);
+      if (ret && typeof ret.then === "function") {
+        ret.catch((error) => {
+          try {
+            logger?.error?.("[ForumBumpScheduler] onCycleResult async failed", {
+              errorName: typeof error?.name === "string" ? error.name : "Error",
+            });
+          } catch {
+            // ignore
+          }
+        });
+      }
+    } catch (error) {
+      try {
+        logger?.error?.("[ForumBumpScheduler] onCycleResult failed", {
+          errorName: typeof error?.name === "string" ? error.name : "Error",
+        });
+      } catch {
+        // ignore
+      }
+    }
+  }
 
   let started = false;
   let stopping = false;
@@ -516,6 +543,8 @@ export function createForumBumpScheduler({
     runPromise = cycle;
     const result = await cycle;
     lastRunStatus = result?.status ?? "unexpected_failed";
+    // 手动 runOnce 与 Timer 触发路径均汇聚于此
+    emitCycleResult(result);
     return result;
   }
 
@@ -668,6 +697,30 @@ export function createForumBumpScheduler({
 
     if (stopping) {
       return { success: false, status: "stopping", errorCode: "SCHEDULER_STOPPING", nextWakeAt: null };
+    }
+
+    // Dry Run：报告第一候选，仅 deferUntil，不 beginInFlight / 不 Bump
+    if (config.mode === "dry_run") {
+      const def = await deferOrStateFailed(revision, config.idlePollMs);
+      if (!def.ok) return def.response;
+      state = def.state;
+      revision = def.revision;
+      const d = decideNextWakeAt({
+        nowMs: clock.now(),
+        config,
+        state,
+        reason: "no_candidate",
+      });
+      return armAfterBusiness(d, {
+        success: true,
+        status: "dry_run_candidate",
+        errorCode: null,
+        candidate: {
+          threadId: first.threadId ?? null,
+          forumChannelId: first.forumChannelId ?? null,
+          guildId: first.guildId ?? config.guildId,
+        },
+      });
     }
 
     const operationId = createOperationId();

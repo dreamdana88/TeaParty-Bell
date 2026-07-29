@@ -1,6 +1,11 @@
 import dotenv from "dotenv";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
+import { ConfigError } from "./configError.js";
+import { loadForumBumpConfig } from "./forumBumpConfig.js";
+
+export { ConfigError } from "./configError.js";
+export { loadForumBumpConfig, FORUM_BUMP_DEFAULTS, FORUM_BUMP_MODES } from "./forumBumpConfig.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(__dirname, "..", "..");
@@ -14,23 +19,6 @@ const REQUIRED_CONFIG = [
 ];
 
 const VALID_NODE_ENVS = new Set(["development", "test", "production"]);
-
-/**
- * 配置错误类型，携带建议退出码。
- */
-export class ConfigError extends Error {
-  /**
-   * @param {string} message
-   * @param {string} code
-   * @param {number} [exitCode=1]
-   */
-  constructor(message, code, exitCode = 1) {
-    super(message);
-    this.name = "ConfigError";
-    this.code = code;
-    this.exitCode = exitCode;
-  }
-}
 
 export function loadConfig() {
   // ---- NODE_ENV ----
@@ -93,6 +81,9 @@ export function loadConfig() {
       78
     );
   }
+
+  // Forum Bump（disabled 时不要求 Forum ID；dry_run/execute 严格校验）
+  config.forumBump = loadForumBumpConfig(process.env, { projectRoot });
 
   return config;
 }

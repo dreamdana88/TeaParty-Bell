@@ -13,7 +13,7 @@
  * Guild 只 fetch 一次，后续检查复用。
  */
 
-import { ChannelType, GuildSystemChannelFlags } from "discord.js";
+import { ChannelType, GuildSystemChannelFlags, PermissionFlagsBits } from "discord.js";
 
 export const PreflightResult = {
   PASS: "pass",
@@ -336,6 +336,121 @@ export function createStartupPreflight(options) {
       { nodeEnv: config.nodeEnv, testMode: config.testMode });
   }
 
+  /**
+   * Forum Bump Preflight（disabled 完全跳过）。
+   * dry_run / execute：校验每个 Forum 存在、类型、Guild、权限。
+   * 不发送、不删除、不扫归档、不碰状态文件。
+   */
+  async function _checkForumBumpForums() {
+    const fb = config.forumBump;
+    if (!fb || fb.mode === "disabled" || !fb.mode) {
+      return _addResult(
+        "forum_bump",
+        PreflightResult.PASS,
+        "Forum Bump 已禁用，跳过 Forum Preflight",
+        { mode: fb?.mode ?? "disabled" },
+      );
+    }
+
+    const forumIds = Array.isArray(fb.forumChannelIds) ? fb.forumChannelIds : [];
+    if (forumIds.length === 0) {
+      return _addResult(
+        "forum_bump",
+        PreflightResult.FATAL,
+        `Forum Bump mode=${fb.mode} 但未配置 Forum Channel ID`,
+        { mode: fb.mode },
+      );
+    }
+
+    const guildId = config.discordGuildId;
+    for (const forumId of forumIds) {
+      const checkName = `forum_bump:${forumId}`;
+      let channel;
+      try {
+        channel = await client.channels.fetch(forumId, { force: true });
+      } catch (err) {
+        const classified = _classifyFetchError(err, `无法获取 Forum（${forumId}）`);
+        _addResult(checkName, classified.result, classified.label, {
+          forumId,
+          guildId,
+          discordCode: err?.code,
+        });
+        continue;
+      }
+
+      if (!channel) {
+        _addResult(checkName, PreflightResult.FATAL,
+          `Forum 频道不存在：${forumId}`, { forumId, guildId });
+        continue;
+      }
+
+      const channelGuildId = channel.guildId ?? channel.guild?.id;
+      if (channelGuildId !== guildId) {
+        _addResult(checkName, PreflightResult.FATAL,
+          `Forum 不属于目标 Guild：${forumId}`,
+          { forumId, guildId, channelGuildId });
+        continue;
+      }
+
+      if (channel.type !== ChannelType.GuildForum) {
+        _addResult(checkName, PreflightResult.FATAL,
+          `频道不是 GuildForum：${forumId}（type=${channel.type}）`,
+          { forumId, guildId, channelType: channel.type });
+        continue;
+      }
+
+      const permissions = typeof channel.permissionsFor === "function"
+        ? channel.permissionsFor(client.user)
+        : null;
+      if (!permissions || typeof permissions.has !== "function") {
+        _addResult(checkName, PreflightResult.FATAL,
+          `无法读取 Forum 权限：${forumId}`, { forumId, guildId });
+        continue;
+      }
+
+      const missing = [];
+      // 接受 PermissionFlagsBits 或字符串名
+      const need = [
+        ["ViewChannel", PermissionFlagsBits.ViewChannel],
+        ["ReadMessageHistory", PermissionFlagsBits.ReadMessageHistory],
+        ["SendMessagesInThreads", PermissionFlagsBits.SendMessagesInThreads],
+      ];
+      for (const [name, bit] of need) {
+        let ok = false;
+        try {
+          ok = permissions.has(bit) || permissions.has(name);
+        } catch {
+          ok = false;
+        }
+        if (!ok) missing.push(name);
+      }
+
+      if (missing.length > 0) {
+        _addResult(checkName, PreflightResult.FATAL,
+          `Forum 缺少权限：${forumId} → ${missing.join("、")}`,
+          { forumId, guildId, missing });
+        continue;
+      }
+
+      // 不要求 ManageThreads / ManageMessages
+      _addResult(checkName, PreflightResult.PASS,
+        `Forum 可访问：${forumId}`,
+        { forumId, guildId, mode: fb.mode });
+    }
+
+    const forumResults = _results.filter((r) => String(r.check).startsWith("forum_bump"));
+    const fatalForums = forumResults.filter((r) => r.result === PreflightResult.FATAL);
+    if (fatalForums.length === 0) {
+      return _addResult(
+        "forum_bump",
+        PreflightResult.PASS,
+        `Forum Bump Preflight 通过（${forumIds.length} 个 Forum，mode=${fb.mode}）`,
+        { mode: fb.mode, forumCount: forumIds.length },
+      );
+    }
+    return PreflightResult.FATAL;
+  }
+
   // ========================
   // 汇总与决策
   // ========================
@@ -350,6 +465,7 @@ export function createStartupPreflight(options) {
         thanksChannelId: config.discordThanksChannelId,
         nodeEnv: config.nodeEnv,
         isProduction: config.isProduction,
+        forumBumpMode: config.forumBump?.mode ?? "disabled",
       });
     }
 
@@ -359,6 +475,7 @@ export function createStartupPreflight(options) {
     await _checkThanksChannel();
     if (emojiProvider) await _checkApplicationEmojis();
     _checkRuntimeMode();
+    await _checkForumBumpForums();
 
     const fatal = _results.filter((r) => r.result === PreflightResult.FATAL);
     const recoverable = _results.filter((r) => r.result === PreflightResult.RECOVERABLE);

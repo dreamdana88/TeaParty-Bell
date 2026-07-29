@@ -14,6 +14,7 @@
     "commands:register": "node scripts/register-admin-commands.js",
     "forum:poc": "node scripts/forum-poc.js",
     "forum:scan": "node scripts/forum-scan.js",
+    "forum:state": "node scripts/forum-bump-state.js",
     "test:copy": "node scripts/test-copy.js",
     "test:send": "node scripts/test-send.js"
   },

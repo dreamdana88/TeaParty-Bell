@@ -19,6 +19,12 @@ import { createGatewayHealthMonitor } from "./gatewayHealthMonitor.js";
 import { createStartupPreflight } from "./startupPreflight.js";
 import { createManualMessageService } from "../features/manualMessage/service.js";
 import { createManualInteractionRouter } from "../features/manualMessage/interactionRouter.js";
+import { createForumBumpRuntime } from "../features/forumBump/runtime.js";
+import {
+  createInstanceLock,
+  InstanceLockError,
+  INSTANCE_LOCK_BUSY_EXIT_CODE,
+} from "./instanceLock.js";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 
@@ -80,10 +86,14 @@ export async function start(options = {}) {
     createEmojiProviderFn = createApplicationEmojiProvider,
     createManualMessageServiceFn = createManualMessageService,
     createManualInteractionRouterFn = createManualInteractionRouter,
+    createForumBumpRuntimeFn = createForumBumpRuntime,
+    createInstanceLockFn = createInstanceLock,
     logger = defaultLogger,
     exitFn = (code) => process.exit(code),
     processLike = process,
     projectRoot = _defaultProjectRoot,
+    /** 测试可跳过单实例锁 */
+    skipInstanceLock = false,
   } = options;
 
   // ---- 1. 加载配置 ----
@@ -101,8 +111,39 @@ export async function start(options = {}) {
 
   // ---- 2. 设置日志等级 ----
   setLogLevel(config.logLevel);
-  logger.info("配置加载成功", { testMode: config.testMode, logLevel: config.logLevel, nodeEnv: config.nodeEnv, isProduction: config.isProduction });
+  logger.info("配置加载成功", {
+    testMode: config.testMode,
+    logLevel: config.logLevel,
+    nodeEnv: config.nodeEnv,
+    isProduction: config.isProduction,
+    forumBumpMode: config.forumBump?.mode ?? "disabled",
+  });
   if (config.testMode) logger.info("⚡ 测试模式已启用 — 不会发送真实消息");
+
+  // ---- 2b. 跨进程单实例锁（Discord 登录前）----
+  let instanceLock = null;
+  if (!skipInstanceLock) {
+    try {
+      instanceLock = createInstanceLockFn({
+        lockPath: resolve(projectRoot, "data", "runtime", "teaparty-bell.instance.lock"),
+      });
+      instanceLock.acquire();
+      logger.info("实例锁已获取", { lockPath: instanceLock.lockPath });
+    } catch (err) {
+      const exitCode = err instanceof InstanceLockError
+        ? err.exitCode
+        : INSTANCE_LOCK_BUSY_EXIT_CODE;
+      logger.error
+        ? logger.error("实例锁获取失败，拒绝启动（避免多进程竞争状态/告警）", {
+          message: err.message,
+          code: err.code ?? null,
+          exitCode,
+        })
+        : console.error(`实例锁失败（exit ${exitCode}）：${err.message}`);
+      exitFn(exitCode);
+      return;
+    }
+  }
 
   // ---- 3. 告警基础设施 ----
   const alertsDir = resolve(projectRoot, "data", "runtime", "alerts");
@@ -111,6 +152,7 @@ export async function start(options = {}) {
     outbox = createAlertOutboxFn({ alertsDir, logger });
     outbox.verifyWritable();
   } catch (err) {
+    try { instanceLock?.release(); } catch { /* ignore */ }
     const exitCode = err instanceof OutboxError ? EXIT_PERMANENT : EXIT_RUNTIME;
     logger.error ? logger.error("Alert Outbox 初始化失败", { message: err.message, exitCode })
       : console.error(`Alert Outbox 初始化失败（exit ${exitCode}）：${err.message}`);
@@ -121,6 +163,7 @@ export async function start(options = {}) {
   const notifier = createNotifierFn({ outbox, logger });
   try { await notifier.initialize(); }
   catch (err) {
+    try { instanceLock?.release(); } catch { /* ignore */ }
     logger.error ? logger.error("Alert Outbox 加载失败，拒绝启动", { message: err.message })
       : console.error(`Alert Outbox 加载失败，拒绝启动（exit ${EXIT_PERMANENT}）：${err.message}`);
     exitFn(EXIT_PERMANENT);
@@ -134,6 +177,7 @@ export async function start(options = {}) {
   });
   try { await store.load(); }
   catch (err) {
+    try { instanceLock?.release(); } catch { /* ignore */ }
     logger.error("BoostThanks 状态文件加载失败，Bot 拒绝启动（fail closed）", { error: err.message });
     exitFn(EXIT_PERMANENT);
     return;
@@ -180,6 +224,7 @@ export async function start(options = {}) {
   // ---- 9. 登录 ----
   try { await login(config.discordBotToken); }
   catch (err) {
+    try { instanceLock?.release(); } catch { /* ignore */ }
     logger.error("Discord 登录失败", { message: err.message, code: err.code });
     exitFn(EXIT_RUNTIME);
     return;
@@ -188,6 +233,7 @@ export async function start(options = {}) {
   // ---- 10. 等待首次 ClientReady ----
   try { await waitUntilReady(); logger.info("ClientReady 已确认"); }
   catch (err) {
+    try { instanceLock?.release(); } catch { /* ignore */ }
     logger.error("等待 ClientReady 时发生异常", { message: err.message });
     exitFn(EXIT_RUNTIME);
     return;
@@ -225,17 +271,69 @@ export async function start(options = {}) {
     await manualInteractionRouter.start();
   } catch (error) {
     await safelyDestroyManualRouter(manualInteractionRouter, logger, "Manual Interaction Router 清理异常");
+    try { instanceLock?.release(); } catch { /* ignore */ }
     safeStartupLog(logger, "Manual Message Service / Interaction Router 初始化失败，拒绝继续运行", error);
     exitFn(EXIT_RUNTIME);
     return;
   }
 
-  // ---- 14. Router 启动后 → 发送就绪通知 ----
+  // ---- 13b. Forum Bump Runtime（Preflight 成功后）----
+  let forumBumpRuntime = null;
+  try {
+    forumBumpRuntime = createForumBumpRuntimeFn({
+      client,
+      config,
+      logger,
+      alertNotifier: notifier,
+      statePath: config.forumBump?.statePath,
+    });
+    const fbStart = await forumBumpRuntime.start();
+    // 关键失败：状态损坏且无法启动、告警持久化失败等
+    if (fbStart && fbStart.success === false) {
+      const code = fbStart.errorCode ?? "FORUM_BUMP_START_FAILED";
+      // 状态/告警类 fail closed；recovery 待处理则允许其他功能继续
+      if (
+        code === "ALERT_PERSISTENCE_FAILED"
+        || code === "STATE_NOT_FOUND"
+        || code === "STATE_READ_FAILED"
+        || code === "STATE_INVALID"
+        || code === "STATE_RECOVERY_FAILED"
+        || code === "STATE_WRITE_FAILED"
+      ) {
+        try {
+          await forumBumpRuntime.stop();
+        } catch { /* ignore */ }
+        await safelyDestroyManualRouter(manualInteractionRouter, logger, "Forum Bump 启动失败后清理 Router");
+        try { instanceLock?.release(); } catch { /* ignore */ }
+        safeStartupLog(logger, "Forum Bump Runtime 启动失败，拒绝继续运行", { code });
+        exitFn(EXIT_PERMANENT);
+        return;
+      }
+      // 其他 start 失败：仍允许 Bot 其他功能（无 Forum timer）
+      logger.warn?.("[Bot] Forum Bump Runtime 未完全启动，其他功能继续", {
+        errorCode: code,
+        recoveryStatus: fbStart.recoveryStatus ?? null,
+      });
+    }
+  } catch (error) {
+    try {
+      if (forumBumpRuntime) await forumBumpRuntime.stop();
+    } catch { /* ignore */ }
+    await safelyDestroyManualRouter(manualInteractionRouter, logger, "Forum Bump 异常后清理 Router");
+    try { instanceLock?.release(); } catch { /* ignore */ }
+    safeStartupLog(logger, "Forum Bump Runtime 初始化异常，拒绝继续运行", error);
+    exitFn(EXIT_PERMANENT);
+    return;
+  }
+
+  // ---- 14. Router + Forum Bump 后 → 发送就绪通知 ----
   let readyResult;
   try {
     readyResult = await notifier.notifyReadyAfterRestart();
   } catch (err) {
+    try { if (forumBumpRuntime) await forumBumpRuntime.stop(); } catch { /* ignore */ }
     await safelyDestroyManualRouter(manualInteractionRouter, logger, "Router 启动后清理失败");
+    try { instanceLock?.release(); } catch { /* ignore */ }
     safeStartupLog(logger, "[Bot] notifyReadyAfterRestart 持久化失败，拒绝继续运行", err);
     exitFn(EXIT_PERMANENT);
     return;
@@ -243,7 +341,9 @@ export async function start(options = {}) {
 
   // 检查 recovery 是否有失败
   if (readyResult && readyResult.failedRecoveries && readyResult.failedRecoveries.length > 0) {
+    try { if (forumBumpRuntime) await forumBumpRuntime.stop(); } catch { /* ignore */ }
     await safelyDestroyManualRouter(manualInteractionRouter, logger, "Router 启动后清理失败");
+    try { instanceLock?.release(); } catch { /* ignore */ }
     try {
       logger.error("[Bot] 部分 Recovery 持久化失败", { count: readyResult.failedRecoveries.length });
     } catch {
@@ -254,8 +354,17 @@ export async function start(options = {}) {
   }
 
   // ---- 15. 进程退出处理 ----
+  let shuttingDown = false;
   async function shutdown(signal) {
+    if (shuttingDown) return;
+    shuttingDown = true;
     logger.info(`收到 ${signal} 信号，正在关闭...`);
+    // 先停 Forum Bump（等待 send/delete/complete 收尾），再 destroy Discord
+    try {
+      if (forumBumpRuntime) await forumBumpRuntime.stop();
+    } catch (err) {
+      logger.error("Forum Bump Runtime 停止异常", { message: err.message });
+    }
     try { healthMonitor.stop(); } catch (err) { logger.error("Health Monitor 停止异常", { message: err.message }); }
     try { if (lifecycleLoggerCleanup) lifecycleLoggerCleanup.destroy(); } catch (err) { logger.error("Lifecycle Logger 清理异常", { message: err.message }); }
     try { if (observerCleanup) observerCleanup.destroy(); } catch (err) { logger.error("Observer 清理异常", { message: err.message }); }
@@ -263,13 +372,14 @@ export async function start(options = {}) {
     try { await store.close(); } catch (err) { logger.error("Store 关闭异常", { message: err.message }); }
     try { await outbox.close(); } catch (err) { logger.error("Outbox 关闭异常", { message: err.message }); }
     try { await destroy(); } catch (err) { logger.error("Discord 断开异常", { message: err.message }); }
+    try { instanceLock?.release(); } catch (err) { logger.error("实例锁释放异常", { message: err.message }); }
     exitFn(EXIT_OK);
   }
 
   // 信号处理仅在 operational 后注册（避免在 preflight 阶段被信号中断）
   if (processLike.on) {
-    processLike.on("SIGINT", () => shutdown("SIGINT"));
-    processLike.on("SIGTERM", () => shutdown("SIGTERM"));
+    processLike.on("SIGINT", () => { void shutdown("SIGINT"); });
+    processLike.on("SIGTERM", () => { void shutdown("SIGTERM"); });
   }
   processLike.on?.("uncaughtException", (err) => {
     logger.error("未捕获的异常", { message: err.message, stack: err.stack });
@@ -280,5 +390,11 @@ export async function start(options = {}) {
   });
 
   logger.info("TeaParty-Bell 启动完成 / operational");
-  return { client, destroy, healthMonitor };
+  return {
+    client,
+    destroy,
+    healthMonitor,
+    forumBumpRuntime,
+    shutdown,
+  };
 }

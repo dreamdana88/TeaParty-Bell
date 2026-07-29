@@ -124,8 +124,18 @@ export function validateSchedulerConfig(config) {
     throw new SchedulerConfigError("SCHEDULER_CONFIG_INVALID", "activeStart 必须早于 activeEnd（不支持跨午夜）。");
   }
 
+  // mode 可选：默认 execute（兼容 D-4 测试）；dry_run 不调用 Bump Service
+  let mode = "execute";
+  if (config.mode !== undefined && config.mode !== null) {
+    if (config.mode !== "execute" && config.mode !== "dry_run") {
+      throw new SchedulerConfigError("SCHEDULER_CONFIG_INVALID", "mode 必须为 execute 或 dry_run。");
+    }
+    mode = config.mode;
+  }
+
   return {
     enabled: config.enabled,
+    mode,
     guildId: config.guildId,
     forumChannelIds,
     silenceDays: config.silenceDays,

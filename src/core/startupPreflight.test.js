@@ -4,6 +4,7 @@
  * 运行：node src/core/startupPreflight.test.js
  */
 
+import { ChannelType, PermissionFlagsBits } from "discord.js";
 import { createStartupPreflight, PreflightResult } from "./startupPreflight.js";
 
 let passed = 0;
@@ -228,6 +229,247 @@ function makeFakeClient(guildOverride = null, systemChOverride = null, thanksChO
     notifyWarning: async () => {}, exitFn: c => { exitCode = c; } });
   await p.run();
   assertEqual(exitCode, 78, "recoverable 告警持久化失败 → exit 78");
+}
+
+// ===== Forum Bump Preflight =====
+function forumPerms(allowed) {
+  const set = new Set(allowed);
+  return {
+    has(flag) {
+      if (set.has(flag)) return true;
+      if (flag === PermissionFlagsBits.ViewChannel && set.has("ViewChannel")) return true;
+      if (flag === PermissionFlagsBits.ReadMessageHistory && set.has("ReadMessageHistory")) return true;
+      if (flag === PermissionFlagsBits.SendMessagesInThreads && set.has("SendMessagesInThreads")) return true;
+      if (typeof flag === "string" && set.has(flag)) return true;
+      return false;
+    },
+  };
+}
+
+const FORUM_A = "1420375965963653180";
+const FORUM_B = "1420375965963653181";
+
+function makeForumClient({
+  forums = {
+    [FORUM_A]: {
+      id: FORUM_A,
+      type: ChannelType.GuildForum,
+      guildId: "111111111111",
+      permissionsFor: () => forumPerms([
+        "ViewChannel", "ReadMessageHistory", "SendMessagesInThreads",
+      ]),
+    },
+  },
+} = {}) {
+  const base = makeFakeClient();
+  const orig = base.channels.fetch;
+  base.channels.fetch = async (id, opts) => {
+    if (forums[id]) return forums[id];
+    return orig(id, opts);
+  };
+  return base;
+}
+
+// disabled 跳过
+{
+  let exitCode = null;
+  const p = createStartupPreflight({
+    client: makeFakeClient(),
+    config: makeBaseConfig({ forumBump: { mode: "disabled", forumChannelIds: [] } }),
+    logger: makeMockLogger(),
+    emojiProvider: { fetchEmojis: async () => [{ id: "e1" }] },
+    notifyFailure: async () => {},
+    notifyWarning: async () => {},
+    exitFn: (c) => { exitCode = c; },
+  });
+  const r = await p.run();
+  assert(r.passed, "disabled 跳过 Forum preflight 通过");
+  assertEqual(exitCode, null, "disabled 不退出");
+}
+
+// GuildForum 通过
+{
+  let exitCode = null;
+  const p = createStartupPreflight({
+    client: makeForumClient(),
+    config: makeBaseConfig({
+      forumBump: { mode: "execute", forumChannelIds: [FORUM_A] },
+    }),
+    logger: makeMockLogger(),
+    emojiProvider: { fetchEmojis: async () => [{ id: "e1" }] },
+    notifyFailure: async () => {},
+    notifyWarning: async () => {},
+    exitFn: (c) => { exitCode = c; },
+  });
+  const r = await p.run();
+  assert(r.passed, "正确 GuildForum 通过");
+  assertEqual(exitCode, null, "forum pass 不退出");
+}
+
+// 频道不存在
+{
+  let exitCode = null;
+  const client = makeForumClient({ forums: {} });
+  const p = createStartupPreflight({
+    client,
+    config: makeBaseConfig({
+      forumBump: { mode: "dry_run", forumChannelIds: [FORUM_A] },
+    }),
+    logger: makeMockLogger(),
+    notifyFailure: async () => {},
+    notifyWarning: async () => {},
+    exitFn: (c) => { exitCode = c; },
+  });
+  await p.run();
+  assertEqual(exitCode, 78, "Forum 不存在 → 78");
+}
+
+// 类型错误
+{
+  let exitCode = null;
+  const p = createStartupPreflight({
+    client: makeForumClient({
+      forums: {
+        [FORUM_A]: {
+          id: FORUM_A,
+          type: ChannelType.GuildText,
+          guildId: "111111111111",
+          permissionsFor: () => forumPerms(["ViewChannel", "ReadMessageHistory", "SendMessagesInThreads"]),
+        },
+      },
+    }),
+    config: makeBaseConfig({
+      forumBump: { mode: "execute", forumChannelIds: [FORUM_A] },
+    }),
+    logger: makeMockLogger(),
+    notifyFailure: async () => {},
+    notifyWarning: async () => {},
+    exitFn: (c) => { exitCode = c; },
+  });
+  await p.run();
+  assertEqual(exitCode, 78, "类型错误 → 78");
+}
+
+// Guild 不一致
+{
+  let exitCode = null;
+  const p = createStartupPreflight({
+    client: makeForumClient({
+      forums: {
+        [FORUM_A]: {
+          id: FORUM_A,
+          type: ChannelType.GuildForum,
+          guildId: "999999999999",
+          permissionsFor: () => forumPerms(["ViewChannel", "ReadMessageHistory", "SendMessagesInThreads"]),
+        },
+      },
+    }),
+    config: makeBaseConfig({
+      forumBump: { mode: "execute", forumChannelIds: [FORUM_A] },
+    }),
+    logger: makeMockLogger(),
+    notifyFailure: async () => {},
+    notifyWarning: async () => {},
+    exitFn: (c) => { exitCode = c; },
+  });
+  await p.run();
+  assertEqual(exitCode, 78, "Guild 不一致 → 78");
+}
+
+// 缺 ViewChannel / ReadMessageHistory / SendMessagesInThreads
+for (const missing of ["ViewChannel", "ReadMessageHistory", "SendMessagesInThreads"]) {
+  let exitCode = null;
+  const allowed = ["ViewChannel", "ReadMessageHistory", "SendMessagesInThreads"].filter((x) => x !== missing);
+  const p = createStartupPreflight({
+    client: makeForumClient({
+      forums: {
+        [FORUM_A]: {
+          id: FORUM_A,
+          type: ChannelType.GuildForum,
+          guildId: "111111111111",
+          permissionsFor: () => forumPerms(allowed),
+        },
+      },
+    }),
+    config: makeBaseConfig({
+      forumBump: { mode: "execute", forumChannelIds: [FORUM_A] },
+    }),
+    logger: makeMockLogger(),
+    notifyFailure: async () => {},
+    notifyWarning: async () => {},
+    exitFn: (c) => { exitCode = c; },
+  });
+  await p.run();
+  assertEqual(exitCode, 78, `缺 ${missing} → 78`);
+}
+
+// 缺 ManageThreads / ManageMessages 仍通过
+{
+  let exitCode = null;
+  const p = createStartupPreflight({
+    client: makeForumClient({
+      forums: {
+        [FORUM_A]: {
+          id: FORUM_A,
+          type: ChannelType.GuildForum,
+          guildId: "111111111111",
+          permissionsFor: () => forumPerms([
+            "ViewChannel", "ReadMessageHistory", "SendMessagesInThreads",
+            // 故意没有 ManageThreads / ManageMessages
+          ]),
+        },
+      },
+    }),
+    config: makeBaseConfig({
+      forumBump: { mode: "execute", forumChannelIds: [FORUM_A] },
+    }),
+    logger: makeMockLogger(),
+    emojiProvider: { fetchEmojis: async () => [{ id: "e1" }] },
+    notifyFailure: async () => {},
+    notifyWarning: async () => {},
+    exitFn: (c) => { exitCode = c; },
+  });
+  const r = await p.run();
+  assert(r.passed, "缺 ManageThreads/Messages 仍通过");
+  assertEqual(exitCode, null, "manage 权限不要求");
+}
+
+// 多个 Forum 全部检查
+{
+  let exitCode = null;
+  let fetched = [];
+  const client = makeForumClient({
+    forums: {
+      [FORUM_A]: {
+        id: FORUM_A, type: ChannelType.GuildForum, guildId: "111111111111",
+        permissionsFor: () => forumPerms(["ViewChannel", "ReadMessageHistory", "SendMessagesInThreads"]),
+      },
+      [FORUM_B]: {
+        id: FORUM_B, type: ChannelType.GuildForum, guildId: "111111111111",
+        permissionsFor: () => forumPerms(["ViewChannel", "ReadMessageHistory", "SendMessagesInThreads"]),
+      },
+    },
+  });
+  const orig = client.channels.fetch;
+  client.channels.fetch = async (id, o) => {
+    fetched.push(id);
+    return orig(id, o);
+  };
+  const p = createStartupPreflight({
+    client,
+    config: makeBaseConfig({
+      forumBump: { mode: "dry_run", forumChannelIds: [FORUM_A, FORUM_B] },
+    }),
+    logger: makeMockLogger(),
+    emojiProvider: { fetchEmojis: async () => [{ id: "e1" }] },
+    notifyFailure: async () => {},
+    notifyWarning: async () => {},
+    exitFn: (c) => { exitCode = c; },
+  });
+  const r = await p.run();
+  assert(r.passed, "多 Forum 通过");
+  assert(fetched.includes(FORUM_A) && fetched.includes(FORUM_B), "多 Forum 全部 fetch");
+  assertEqual(exitCode, null, "多 Forum 不退出");
 }
 
 console.log(`\n[startupPreflight.test] ${passed} passed / ${failed} failed`);

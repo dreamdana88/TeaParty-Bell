@@ -28,11 +28,42 @@ function makeMockLogger() { return { info:()=>{}, error:()=>{}, warn:()=>{}, deb
 
 // ---- 通用 fake 工厂 ----
 
-function makeFakeConfig() {
-  return { nodeEnv:"test", isProduction:false, testMode:false, logLevel:"debug",
-    discordBotToken:"tok", discordApplicationId:"app", discordGuildId:"111", discordThanksChannelId:"222",
-    deepseekApiKey:"sk", deepseekBaseUrl:"x", deepseekModel:"m", deepseekTimeoutMs:30000,
-    reactionCount:10, boostAggregationWindowMs:100 };
+function makeFakeConfig(overrides = {}) {
+  return {
+    nodeEnv: "test",
+    isProduction: false,
+    testMode: false,
+    logLevel: "debug",
+    discordBotToken: "tok",
+    discordApplicationId: "app",
+    discordGuildId: "111",
+    discordThanksChannelId: "222",
+    deepseekApiKey: "sk",
+    deepseekBaseUrl: "x",
+    deepseekModel: "m",
+    deepseekTimeoutMs: 30000,
+    reactionCount: 10,
+    boostAggregationWindowMs: 100,
+    forumBump: { mode: "disabled", forumChannelIds: [], statePath: "/tmp/fb-state.json" },
+    ...overrides,
+  };
+}
+
+function makeDisabledForumRuntime() {
+  return {
+    start: async () => ({ success: true, mode: "disabled", started: true, timerArmed: false }),
+    stop: async () => ({ success: true }),
+    getStatus: () => ({ mode: "disabled", started: true }),
+  };
+}
+
+/** 现有用例默认跳过单实例锁与 Forum Runtime 副作用 */
+function botTestDefaults(extra = {}) {
+  return {
+    skipInstanceLock: true,
+    createForumBumpRuntimeFn: () => makeDisabledForumRuntime(),
+    ...extra,
+  };
 }
 
 function makeFakeClient() {
@@ -86,6 +117,8 @@ function makeFakeClient() {
   const fakeObserver = { destroy: () => {} };
 
   await start({
+    skipInstanceLock: true,
+    createForumBumpRuntimeFn: () => makeDisabledForumRuntime(),
     loadConfigFn: () => makeFakeConfig(),
     createClientFn: () => {
       const { login: _, destroy: __, waitUntilReady: ___ } = makeFakeClient();
@@ -119,6 +152,8 @@ function makeFakeClient() {
 {
   let exitCode = null;
   await start({
+    skipInstanceLock: true,
+    createForumBumpRuntimeFn: () => makeDisabledForumRuntime(),
     loadConfigFn: () => { throw new ConfigError("bad NODE_ENV", "invalid_node_env", 78); },
     logger: makeMockLogger(),
     exitFn: (c) => { exitCode = c; },
@@ -135,6 +170,8 @@ function makeFakeClient() {
   let exitCode = null;
   const logger = makeMockLogger();
   await start({
+    skipInstanceLock: true,
+    createForumBumpRuntimeFn: () => makeDisabledForumRuntime(),
     loadConfigFn: () => makeFakeConfig(),
     createAlertOutboxFn: () => {
       const o = { verifyWritable: () => { throw new OutboxError("disk full", "write_probe_failed"); } };
@@ -154,6 +191,8 @@ function makeFakeClient() {
 {
   let exitCode = null;
   await start({
+    skipInstanceLock: true,
+    createForumBumpRuntimeFn: () => makeDisabledForumRuntime(),
     loadConfigFn: () => makeFakeConfig(),
     createAlertOutboxFn: () => ({ verifyWritable: () => {}, loadAllAlerts: () => { throw new OutboxError("bad", "schema_corrupt"); } }),
     createNotifierFn: ({ outbox }) => ({ initialize: async () => { outbox.loadAllAlerts(); } }),
@@ -171,6 +210,8 @@ function makeFakeClient() {
 {
   let exitCode = null;
   await start({
+    skipInstanceLock: true,
+    createForumBumpRuntimeFn: () => makeDisabledForumRuntime(),
     loadConfigFn: () => makeFakeConfig(),
     createAlertOutboxFn: () => ({ verifyWritable: () => {}, loadAllAlerts: () => [], writeAlert: async () => {}, close: async () => {} }),
     createNotifierFn: () => ({ initialize: async () => {}, notifyFailure: async () => {} }),
@@ -211,6 +252,8 @@ function makeFakeClient() {
   };
 
   await start({
+    skipInstanceLock: true,
+    createForumBumpRuntimeFn: () => makeDisabledForumRuntime(),
     loadConfigFn: () => makeFakeConfig(),
     createAlertOutboxFn: () => fakeOutbox,
     createNotifierFn: () => fakeNotifier,
@@ -245,6 +288,8 @@ function makeFakeClient() {
 
   // passed=true → operational
   await start({
+    skipInstanceLock: true,
+    createForumBumpRuntimeFn: () => makeDisabledForumRuntime(),
     loadConfigFn: () => makeFakeConfig(),
     createAlertOutboxFn: () => fakeOutbox,
     createNotifierFn: () => fakeNotifier,
@@ -284,6 +329,8 @@ function makeFakeClient() {
   };
 
   await start({
+    skipInstanceLock: true,
+    createForumBumpRuntimeFn: () => makeDisabledForumRuntime(),
     loadConfigFn: () => makeFakeConfig(),
     createAlertOutboxFn: () => fakeOutbox,
     createNotifierFn: () => fakeNotifier,
@@ -324,6 +371,8 @@ function makeFakeClient() {
   };
 
   await start({
+    skipInstanceLock: true,
+    createForumBumpRuntimeFn: () => makeDisabledForumRuntime(),
     loadConfigFn: () => makeFakeConfig(),
     createAlertOutboxFn: () => fakeOutbox,
     createNotifierFn: () => fakeNotifier,
@@ -361,6 +410,8 @@ function makeFakeClient() {
   const fakeStore = { load: async () => {}, getAllRecords: () => new Map(), listRecoverable: () => [], markUncertain: async () => {}, close: async () => {} };
 
   await start({
+    skipInstanceLock: true,
+    createForumBumpRuntimeFn: () => makeDisabledForumRuntime(),
     loadConfigFn: () => makeFakeConfig(),
     createAlertOutboxFn: () => fakeOutbox,
     createNotifierFn: () => ({ initialize: async () => {}, notifyFailure: async () => {}, notifyRecovery: async () => {}, notifyWarning: async () => {}, notifyReadyAfterRestart: async () => ({ createdReady: true, recovered: [], failedRecoveries: [] }) }),
@@ -415,6 +466,8 @@ function makeFakeClient() {
   const fakeClient = makeFakeClient();
 
   await start({
+    skipInstanceLock: true,
+    createForumBumpRuntimeFn: () => makeDisabledForumRuntime(),
     loadConfigFn: () => makeFakeConfig(),
     createAlertOutboxFn: () => fakeOutbox,
     createNotifierFn: () => fakeNotifier,
@@ -470,6 +523,8 @@ function makeFakeClient() {
 {
   const cleanupOrder = [];
   await start({
+    skipInstanceLock: true,
+    createForumBumpRuntimeFn: () => makeDisabledForumRuntime(),
     loadConfigFn: () => makeFakeConfig(),
     createAlertOutboxFn: () => ({ verifyWritable: () => {}, loadAllAlerts: () => [], writeAlert: async () => {}, findAlert: () => undefined, close: async () => { cleanupOrder.push("outbox_close"); } }),
     createNotifierFn: () => ({ initialize: async () => {}, notifyFailure: async () => {}, notifyRecovery: async () => {}, notifyWarning: async () => {}, notifyReadyAfterRestart: async () => ({ createdReady: true, recovered: [], failedRecoveries: [] }) }),
@@ -577,6 +632,8 @@ function makeManualStartupOptions({
       events.push("router_create");
       return routerFactory(options);
     },
+    skipInstanceLock: true,
+    createForumBumpRuntimeFn: () => makeDisabledForumRuntime(),
     logger,
     exitFn: (code) => { events.push(`exit_${code}`); },
     processLike: { on: () => {} },
@@ -659,6 +716,209 @@ for (const [readyOptions, label] of [
   await start(options);
   assertEqual(events.at(-1), "exit_78", "Router destroy 失败不掩盖 exit 78");
   assert(options.logger.calls.some((call) => call.message === "Router 启动后清理失败"), "Router destroy 失败写安全日志");
+}
+
+// ============================
+// Forum Bump 生命周期
+// ============================
+
+{
+  // Preflight 失败不启动 Forum Bump
+  let forumStarted = false;
+  let exitCode = null;
+  await start({
+    skipInstanceLock: true,
+    loadConfigFn: () => makeFakeConfig(),
+    createAlertOutboxFn: () => ({
+      verifyWritable: () => {},
+      loadAllAlerts: () => [],
+      writeAlert: async () => {},
+      close: async () => {},
+    }),
+    createNotifierFn: () => ({
+      initialize: async () => {},
+      notifyFailure: async () => {},
+      notifyRecovery: async () => {},
+      notifyWarning: async () => {},
+      notifyReadyAfterRestart: async () => ({ createdReady: true, recovered: [], failedRecoveries: [] }),
+    }),
+    createStoreFn: () => ({
+      load: async () => {},
+      getAllRecords: () => new Map(),
+      listRecoverable: () => [],
+      markUncertain: async () => {},
+      close: async () => {},
+    }),
+    createClientFn: () => ({
+      client: makeFakeClient(),
+      login: async () => {},
+      destroy: async () => {},
+      waitUntilReady: async () => {},
+    }),
+    createHealthMonitorFn: () => ({ start: () => {}, stop: () => {}, onReady: () => {} }),
+    setupLifecycleLoggerFn: () => ({ destroy: () => {} }),
+    setupObserverFn: () => ({ destroy: () => {} }),
+    createHandlerFn: () => ({}),
+    createEmojiProviderFn: () => ({}),
+    createPreflightFn: ({ exitFn }) => ({
+      run: async () => {
+        exitFn(78);
+        return { passed: false };
+      },
+    }),
+    createForumBumpRuntimeFn: () => ({
+      start: async () => { forumStarted = true; return { success: true }; },
+      stop: async () => {},
+    }),
+    logger: makeMockLogger(),
+    exitFn: (c) => { exitCode = c; },
+    processLike: { on: () => {} },
+  });
+  assertEqual(forumStarted, false, "Preflight 失败不启动 Forum Bump");
+  assertEqual(exitCode, 78, "Preflight 失败 exit 78");
+}
+
+{
+  // Runtime start 成功后进入 ready；shutdown 先 stop Forum 再 destroy Discord
+  const order = [];
+  let exitCode = null;
+  const result = await start({
+    skipInstanceLock: true,
+    loadConfigFn: () => makeFakeConfig(),
+    createAlertOutboxFn: () => ({
+      verifyWritable: () => {},
+      loadAllAlerts: () => [],
+      writeAlert: async () => {},
+      findAlert: () => undefined,
+      close: async () => { order.push("outbox_close"); },
+    }),
+    createNotifierFn: () => ({
+      initialize: async () => {},
+      notifyFailure: async () => {},
+      notifyRecovery: async () => {},
+      notifyWarning: async () => {},
+      notifyReadyAfterRestart: async () => {
+        order.push("notify_ready");
+        return { createdReady: true, recovered: [], failedRecoveries: [] };
+      },
+    }),
+    createStoreFn: () => ({
+      load: async () => {},
+      getAllRecords: () => new Map(),
+      listRecoverable: () => [],
+      markUncertain: async () => {},
+      close: async () => { order.push("store_close"); },
+    }),
+    createClientFn: () => ({
+      client: makeFakeClient(),
+      login: async () => { order.push("login"); },
+      destroy: async () => { order.push("discord_destroy"); },
+      waitUntilReady: async () => { order.push("ready"); },
+    }),
+    createHealthMonitorFn: () => ({
+      start: () => {},
+      stop: () => { order.push("health_stop"); },
+      onReady: () => {},
+    }),
+    setupLifecycleLoggerFn: () => ({ destroy: () => { order.push("lifecycle_destroy"); } }),
+    setupObserverFn: () => ({ destroy: () => { order.push("observer_destroy"); } }),
+    createHandlerFn: () => ({}),
+    createEmojiProviderFn: () => ({}),
+    createPreflightFn: () => ({
+      run: async () => {
+        order.push("preflight");
+        return { passed: true };
+      },
+    }),
+    createManualMessageServiceFn: () => ({}),
+    createManualInteractionRouterFn: () => ({
+      start: async () => { order.push("router_start"); },
+      destroy: () => { order.push("router_destroy"); },
+    }),
+    createForumBumpRuntimeFn: () => ({
+      start: async () => {
+        order.push("forum_start");
+        return { success: true, mode: "disabled", started: true };
+      },
+      stop: async () => { order.push("forum_stop"); },
+    }),
+    logger: makeMockLogger(),
+    exitFn: (c) => { exitCode = c; order.push(`exit_${c}`); },
+    processLike: { on: () => {} },
+  });
+  assert(order.indexOf("ready") < order.indexOf("preflight"), "ready 前不启动 Forum（preflight 在 ready 后）");
+  assert(order.indexOf("preflight") < order.indexOf("forum_start"), "Preflight 后启动 Forum");
+  assert(order.indexOf("forum_start") < order.indexOf("notify_ready"), "Forum start 后 ready 通知");
+  assert(result && typeof result.shutdown === "function", "返回 shutdown");
+  await result.shutdown("SIGTERM");
+  assert(order.indexOf("forum_stop") < order.indexOf("discord_destroy"), "shutdown 先 Forum stop 再 destroy Discord");
+  assertEqual(exitCode, 0, "shutdown exit 0");
+
+  // 并发 shutdown 只执行一次
+  const order2 = order.filter((x) => x === "forum_stop");
+  await result.shutdown("SIGINT");
+  const order3 = order.filter((x) => x === "forum_stop");
+  assertEqual(order3.length, order2.length, "并发 shutdown 幂等（不重复 stop）");
+}
+
+{
+  // 实例锁失败 → exit 78 且不 login
+  let loginCalls = 0;
+  let exitCode = null;
+  await start({
+    skipInstanceLock: false,
+    createInstanceLockFn: () => ({
+      acquire: () => {
+        const err = new Error("busy");
+        err.name = "InstanceLockError";
+        err.code = "INSTANCE_LOCK_BUSY";
+        err.exitCode = 78;
+        throw err;
+      },
+      release: () => {},
+      lockPath: "/tmp/x.lock",
+    }),
+    loadConfigFn: () => makeFakeConfig(),
+    createClientFn: () => ({
+      client: makeFakeClient(),
+      login: async () => { loginCalls += 1; },
+      destroy: async () => {},
+      waitUntilReady: async () => {},
+    }),
+    logger: makeMockLogger(),
+    exitFn: (c) => { exitCode = c; },
+    processLike: { on: () => {} },
+  });
+  // InstanceLockError instanceof check needs real class
+}
+
+// 使用真实 InstanceLockError
+{
+  const { InstanceLockError } = await import("./instanceLock.js");
+  let loginCalls = 0;
+  let exitCode = null;
+  await start({
+    skipInstanceLock: false,
+    createInstanceLockFn: () => ({
+      acquire: () => {
+        throw new InstanceLockError("busy", "INSTANCE_LOCK_BUSY", 78);
+      },
+      release: () => {},
+      lockPath: "/tmp/x.lock",
+    }),
+    loadConfigFn: () => makeFakeConfig(),
+    createClientFn: () => ({
+      client: makeFakeClient(),
+      login: async () => { loginCalls += 1; },
+      destroy: async () => {},
+      waitUntilReady: async () => {},
+    }),
+    logger: makeMockLogger(),
+    exitFn: (c) => { exitCode = c; },
+    processLike: { on: () => {} },
+  });
+  assertEqual(exitCode, 78, "锁冲突 exit 78");
+  assertEqual(loginCalls, 0, "锁失败不 Discord login");
 }
 
 console.log(`\n[bot.test] ${passed} passed / ${failed} failed`);
