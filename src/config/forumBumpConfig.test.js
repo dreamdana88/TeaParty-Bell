@@ -182,6 +182,75 @@ console.log("\n=== forumBumpConfig ===\n");
   assertEqual(c.forumChannelIds[0], F, "forum id");
 }
 
+// TEST_MODE × execute 跨字段约束（经 loadConfig）
+{
+  const SAVED = { ...process.env };
+  function set(k, v) {
+    if (v == null) delete process.env[k];
+    else process.env[k] = v;
+  }
+  function restore() {
+    for (const k of Object.keys(process.env)) {
+      if (!(k in SAVED)) delete process.env[k];
+    }
+    Object.assign(process.env, SAVED);
+  }
+  const { loadConfig } = await import("./index.js");
+
+  function setBase() {
+    set("DISCORD_BOT_TOKEN", "t");
+    set("DISCORD_APPLICATION_ID", "t");
+    set("DISCORD_GUILD_ID", G);
+    set("DISCORD_THANKS_CHANNEL_ID", "111111111111111111");
+    set("NODE_ENV", "development");
+  }
+
+  // true + disabled
+  {
+    restore(); setBase();
+    set("TEST_MODE", "true");
+    set("FORUM_BUMP_MODE", "disabled");
+    const c = loadConfig();
+    assertEqual(c.testMode, true, "TEST_MODE true");
+    assertEqual(c.forumBump.mode, "disabled", "disabled 允许");
+  }
+  // true + dry_run
+  {
+    restore(); setBase();
+    set("TEST_MODE", "true");
+    set("FORUM_BUMP_MODE", "dry_run");
+    set("FORUM_BUMP_FORUM_CHANNEL_IDS", F);
+    const c = loadConfig();
+    assertEqual(c.forumBump.mode, "dry_run", "dry_run + TEST_MODE 允许");
+  }
+  // true + execute → ConfigError 78
+  {
+    restore(); setBase();
+    set("TEST_MODE", "true");
+    set("FORUM_BUMP_MODE", "execute");
+    set("FORUM_BUMP_FORUM_CHANNEL_IDS", F);
+    try {
+      loadConfig();
+      failed++; console.error("  FAIL: TEST_MODE+execute 应抛");
+    } catch (e) {
+      assert(e instanceof ConfigError, "ConfigError");
+      assertEqual(e.code, "forum_bump_execute_requires_test_mode_false", "code");
+      assertEqual(e.exitCode, 78, "exit 78");
+      assert(String(e.message).includes("TEST_MODE"), "消息含 TEST_MODE");
+    }
+  }
+  // false + execute
+  {
+    restore(); setBase();
+    set("TEST_MODE", "false");
+    set("FORUM_BUMP_MODE", "execute");
+    set("FORUM_BUMP_FORUM_CHANNEL_IDS", F);
+    const c = loadConfig();
+    assertEqual(c.forumBump.mode, "execute", "false+execute 允许");
+  }
+  restore();
+}
+
 void FORUM_BUMP_DEFAULTS;
 console.log(`\nforumBumpConfig: ${passed} passed / ${failed} failed`);
 if (failed > 0) process.exitCode = 1;

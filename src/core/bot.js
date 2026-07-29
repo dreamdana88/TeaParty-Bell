@@ -20,6 +20,7 @@ import { createStartupPreflight } from "./startupPreflight.js";
 import { createManualMessageService } from "../features/manualMessage/service.js";
 import { createManualInteractionRouter } from "../features/manualMessage/interactionRouter.js";
 import { createForumBumpRuntime } from "../features/forumBump/runtime.js";
+import { FORUM_BUMP_INCIDENT_KEYS } from "../features/forumBump/runtimeAlerts.js";
 import {
   createInstanceLock,
   InstanceLockError,
@@ -277,8 +278,36 @@ export async function start(options = {}) {
     return;
   }
 
-  // ---- 13b. Forum Bump Runtime（Preflight 成功后）----
+  // ---- 15. 进程退出处理（先定义，供 Forum 致命通道复用）----
+  let shuttingDown = false;
   let forumBumpRuntime = null;
+
+  async function shutdown(signal, exitCode = EXIT_OK) {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    try {
+      logger.info(`收到 ${signal} 信号，正在关闭...`, { exitCode });
+    } catch {
+      // ignore
+    }
+    // 先停 Forum Bump（等待 send/delete/complete 收尾），再 destroy Discord
+    try {
+      if (forumBumpRuntime) await forumBumpRuntime.stop();
+    } catch (err) {
+      try { logger.error("Forum Bump Runtime 停止异常", { message: err.message }); } catch { /* */ }
+    }
+    try { healthMonitor.stop(); } catch (err) { try { logger.error("Health Monitor 停止异常", { message: err.message }); } catch { /* */ } }
+    try { if (lifecycleLoggerCleanup) lifecycleLoggerCleanup.destroy(); } catch (err) { try { logger.error("Lifecycle Logger 清理异常", { message: err.message }); } catch { /* */ } }
+    try { if (observerCleanup) observerCleanup.destroy(); } catch (err) { try { logger.error("Observer 清理异常", { message: err.message }); } catch { /* */ } }
+    try { if (manualInteractionRouter) manualInteractionRouter.destroy(); } catch (err) { try { logger.error("Manual Interaction Router 清理异常", { message: err.message }); } catch { /* */ } }
+    try { await store.close(); } catch (err) { try { logger.error("Store 关闭异常", { message: err.message }); } catch { /* */ } }
+    try { await outbox.close(); } catch (err) { try { logger.error("Outbox 关闭异常", { message: err.message }); } catch { /* */ } }
+    try { await destroy(); } catch (err) { try { logger.error("Discord 断开异常", { message: err.message }); } catch { /* */ } }
+    try { instanceLock?.release(); } catch (err) { try { logger.error("实例锁释放异常", { message: err.message }); } catch { /* */ } }
+    exitFn(exitCode);
+  }
+
+  // ---- 13b. Forum Bump Runtime（Preflight 成功后）----
   try {
     forumBumpRuntime = createForumBumpRuntimeFn({
       client,
@@ -286,6 +315,18 @@ export async function start(options = {}) {
       logger,
       alertNotifier: notifier,
       statePath: config.forumBump?.statePath,
+      onCriticalFailure: (ctx) => {
+        // 终止类告警写盘失败 → 幂等 shutdown exit 78
+        void shutdown("forum_bump_critical", EXIT_PERMANENT);
+        try {
+          logger.error("[Bot] Forum Bump 致命失败，执行受控关闭", {
+            errorCode: ctx?.errorCode ?? "ALERT_PERSISTENCE_FAILED",
+            status: ctx?.status ?? null,
+          });
+        } catch {
+          // ignore
+        }
+      },
     });
     const fbStart = await forumBumpRuntime.start();
     // 关键失败：状态损坏且无法启动、告警持久化失败等
@@ -327,9 +368,12 @@ export async function start(options = {}) {
   }
 
   // ---- 14. Router + Forum Bump 后 → 发送就绪通知 ----
+  // Forum incidents 由 Runtime 定向恢复；通用 Ready 始终排除
   let readyResult;
   try {
-    readyResult = await notifier.notifyReadyAfterRestart();
+    readyResult = await notifier.notifyReadyAfterRestart({
+      excludeIncidentKeys: FORUM_BUMP_INCIDENT_KEYS,
+    });
   } catch (err) {
     try { if (forumBumpRuntime) await forumBumpRuntime.stop(); } catch { /* ignore */ }
     await safelyDestroyManualRouter(manualInteractionRouter, logger, "Router 启动后清理失败");
@@ -353,33 +397,10 @@ export async function start(options = {}) {
     return;
   }
 
-  // ---- 15. 进程退出处理 ----
-  let shuttingDown = false;
-  async function shutdown(signal) {
-    if (shuttingDown) return;
-    shuttingDown = true;
-    logger.info(`收到 ${signal} 信号，正在关闭...`);
-    // 先停 Forum Bump（等待 send/delete/complete 收尾），再 destroy Discord
-    try {
-      if (forumBumpRuntime) await forumBumpRuntime.stop();
-    } catch (err) {
-      logger.error("Forum Bump Runtime 停止异常", { message: err.message });
-    }
-    try { healthMonitor.stop(); } catch (err) { logger.error("Health Monitor 停止异常", { message: err.message }); }
-    try { if (lifecycleLoggerCleanup) lifecycleLoggerCleanup.destroy(); } catch (err) { logger.error("Lifecycle Logger 清理异常", { message: err.message }); }
-    try { if (observerCleanup) observerCleanup.destroy(); } catch (err) { logger.error("Observer 清理异常", { message: err.message }); }
-    try { if (manualInteractionRouter) manualInteractionRouter.destroy(); } catch (err) { logger.error("Manual Interaction Router 清理异常", { message: err.message }); }
-    try { await store.close(); } catch (err) { logger.error("Store 关闭异常", { message: err.message }); }
-    try { await outbox.close(); } catch (err) { logger.error("Outbox 关闭异常", { message: err.message }); }
-    try { await destroy(); } catch (err) { logger.error("Discord 断开异常", { message: err.message }); }
-    try { instanceLock?.release(); } catch (err) { logger.error("实例锁释放异常", { message: err.message }); }
-    exitFn(EXIT_OK);
-  }
-
   // 信号处理仅在 operational 后注册（避免在 preflight 阶段被信号中断）
   if (processLike.on) {
-    processLike.on("SIGINT", () => { void shutdown("SIGINT"); });
-    processLike.on("SIGTERM", () => { void shutdown("SIGTERM"); });
+    processLike.on("SIGINT", () => { void shutdown("SIGINT", EXIT_OK); });
+    processLike.on("SIGTERM", () => { void shutdown("SIGTERM", EXIT_OK); });
   }
   processLike.on?.("uncaughtException", (err) => {
     logger.error("未捕获的异常", { message: err.message, stack: err.stack });

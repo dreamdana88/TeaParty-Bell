@@ -450,6 +450,183 @@ try {
     assertEqual(st.success, false, "缺状态 start 失败");
     assert(alerts.includes("forum_bump_state_unavailable"), "状态不可用告警");
   }
+
+  // Startup recovery 告警字段：before_send / after_send / after_delete
+  for (const scenario of [
+    { phase: "before_send", recovery: "manual_review_required", withMsg: false },
+    { phase: "after_send", recovery: "cleanup_required", withMsg: true },
+    { phase: "after_delete", recovery: "reconciliation_required", withMsg: true },
+  ]) {
+    const dir = mkdtempSync(join(tmpdir(), "fb-rt-rec-"));
+    dirs.push(dir);
+    const statePath = join(dir, "state.json");
+    const store = createForumBumpStateStore({
+      statePath,
+      logger: { info() {}, warn() {}, error() {} },
+    });
+    await store.initialize({ localDate: "2026-07-28" });
+    let rev = 0;
+    const opId = `op-${scenario.phase}`;
+    await store.beginInFlight({
+      expectedRevision: rev,
+      operationId: opId,
+      guildId: G,
+      forumChannelId: F,
+      threadId: T,
+      startedAt: "2026-07-28T12:00:00.000Z",
+    });
+    rev += 1;
+    if (scenario.phase !== "before_send") {
+      await store.markMessageSent({
+        expectedRevision: rev,
+        operationId: opId,
+        sentMessageId: M,
+        sentAt: "2026-07-28T12:00:01.000Z",
+      });
+      rev += 1;
+    }
+    if (scenario.phase === "after_delete") {
+      await store.markMessageDeleted({
+        expectedRevision: rev,
+        operationId: opId,
+        deletedAt: "2026-07-28T12:00:02.000Z",
+      });
+    }
+    const alertDetails = [];
+    const rt = createForumBumpRuntime({
+      client: { user: { id: "bot" } },
+      config: { forumBump: makeFb("execute", { statePath }) },
+      logger: { info() {}, warn() {}, error() {} },
+      createStateStoreFn: () => store,
+      createBumpServiceFn: () => ({ bumpThread: async () => ({ status: "skipped" }) }),
+      scanCandidatesFn: async () => ({ candidates: [] }),
+      alertNotifier: {
+        notifyFailure: async (k, m, det) => {
+          alertDetails.push({ k, details: det?.details ?? det });
+        },
+        notifyRecovery: async () => {},
+      },
+    });
+    const st = await rt.start();
+    assertEqual(st.recoveryStatus, scenario.recovery, `${scenario.phase} recovery`);
+    assert(alertDetails.length >= 1, `${scenario.phase} 有告警`);
+    const d = alertDetails[0].details;
+    assertEqual(d.forumChannelId, F, `${scenario.phase} forumChannelId`);
+    assertEqual(d.threadId, T, `${scenario.phase} threadId`);
+    assertEqual(d.inFlightPhase, scenario.phase, `${scenario.phase} phase`);
+    assertEqual(d.operationId, opId, `${scenario.phase} operationId`);
+    if (scenario.withMsg) {
+      assertEqual(d.sentMessageId, M, `${scenario.phase} sentMessageId`);
+    } else {
+      assertEqual(d.sentMessageId, null, `${scenario.phase} sentMessageId null`);
+    }
+    await rt.stop();
+  }
+
+  // 告警持久化失败 → fatal + onCriticalFailure（不 unhandled）
+  {
+    const dir = mkdtempSync(join(tmpdir(), "fb-rt-fatal-"));
+    dirs.push(dir);
+    const statePath = join(dir, "state.json");
+    const store = createForumBumpStateStore({
+      statePath,
+      logger: { info() {}, warn() {}, error() {} },
+    });
+    await store.initialize({ localDate: "2026-07-28" });
+    const timers = makeTimers();
+    let criticalCount = 0;
+    let unhandled = 0;
+    const onUR = () => { unhandled += 1; };
+    process.on("unhandledRejection", onUR);
+    try {
+      const rt = createForumBumpRuntime({
+        client: { user: { id: "bot" } },
+        config: { forumBump: makeFb("execute", { statePath }) },
+        logger: { info() {}, warn() {}, error() {} },
+        clock: { now: () => Date.parse("2026-07-28T12:00:00.000Z") },
+        timers,
+        createStateStoreFn: () => store,
+        createBumpServiceFn: () => ({
+          bumpThread: async ({ lifecycle }) => {
+            if (lifecycle?.onBeforeSend) await lifecycle.onBeforeSend({});
+            if (lifecycle?.onMessageSent) {
+              await lifecycle.onMessageSent({ sentMessageId: M });
+            }
+            return {
+              status: "failed",
+              success: false,
+              cleanupRequired: true,
+              errorCode: "DELETE_FAILED",
+              sentMessageId: M,
+            };
+          },
+        }),
+        scanCandidatesFn: async () => ({
+          candidates: [{ threadId: T, forumChannelId: F }],
+        }),
+        alertNotifier: {
+          notifyFailure: async () => {
+            throw new Error("disk full");
+          },
+          notifyRecovery: async () => {},
+        },
+        onCriticalFailure: () => {
+          criticalCount += 1;
+        },
+      });
+      await rt.start();
+      for (const t of timers.list()) t.cancelled = true;
+      const once = await rt.getScheduler().runOnce();
+      assertEqual(once.status, "cleanup_required", "业务结果 cleanup_required");
+      await new Promise((r) => setImmediate(r));
+      await new Promise((r) => setImmediate(r));
+      await new Promise((r) => setImmediate(r));
+      assertEqual(criticalCount, 1, "onCriticalFailure 一次");
+      assertEqual(rt.getStatus().fatal, true, "Runtime fatal");
+      assertEqual(timers.list().length, 0, "无下一 timer");
+      // 重复 processCycleResult 不二次 fatal 回调
+      await rt.processCycleResult({
+        status: "cleanup_required",
+        errorCode: "DELETE_FAILED",
+        sentMessageId: M,
+      });
+      assertEqual(criticalCount, 1, "致命回调只一次");
+      assertEqual(unhandled, 0, "无 unhandled rejection");
+      await rt.stop();
+    } finally {
+      process.removeListener("unhandledRejection", onUR);
+    }
+  }
+
+  // state_failed / unexpected 告警失败同样致命
+  for (const status of ["state_failed", "unexpected_failed"]) {
+    const dir = mkdtempSync(join(tmpdir(), "fb-rt-fatal2-"));
+    dirs.push(dir);
+    const statePath = join(dir, "state.json");
+    const store = createForumBumpStateStore({
+      statePath,
+      logger: { info() {}, warn() {}, error() {} },
+    });
+    await store.initialize({ localDate: "2026-07-28" });
+    let critical = 0;
+    const rt = createForumBumpRuntime({
+      client: {},
+      config: { forumBump: makeFb("execute", { statePath }) },
+      logger: { info() {}, warn() {}, error() {} },
+      createStateStoreFn: () => store,
+      createBumpServiceFn: () => ({ bumpThread: async () => ({}) }),
+      scanCandidatesFn: async () => ({ candidates: [] }),
+      alertNotifier: {
+        notifyFailure: async () => { throw new Error("disk"); },
+        notifyRecovery: async () => {},
+      },
+      onCriticalFailure: () => { critical += 1; },
+    });
+    await rt.start();
+    await rt.processCycleResult({ status, errorCode: "X" });
+    assertEqual(critical, 1, `${status} 告警失败致命`);
+    await rt.stop();
+  }
 } finally {
   for (const d of dirs) {
     try { rmSync(d, { recursive: true, force: true }); } catch { /* */ }

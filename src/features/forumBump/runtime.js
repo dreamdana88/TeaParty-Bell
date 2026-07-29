@@ -12,7 +12,11 @@ import { createForumBumpService } from "./bumpService.js";
 import { createForumBumpStateStore } from "./stateStore.js";
 import { createForumBumpScheduler } from "./scheduler.js";
 import { toSchedulerConfig } from "../../config/forumBumpConfig.js";
-import { createForumBumpAlertHandler } from "./runtimeAlerts.js";
+import {
+  createForumBumpAlertHandler,
+  buildSafeInFlightSummary,
+  mapCycleResultToIncidentKey,
+} from "./runtimeAlerts.js";
 
 /**
  * @param {object} options
@@ -26,6 +30,8 @@ export function createForumBumpRuntime({
   clock = { now: () => Date.now() },
   timers = null,
   random = Math.random,
+  /** 终止类告警写入失败时的致命通道（Bot 注入） */
+  onCriticalFailure = null,
   // 可注入（测试）
   createStateStoreFn = createForumBumpStateStore,
   createBumpServiceFn = createForumBumpService,
@@ -44,10 +50,13 @@ export function createForumBumpRuntime({
     ?? resolve("data/runtime/forum-bump/state.json");
 
   let started = false;
+  let fatal = false;
+  let fatalCode = null;
   let scheduler = null;
   let stateStore = null;
   let lastCycleResult = null;
   let startResult = null;
+  let criticalFired = false;
 
   const alertHandler = alertNotifier
     ? createForumBumpAlertHandler({ alertNotifier, logger, guildId })
@@ -57,15 +66,63 @@ export function createForumBumpRuntime({
     return {
       mode,
       started,
+      fatal,
+      fatalCode,
       lastCycleResult,
       startResult,
       scheduler: scheduler ? scheduler.getStatus() : null,
     };
   }
 
-  async function onCycleResult(result) {
+  function fireCriticalOnce(context) {
+    if (criticalFired) return;
+    criticalFired = true;
+    fatal = true;
+    fatalCode = context?.errorCode ?? "ALERT_PERSISTENCE_FAILED";
+    try {
+      logger?.error?.("[ForumBumpRuntime] critical failure", {
+        errorCode: fatalCode,
+        status: context?.status ?? null,
+        errorName: context?.errorName ?? null,
+      });
+    } catch {
+      // ignore
+    }
+    if (typeof onCriticalFailure === "function") {
+      try {
+        const ret = onCriticalFailure({
+          errorCode: fatalCode,
+          status: context?.status ?? null,
+          errorName: context?.errorName ?? "Error",
+        });
+        if (ret && typeof ret.then === "function") {
+          ret.catch(() => {});
+        }
+      } catch {
+        // 致命回调不得再抛到 Scheduler
+      }
+    }
+  }
+
+  async function haltSchedulerAfterAlertFailure() {
+    if (scheduler) {
+      try {
+        await scheduler.stop();
+      } catch {
+        // ignore
+      }
+    }
+    // stop 后引用保留到 stop() 清理；timer 已由 scheduler.stop 清除
+  }
+
+  /**
+   * 周期结果 → 告警；终止类告警写盘失败 → 停 Scheduler + 致命通道。
+   * 本身不 throw 到 Scheduler（由 safeOnCycleResult 保证）。
+   */
+  async function processCycleResult(result) {
     lastCycleResult = result;
     if (!alertHandler) return;
+    const incidentKey = mapCycleResultToIncidentKey(result);
     try {
       await alertHandler.handleCycleResult(result);
     } catch (error) {
@@ -73,38 +130,44 @@ export function createForumBumpRuntime({
         logger?.error?.("[ForumBumpRuntime] cycle alert failed", {
           errorName: typeof error?.name === "string" ? error.name : "Error",
           status: result?.status ?? null,
+          incidentKey,
         });
       } catch {
         // ignore
       }
-      // 告警失败向上抛由调用方（runOnce 回调已吞）处理；
-      // 对 start 路径的关键告警另有检查。
-      throw error;
+      // 仅终止类 incident 升级致命
+      if (incidentKey) {
+        await haltSchedulerAfterAlertFailure();
+        fireCriticalOnce({
+          errorCode: "ALERT_PERSISTENCE_FAILED",
+          status: result?.status ?? null,
+          errorName: typeof error?.name === "string" ? error.name : "Error",
+        });
+      }
     }
   }
 
-  /**
-   * 安全包装：Scheduler 内 emit 已 try/catch；此处再保证 Runtime 侧不因 alert 崩溃。
-   * 但 start 时对 recovery/halt 的关键失败仍 fail-closed。
-   */
   function safeOnCycleResult(result) {
-    lastCycleResult = result;
-    if (!alertHandler) return;
     Promise.resolve()
-      .then(() => alertHandler.handleCycleResult(result))
-      .catch((error) => {
-        try {
-          logger?.error?.("[ForumBumpRuntime] cycle alert failed", {
-            errorName: typeof error?.name === "string" ? error.name : "Error",
-            status: result?.status ?? null,
-          });
-        } catch {
-          // ignore
-        }
+      .then(() => processCycleResult(result))
+      .catch(() => {
+        // 已内部消化；禁止 unhandled rejection
       });
   }
 
   async function start() {
+    if (fatal) {
+      return {
+        success: false,
+        mode,
+        started: false,
+        fatal: true,
+        errorCode: fatalCode || "ALERT_PERSISTENCE_FAILED",
+        timerArmed: false,
+        nextWakeAt: null,
+      };
+    }
+
     if (started) {
       return {
         ...(startResult ?? {
@@ -130,8 +193,9 @@ export function createForumBumpRuntime({
         nextWakeAt: null,
         recoveryStatus: null,
       };
+      // disabled 不得把遗留 Forum incident 当作已恢复
       try {
-        logger?.info?.("[ForumBumpRuntime] disabled — 不创建 Runtime 组件");
+        logger?.info?.("[ForumBumpRuntime] disabled — 不创建 Runtime 组件，不恢复 Forum incident");
       } catch {
         // ignore
       }
@@ -147,7 +211,6 @@ export function createForumBumpRuntime({
     const bumpService = mode === "execute"
       ? createBumpServiceFn({ client, logger, clock })
       : {
-        // dry_run 占位：Scheduler 不会调用
         bumpThread: async () => {
           throw new Error("dry_run must not call bumpService");
         },
@@ -195,16 +258,24 @@ export function createForumBumpRuntime({
         nextWakeAt: null,
       };
       if (alertHandler) {
-        await alertHandler.handleCycleResult({
-          status: "unexpected_failed",
-          errorCode: startResult.errorCode,
-        });
+        try {
+          await alertHandler.handleCycleResult({
+            status: "unexpected_failed",
+            errorCode: startResult.errorCode,
+          });
+        } catch (alertErr) {
+          fireCriticalOnce({
+            errorCode: "ALERT_PERSISTENCE_FAILED",
+            status: "unexpected_failed",
+            errorName: typeof alertErr?.name === "string" ? alertErr.name : "Error",
+          });
+          startResult.errorCode = "ALERT_PERSISTENCE_FAILED";
+        }
       }
       return startResult;
     }
 
     if (!result?.success) {
-      // 启动失败：告警并保持无 timer
       startResult = {
         success: false,
         mode,
@@ -219,23 +290,37 @@ export function createForumBumpRuntime({
           || result?.errorCode === "STATE_READ_FAILED"
           || result?.errorCode === "STATE_INVALID"
           || result?.errorCode === "STATE_RECOVERY_FAILED"
+          || result?.errorCode === "STATE_WRITE_FAILED"
           ? "state_failed"
           : "unexpected_failed";
-        await alertHandler.handleCycleResult({
-          status,
-          errorCode: startResult.errorCode,
-        });
+        try {
+          await alertHandler.handleCycleResult({
+            status,
+            errorCode: startResult.errorCode,
+            inFlightSummary: result?.inFlightSummary ?? null,
+          });
+        } catch (alertErr) {
+          fireCriticalOnce({
+            errorCode: "ALERT_PERSISTENCE_FAILED",
+            status,
+            errorName: typeof alertErr?.name === "string" ? alertErr.name : "Error",
+          });
+          startResult.errorCode = "ALERT_PERSISTENCE_FAILED";
+        }
       }
-      // 不标记 started，允许诊断后重试；但 bot 层应 fail closed
       scheduler = null;
       stateStore = null;
       return startResult;
     }
 
-    // recovery 非 clean：无 timer，发告警，其他 bot 功能可继续
+    // recovery 非 clean：无 timer，发告警（含 inFlight 摘要）
     const recovery = result.recoveryStatus;
     if (recovery && recovery !== "clean") {
       started = true;
+      const summary = result.inFlightSummary
+        ?? buildSafeInFlightSummary(
+          (await safeLoadSnapshot(stateStore))?.inFlight,
+        );
       startResult = {
         success: true,
         mode,
@@ -245,6 +330,7 @@ export function createForumBumpRuntime({
         timerArmed: false,
         nextWakeAt: null,
         halted: true,
+        inFlightSummary: summary,
       };
       if (alertHandler) {
         const statusMap = {
@@ -252,15 +338,28 @@ export function createForumBumpRuntime({
           cleanup_required: "cleanup_required",
           reconciliation_required: "reconciliation_required",
         };
-        await alertHandler.handleCycleResult({
-          status: statusMap[recovery] ?? "halted",
-          errorCode: "STATE_RECOVERY_REQUIRED",
-          cleanupRequired: result.cleanupRequired === true,
-        });
+        try {
+          await alertHandler.handleCycleResult({
+            status: statusMap[recovery] ?? "halted",
+            errorCode: "STATE_RECOVERY_REQUIRED",
+            cleanupRequired: result.cleanupRequired === true,
+            inFlightSummary: summary,
+            sentMessageId: summary?.sentMessageId ?? null,
+            operationId: summary?.operationId ?? null,
+            inFlightPhase: summary?.inFlightPhase ?? null,
+          });
+        } catch (alertErr) {
+          fireCriticalOnce({
+            errorCode: "ALERT_PERSISTENCE_FAILED",
+            status: statusMap[recovery] ?? "halted",
+            errorName: typeof alertErr?.name === "string" ? alertErr.name : "Error",
+          });
+        }
       }
       try {
         logger?.warn?.("[ForumBumpRuntime] 启动恢复待处理，无 timer", {
           recoveryStatus: recovery,
+          inFlightPhase: summary?.inFlightPhase ?? null,
         });
       } catch {
         // ignore
@@ -268,9 +367,8 @@ export function createForumBumpRuntime({
       return startResult;
     }
 
-    // 磁盘 paused：无 timer
+    // 磁盘 paused
     if (result.timerArmed === false && result.nextWakeAt == null) {
-      // 可能是 paused / disabled config — 检查 snapshot
       let snap = null;
       try {
         await stateStore.load();
@@ -280,6 +378,7 @@ export function createForumBumpRuntime({
       }
       if (snap?.paused) {
         started = true;
+        const summary = buildSafeInFlightSummary(snap.inFlight);
         startResult = {
           success: true,
           mode,
@@ -290,13 +389,23 @@ export function createForumBumpRuntime({
           timerArmed: false,
           nextWakeAt: null,
           halted: true,
+          inFlightSummary: summary,
         };
         if (alertHandler) {
-          await alertHandler.handleCycleResult({
-            status: "halted",
-            errorCode: snap.pauseReason ?? "PAUSED",
-            pauseReason: snap.pauseReason ?? null,
-          });
+          try {
+            await alertHandler.handleCycleResult({
+              status: "halted",
+              errorCode: snap.pauseReason ?? "PAUSED",
+              pauseReason: snap.pauseReason ?? null,
+              inFlightSummary: summary,
+            });
+          } catch (alertErr) {
+            fireCriticalOnce({
+              errorCode: "ALERT_PERSISTENCE_FAILED",
+              status: "halted",
+              errorName: typeof alertErr?.name === "string" ? alertErr.name : "Error",
+            });
+          }
         }
         return startResult;
       }
@@ -313,7 +422,7 @@ export function createForumBumpRuntime({
       halted: false,
     };
 
-    // 健康启动 → recovery 事件
+    // 健康启动 → 仅 Forum Runtime 定向恢复 Forum incident
     if (alertHandler) {
       let clean = true;
       try {
@@ -327,7 +436,6 @@ export function createForumBumpRuntime({
         try {
           await alertHandler.notifyHealthyRecoveries();
         } catch (error) {
-          // 关键 recovery 持久化失败 → fail closed
           startResult = {
             success: false,
             mode,
@@ -345,6 +453,11 @@ export function createForumBumpRuntime({
           started = false;
           scheduler = null;
           stateStore = null;
+          fireCriticalOnce({
+            errorCode: "ALERT_PERSISTENCE_FAILED",
+            status: "recovery",
+            errorName: typeof error?.name === "string" ? error.name : "Error",
+          });
           throw error;
         }
       }
@@ -388,9 +501,17 @@ export function createForumBumpRuntime({
     start,
     stop,
     getStatus,
-    /** 测试/诊断 */
     getScheduler: () => scheduler,
     getStateStore: () => stateStore,
-    onCycleResult,
+    processCycleResult,
   };
+}
+
+async function safeLoadSnapshot(stateStore) {
+  try {
+    await stateStore.load();
+    return stateStore.getSnapshot?.() ?? null;
+  } catch {
+    return null;
+  }
 }

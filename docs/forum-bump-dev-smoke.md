@@ -25,6 +25,7 @@ npm run forum:state -- inspect `
 ## 2. Dry Run 建议配置（写入本地 `.env`，勿提交）
 
 ```env
+TEST_MODE=true
 FORUM_BUMP_MODE=dry_run
 FORUM_BUMP_FORUM_CHANNEL_IDS=1420375965963653180
 FORUM_BUMP_SILENCE_DAYS=30
@@ -36,6 +37,8 @@ FORUM_BUMP_FAILURE_BACKOFF_MINUTES=1
 FORUM_BUMP_TIMEZONE=Asia/Shanghai
 FORUM_BUMP_STATE_PATH=data/runtime/forum-bump/dev-state.json
 ```
+
+> `TEST_MODE=true` + `dry_run` 允许：不会真实 send/delete。
 
 启动 Bot（你的常规方式，例如 `npm start`），至少观察两轮：
 
@@ -50,9 +53,27 @@ FORUM_BUMP_STATE_PATH=data/runtime/forum-bump/dev-state.json
 
 ## 3. Execute 单次冒烟
 
+**必须显式确认（配置层强制）**：
+
+```env
+TEST_MODE=false
+FORUM_BUMP_MODE=execute
+```
+
+`TEST_MODE=true` + `execute` 会在加载配置时 **ConfigError / exit 78**，不会静默降级为 dry_run。
+
+启动前请再次核对：
+
+- Dev Bot Token（不是 Production）
+- Dev Guild
+- 测试 Forum
+- 独立 Dev state 路径
+- 没有第二实例（实例锁 exit 78）
+
 inspect 后确认 `nextEligibleAt` 已到期或改用新 state 文件：
 
 ```env
+TEST_MODE=false
 FORUM_BUMP_MODE=execute
 FORUM_BUMP_DAILY_LIMIT=1
 FORUM_BUMP_COOLDOWN_MINUTES=3

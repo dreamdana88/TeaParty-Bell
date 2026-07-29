@@ -203,12 +203,32 @@ export function createProductionAlertNotifier(options) {
    *
    * 有 open incident → recovery；无 → service_operational。
    * 任何持久化失败均向上传播（不吞掉，由 bot.js 决定 exit 78）。
+   *
+   * @param {object} [options]
+   * @param {string[]|Set<string>} [options.excludeIncidentKeys]
+   *   排除的 incidentKey（如 Forum Bump 由 Runtime 定向恢复）。
+   *   若排除后无剩余 open incident 且原本有 open，仍写 service_operational。
    */
-  async function notifyReadyAfterRestart() {
-    const result = { createdReady: false, recovered: [], failedRecoveries: [] };
+  async function notifyReadyAfterRestart(options = {}) {
+    const result = { createdReady: false, recovered: [], failedRecoveries: [], skipped: [] };
+    const exclude = new Set(
+      options.excludeIncidentKeys
+        ? [...options.excludeIncidentKeys]
+        : [],
+    );
 
-    if (_openIncidents.size > 0) {
-      for (const [dedupeKey, incident] of _openIncidents) {
+    const eligible = [];
+    for (const [dedupeKey, incident] of _openIncidents) {
+      const key = incident.incidentKey;
+      if (exclude.has(key) || exclude.has(dedupeKey)) {
+        result.skipped.push(key);
+        continue;
+      }
+      eligible.push({ dedupeKey, incident });
+    }
+
+    if (eligible.length > 0) {
+      for (const { incident } of eligible) {
         try {
           const rec = await notifyRecovery(incident.incidentKey,
             "服务重启后 Gateway 已恢复 Ready 且 Preflight 通过");
@@ -219,6 +239,8 @@ export function createProductionAlertNotifier(options) {
         }
       }
     } else {
+      // 无「可恢复」的 open incident（可能全被 exclude，或本身无 open）
+      // 仍写 service_operational；被 exclude 的 Forum incident 保持 open
       const alert = _buildBase("service_operational", "ready", "info", "service_operational",
         "TeaParty-Bell 服务已正常启动，Preflight 通过", {});
       try {

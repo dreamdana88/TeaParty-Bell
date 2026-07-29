@@ -272,6 +272,61 @@ function makeFakeOutbox() {
 }
 
 // ============================
+// excludeIncidentKeys：Forum incident 不被 Ready 自动恢复
+// ============================
+{
+  const dir = tmpDir();
+  const outbox = makeFakeOutbox();
+  const now = Date.now();
+  for (const key of [
+    "forum_bump_cleanup_required",
+    "forum_bump_reconciliation_required",
+    "forum_bump_scheduler_halted",
+    "forum_bump_state_unavailable",
+  ]) {
+    outbox.alerts.push({
+      id: `f_${key}`, incidentKey: key, dedupeKey: key, event: "failure", service: "t", type: key,
+      severity: "fatal", deliveryStatus: "pending", incidentStatus: "open",
+      startedAt: now - 1000, occurredAt: now, updatedAt: now, recoveryAt: null,
+      durationMs: 1000, guildId: null, wsStatus: null, ping: null,
+      message: "forum", details: {},
+    });
+  }
+  // 同时有一个非 Forum incident，应被 Ready 恢复
+  outbox.alerts.push({
+    id: "gw_open", incidentKey: "gateway_disconnected", dedupeKey: "gateway_disconnected",
+    event: "failure", service: "t", type: "gateway_disconnected",
+    severity: "fatal", deliveryStatus: "pending", incidentStatus: "open",
+    startedAt: now - 1000, occurredAt: now, updatedAt: now, recoveryAt: null,
+    durationMs: 1000, guildId: null, wsStatus: null, ping: null,
+    message: "gw", details: {},
+  });
+  const notifier = createProductionAlertNotifier({ outbox, logger: makeMockLogger() });
+  await notifier.initialize();
+  const result = await notifier.notifyReadyAfterRestart({
+    excludeIncidentKeys: [
+      "forum_bump_state_unavailable",
+      "forum_bump_cleanup_required",
+      "forum_bump_reconciliation_required",
+      "forum_bump_scheduler_halted",
+      "forum_bump_scheduler_unexpected_failed",
+    ],
+  });
+  assert(result.skipped.length >= 4, "Forum keys 被 skip");
+  assert(result.recovered.includes("gateway_disconnected"), "非 Forum 仍恢复");
+  const open = notifier.getOpenIncidents();
+  assert(open.has("forum_bump_cleanup_required"), "cleanup 仍 open");
+  assert(open.has("forum_bump_reconciliation_required"), "recon 仍 open");
+  assert(open.has("forum_bump_scheduler_halted"), "halted 仍 open");
+  assert(open.has("forum_bump_state_unavailable"), "state 仍 open");
+  assert(!open.has("gateway_disconnected"), "gw 已恢复");
+  const recoveryFiles = outbox.alerts.filter((a) => a.event === "recovery");
+  assert(!recoveryFiles.some((a) => String(a.details?.originalType || "").startsWith("forum_bump_")),
+    "无 Forum recovery 文件");
+  rmSync(dir, { recursive: true, force: true });
+}
+
+// ============================
 // 写盘失败向上抛
 // ============================
 {

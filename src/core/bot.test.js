@@ -921,5 +921,147 @@ for (const [readyOptions, label] of [
   assertEqual(loginCalls, 0, "锁失败不 Discord login");
 }
 
+// notifyReadyAfterRestart 必须带 exclude Forum keys
+{
+  let readyOpts = null;
+  await start({
+    skipInstanceLock: true,
+    loadConfigFn: () => makeFakeConfig(),
+    createAlertOutboxFn: () => ({
+      verifyWritable: () => {},
+      loadAllAlerts: () => [],
+      writeAlert: async () => {},
+      findAlert: () => undefined,
+      close: async () => {},
+    }),
+    createNotifierFn: () => ({
+      initialize: async () => {},
+      notifyFailure: async () => {},
+      notifyRecovery: async () => {},
+      notifyWarning: async () => {},
+      notifyReadyAfterRestart: async (opts) => {
+        readyOpts = opts;
+        return { createdReady: true, recovered: [], failedRecoveries: [] };
+      },
+    }),
+    createStoreFn: () => ({
+      load: async () => {},
+      getAllRecords: () => new Map(),
+      listRecoverable: () => [],
+      markUncertain: async () => {},
+      close: async () => {},
+    }),
+    createClientFn: () => ({
+      client: makeFakeClient(),
+      login: async () => {},
+      destroy: async () => {},
+      waitUntilReady: async () => {},
+    }),
+    createHealthMonitorFn: () => ({ start: () => {}, stop: () => {}, onReady: () => {} }),
+    setupLifecycleLoggerFn: () => ({ destroy: () => {} }),
+    setupObserverFn: () => ({ destroy: () => {} }),
+    createHandlerFn: () => ({}),
+    createEmojiProviderFn: () => ({}),
+    createPreflightFn: () => ({ run: async () => ({ passed: true }) }),
+    createManualMessageServiceFn: () => ({}),
+    createManualInteractionRouterFn: () => ({
+      start: async () => {},
+      destroy: () => {},
+    }),
+    createForumBumpRuntimeFn: () => makeDisabledForumRuntime(),
+    logger: makeMockLogger(),
+    exitFn: () => {},
+    processLike: { on: () => {} },
+  });
+  assert(readyOpts && Array.isArray(readyOpts.excludeIncidentKeys), "Ready 带 excludeIncidentKeys");
+  assert(
+    readyOpts.excludeIncidentKeys.includes("forum_bump_cleanup_required"),
+    "排除 cleanup_required",
+  );
+}
+
+// Forum 告警写盘失败 → onCriticalFailure → shutdown exit 78（一次）
+{
+  let exitCode = null;
+  let shutdownCount = 0;
+  let criticalHook = null;
+  const order = [];
+  const result = await start({
+    skipInstanceLock: true,
+    loadConfigFn: () => makeFakeConfig(),
+    createAlertOutboxFn: () => ({
+      verifyWritable: () => {},
+      loadAllAlerts: () => [],
+      writeAlert: async () => {},
+      findAlert: () => undefined,
+      close: async () => { order.push("outbox_close"); },
+    }),
+    createNotifierFn: () => ({
+      initialize: async () => {},
+      notifyFailure: async () => {},
+      notifyRecovery: async () => {},
+      notifyWarning: async () => {},
+      notifyReadyAfterRestart: async () => ({
+        createdReady: true, recovered: [], failedRecoveries: [],
+      }),
+    }),
+    createStoreFn: () => ({
+      load: async () => {},
+      getAllRecords: () => new Map(),
+      listRecoverable: () => [],
+      markUncertain: async () => {},
+      close: async () => { order.push("store_close"); },
+    }),
+    createClientFn: () => ({
+      client: makeFakeClient(),
+      login: async () => {},
+      destroy: async () => { order.push("discord_destroy"); },
+      waitUntilReady: async () => {},
+    }),
+    createHealthMonitorFn: () => ({
+      start: () => {},
+      stop: () => { order.push("health_stop"); },
+      onReady: () => {},
+    }),
+    setupLifecycleLoggerFn: () => ({ destroy: () => {} }),
+    setupObserverFn: () => ({ destroy: () => {} }),
+    createHandlerFn: () => ({}),
+    createEmojiProviderFn: () => ({}),
+    createPreflightFn: () => ({ run: async () => ({ passed: true }) }),
+    createManualMessageServiceFn: () => ({}),
+    createManualInteractionRouterFn: () => ({
+      start: async () => {},
+      destroy: () => {},
+    }),
+    createForumBumpRuntimeFn: (opts) => {
+      criticalHook = opts.onCriticalFailure;
+      return {
+        start: async () => ({ success: true, mode: "execute", started: true }),
+        stop: async () => { order.push("forum_stop"); },
+        getStatus: () => ({}),
+      };
+    },
+    logger: makeMockLogger(),
+    exitFn: (c) => {
+      exitCode = c;
+      shutdownCount += 1;
+      order.push(`exit_${c}`);
+    },
+    processLike: { on: () => {} },
+  });
+  assert(typeof criticalHook === "function", "注入 onCriticalFailure");
+  criticalHook({ errorCode: "ALERT_PERSISTENCE_FAILED", status: "cleanup_required" });
+  // 等待 async shutdown
+  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setImmediate(r));
+  assertEqual(exitCode, 78, "致命通道 exit 78");
+  assert(order.indexOf("forum_stop") < order.indexOf("discord_destroy"), "致命关闭先 stop Forum");
+  // 再触发一次
+  criticalHook({ errorCode: "ALERT_PERSISTENCE_FAILED", status: "state_failed" });
+  await new Promise((r) => setImmediate(r));
+  assertEqual(shutdownCount, 1, "致命关闭只一次");
+  void result;
+}
+
 console.log(`\n[bot.test] ${passed} passed / ${failed} failed`);
 if (failed > 0) process.exit(1);

@@ -18,6 +18,11 @@ import {
   successLocalDate,
 } from "./schedulerDecision.js";
 import { validateSchedulerConfig } from "./schedulerConfig.js";
+import { buildSafeInFlightSummary } from "./runtimeAlerts.js";
+
+function buildSafeInFlightSummaryFromState(state) {
+  return buildSafeInFlightSummary(state?.inFlight ?? null);
+}
 
 function defaultTimers() {
   return {
@@ -396,6 +401,8 @@ export function createForumBumpScheduler({
       started = true;
       lastRunStatus = "recovery_required";
       clearSchedule();
+      const recState = recoveryResult.state || loaded.result.state;
+      const inFlightSummary = buildSafeInFlightSummaryFromState(recState);
       return {
         success: true,
         started: true,
@@ -404,6 +411,7 @@ export function createForumBumpScheduler({
         errorCode: null,
         timerArmed: false,
         nextWakeAt: null,
+        inFlightSummary,
       };
     }
 
@@ -419,6 +427,8 @@ export function createForumBumpScheduler({
         errorCode: null,
         timerArmed: false,
         nextWakeAt: null,
+        inFlightSummary: buildSafeInFlightSummaryFromState(state),
+        pauseReason: state.pauseReason ?? null,
       };
     }
 

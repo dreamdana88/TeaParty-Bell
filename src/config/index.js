@@ -85,6 +85,17 @@ export function loadConfig() {
   // Forum Bump（disabled 时不要求 Forum ID；dry_run/execute 严格校验）
   config.forumBump = loadForumBumpConfig(process.env, { projectRoot });
 
+  // TEST_MODE 与 Forum Execute 互斥：不得静默降级为 dry_run
+  if (config.testMode === true && config.forumBump.mode === "execute") {
+    throw new ConfigError(
+      "TEST_MODE=true 时禁止 FORUM_BUMP_MODE=execute。"
+      + " Forum Execute 需要 TEST_MODE=false，并使用 Dev Bot / Dev Guild 做人工冒烟。"
+      + " 本地无副作用扫描请使用 FORUM_BUMP_MODE=dry_run。",
+      "forum_bump_execute_requires_test_mode_false",
+      78,
+    );
+  }
+
   return config;
 }
 

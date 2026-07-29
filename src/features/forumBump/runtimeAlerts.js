@@ -3,6 +3,15 @@
  * 不创建第二套告警存储。
  */
 
+/** Forum Bump 全部稳定 incident keys（通用 Ready 不得自动恢复） */
+export const FORUM_BUMP_INCIDENT_KEYS = Object.freeze([
+  "forum_bump_state_unavailable",
+  "forum_bump_cleanup_required",
+  "forum_bump_reconciliation_required",
+  "forum_bump_scheduler_halted",
+  "forum_bump_scheduler_unexpected_failed",
+]);
+
 /** 需要终止/人工关注的 status → incidentKey */
 export const FORUM_BUMP_INCIDENT_BY_STATUS = Object.freeze({
   cleanup_required: "forum_bump_cleanup_required",
@@ -41,24 +50,54 @@ export const FORUM_BUMP_NO_ALERT_STATUSES = new Set([
  * @param {object|null|undefined} result
  * @param {object} [extra]
  */
+/**
+ * 从磁盘 inFlight 构造安全摘要（不得包含完整 state）。
+ * @param {object|null|undefined} inFlight
+ */
+export function buildSafeInFlightSummary(inFlight) {
+  if (!inFlight || typeof inFlight !== "object") return null;
+  return {
+    guildId: typeof inFlight.guildId === "string" ? inFlight.guildId : null,
+    forumChannelId: typeof inFlight.forumChannelId === "string" ? inFlight.forumChannelId : null,
+    threadId: typeof inFlight.threadId === "string" ? inFlight.threadId : null,
+    sentMessageId: inFlight.sentMessageId == null ? null : String(inFlight.sentMessageId),
+    inFlightPhase: typeof inFlight.phase === "string" ? inFlight.phase : null,
+    operationId: typeof inFlight.operationId === "string" ? inFlight.operationId : null,
+  };
+}
+
 export function buildSafeAlertDetails(result, extra = {}) {
+  const summary = result?.inFlightSummary
+    ?? (result?.inFlight ? buildSafeInFlightSummary(result.inFlight) : null)
+    ?? null;
   const details = {
     status: result?.status ?? null,
     errorCode: result?.errorCode ?? null,
     primaryErrorCode: result?.primaryErrorCode ?? null,
     stateErrorCode: result?.stateErrorCode ?? null,
     cleanupRequired: result?.cleanupRequired === true,
-    sentMessageId: result?.sentMessageId ?? null,
-    pauseReason: result?.pauseReason ?? null,
-    operationId: result?.operationId ?? null,
-    inFlightPhase: result?.inFlightPhase
-      ?? result?.state?.inFlight?.phase
+    sentMessageId: result?.sentMessageId
+      ?? summary?.sentMessageId
       ?? null,
-    guildId: extra.guildId ?? result?.candidate?.guildId ?? null,
+    pauseReason: result?.pauseReason ?? null,
+    operationId: result?.operationId
+      ?? summary?.operationId
+      ?? null,
+    inFlightPhase: result?.inFlightPhase
+      ?? summary?.inFlightPhase
+      ?? null,
+    guildId: extra.guildId
+      ?? result?.candidate?.guildId
+      ?? summary?.guildId
+      ?? null,
     forumChannelId: extra.forumChannelId
       ?? result?.candidate?.forumChannelId
+      ?? summary?.forumChannelId
       ?? null,
-    threadId: extra.threadId ?? result?.candidate?.threadId ?? null,
+    threadId: extra.threadId
+      ?? result?.candidate?.threadId
+      ?? summary?.threadId
+      ?? null,
   };
   return details;
 }
