@@ -1,9 +1,11 @@
 import { mkdtempSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
+import { ChannelType, PermissionFlagsBits } from "discord.js";
 import { createForumBumpStateStore } from "./stateStore.js";
-import { createForumBumpScheduler } from "./scheduler.js";
+import { createForumBumpScheduler, safeStateCall } from "./scheduler.js";
 import { SCHEDULER_REFERENCE_DEFAULTS } from "./schedulerConfig.js";
+import { createForumBumpService } from "./bumpService.js";
 
 let passed = 0;
 let failed = 0;
@@ -64,7 +66,7 @@ function makeTimers() {
   return {
     setTimeout(fn, ms) {
       const handle = ++id;
-      timers.push({ handle, fn, ms, cancelled: false });
+      timers.push({ handle, fn, ms, cancelled: false, fired: false });
       return handle;
     },
     clearTimeout(handle) {
@@ -72,10 +74,14 @@ function makeTimers() {
       if (t) t.cancelled = true;
     },
     flush(handle) {
-      const t = timers.find((x) => x.handle === handle && !x.cancelled);
-      if (t) t.fn();
+      const t = timers.find((x) => x.handle === handle && !x.cancelled && !x.fired);
+      if (t) {
+        t.fired = true;
+        t.fn();
+      }
     },
-    list: () => timers.filter((t) => !t.cancelled),
+    // 活跃 = 未取消且未触发（one-shot timer 触发后不再活跃）
+    list: () => timers.filter((t) => !t.cancelled && !t.fired),
   };
 }
 
@@ -444,12 +450,18 @@ try {
         ? overrides.recoverOnStartup(...a)
         : store.recoverOnStartup(...a)),
       getSnapshot: () => store.getSnapshot(),
-      rolloverLocalDate: (...a) => store.rolloverLocalDate(...a),
+      rolloverLocalDate: (...a) => (overrides.rolloverLocalDate
+        ? overrides.rolloverLocalDate(...a)
+        : store.rolloverLocalDate(...a)),
       beginInFlight: (...a) => (overrides.beginInFlight
         ? overrides.beginInFlight(...a)
         : store.beginInFlight(...a)),
-      markMessageSent: (...a) => store.markMessageSent(...a),
-      markMessageDeleted: (...a) => store.markMessageDeleted(...a),
+      markMessageSent: (...a) => (overrides.markMessageSent
+        ? overrides.markMessageSent(...a)
+        : store.markMessageSent(...a)),
+      markMessageDeleted: (...a) => (overrides.markMessageDeleted
+        ? overrides.markMessageDeleted(...a)
+        : store.markMessageDeleted(...a)),
       completeSuccess: (...a) => (overrides.completeSuccess
         ? overrides.completeSuccess(...a)
         : store.completeSuccess(...a)),
@@ -461,6 +473,22 @@ try {
         ? overrides.abandonBeforeSend(...a)
         : store.abandonBeforeSend(...a)),
     };
+  }
+
+  function tick() {
+    return new Promise((resolve) => setImmediate(resolve));
+  }
+
+  async function flushAllTimers(timers) {
+    const active = timers.list().slice();
+    for (const t of active) {
+      if (!t.cancelled && !t.fired) {
+        t.fired = true;
+        t.fn();
+      }
+    }
+    await tick();
+    await tick();
   }
 
   async function assertNoTimer(sched, timers, label) {
@@ -708,7 +736,7 @@ try {
     await assertNoTimer(sched, timers, "sri pause fail");
   }
 
-  // completeSuccess 失败 + pause 成功 → state_failed
+  // completeSuccess 失败 + pause 成功 → reconciliation_required（after_delete 对账）
   {
     const dir = mkdtempSync(join(tmpdir(), "fb-sched-"));
     dirs.push(dir);
@@ -747,7 +775,7 @@ try {
     await sched.start();
     clearScheduleForTest(sched, timers);
     const r = await sched.runOnce();
-    assertEqual(r.status, "state_failed", "complete fail+pause ok → state_failed");
+    assertEqual(r.status, "reconciliation_required", "complete fail+pause ok → reconciliation");
     assertEqual(r.primaryErrorCode, "STATE_REVISION_CONFLICT", "primary complete error");
     await store.load();
     assertEqual(store.getSnapshot().paused, true, "pause 成功");
@@ -898,11 +926,13 @@ try {
     await sched.start();
     clearScheduleForTest(sched, timers);
     const r = await sched.runOnce();
-    // random throw is caught in success path → pause SCHEDULER_RANDOM_INVALID or unexpected
-    assert(
-      r.status === "halted" || r.status === "state_failed" || r.status === "unexpected_failed",
-      "random throw 稳定失败",
-    );
+    assertEqual(r.status, "halted", "random throw → halted");
+    assertEqual(r.errorCode, "SCHEDULER_RANDOM_INVALID", "random errorCode");
+    await store.load();
+    assertEqual(store.getSnapshot().paused, true, "random → paused");
+    assertEqual(store.getSnapshot().pauseReason, "SCHEDULER_RANDOM_INVALID", "pauseReason");
+    assertEqual(store.getSnapshot().inFlight?.phase, "after_delete", "inFlight 保留 after_delete");
+    assertEqual(store.getSnapshot().successCount, 0, "random 不 completeSuccess");
     await assertNoTimer(sched, timers, "random throw");
   }
 
@@ -998,6 +1028,909 @@ try {
     assertEqual(st.recoveryStatus, "manual_review_required", "before_send recovery");
     assertEqual(st.timerArmed, false, "recovery 无 timer");
     assertEqual(timers.list().length, 0, "recovery 无活跃 timer");
+  }
+
+  // ========== Review Fix2: single-flight / Timer / lifecycle / fallback ==========
+
+  // A. single-flight：handleUnexpected 完成前不释放 running / runPromise
+  {
+    const dir = mkdtempSync(join(tmpdir(), "fb-sched-"));
+    dirs.push(dir);
+    const store = await bootStore(dir);
+    const timers = makeTimers();
+    let releasePause;
+    const pauseGate = new Promise((resolve) => { releasePause = resolve; });
+    let pauseEntered = false;
+    let scanCount = 0;
+    let bumpCount = 0;
+    let writeCount = 0;
+    const sched = createForumBumpScheduler({
+      scanCandidates: async () => {
+        scanCount += 1;
+        return { candidates: [{ threadId: T, forumChannelId: F }] };
+      },
+      bumpService: {
+        bumpThread: async ({ lifecycle }) => {
+          bumpCount += 1;
+          if (lifecycle?.onBeforeSend) await lifecycle.onBeforeSend({});
+          throw new Error("bump boom");
+        },
+      },
+      stateStore: wrapStore(store, {
+        pause: async (...a) => {
+          pauseEntered = true;
+          writeCount += 1;
+          await pauseGate;
+          return store.pause(...a);
+        },
+      }),
+      config: makeConfig(),
+      clock: makeClock(),
+      timers,
+      random: () => 0,
+      createOperationId: () => "op-sf",
+      logger: { info() {}, warn() {}, error() {} },
+    });
+    await sched.start();
+    clearScheduleForTest(sched, timers);
+
+    const onceP = sched.runOnce();
+    // 等待进入 pause 门闩
+    for (let i = 0; i < 50 && !pauseEntered; i += 1) await tick();
+    assert(pauseEntered, "A: 已进入 handleUnexpected pause");
+    assertEqual(sched.getStatus().running, true, "A: running 仍为 true");
+    assert(sched.getStatus().currentOperationId === "op-sf", "A: operationId 未提前清理");
+
+    const scansBefore = scanCount;
+    const bumpsBefore = bumpCount;
+    const busy = await sched.runOnce();
+    assertEqual(busy.status, "busy", "A: 第二次 runOnce → busy");
+    assertEqual(scanCount, scansBefore, "A: busy 不扫描");
+    assertEqual(bumpCount, bumpsBefore, "A: busy 不 bump");
+
+    let stopDone = false;
+    const stopP = sched.stop().then((r) => {
+      stopDone = true;
+      return r;
+    });
+    await tick();
+    await tick();
+    assertEqual(stopDone, false, "A: stop 在恢复完成前不 resolve");
+
+    releasePause();
+    const onceR = await onceP;
+    assertEqual(onceR.status, "unexpected_failed", "A: 异常恢复完成");
+    const stopR = await stopP;
+    assert(stopR.success, "A: stop 完成");
+    assertEqual(stopDone, true, "A: stop 已 resolve");
+    assertEqual(sched.getStatus().running, false, "A: running cleared");
+    assertEqual(sched.getStatus().currentOperationId, null, "A: operationId cleared");
+    await assertNoTimer(sched, timers, "A after recovery");
+    void writeCount;
+  }
+
+  // B.1 start 首次 arm setTimeout 抛异常
+  {
+    const dir = mkdtempSync(join(tmpdir(), "fb-sched-"));
+    dirs.push(dir);
+    const store = await bootStore(dir);
+    const baseTimers = makeTimers();
+    let armAttempts = 0;
+    const timers = {
+      setTimeout(fn, ms) {
+        armAttempts += 1;
+        if (armAttempts === 1) throw new Error("setTimeout boom");
+        return baseTimers.setTimeout(fn, ms);
+      },
+      clearTimeout: (h) => baseTimers.clearTimeout(h),
+      list: () => baseTimers.list(),
+    };
+    const sched = createForumBumpScheduler({
+      scanCandidates: async () => ({ candidates: [] }),
+      bumpService: { bumpThread: async () => ({ status: "skipped" }) },
+      stateStore: store,
+      config: makeConfig(),
+      clock: makeClock(),
+      timers,
+      random: () => 0,
+      logger: { info() {}, warn() {}, error() {} },
+    });
+    let threw = false;
+    let st;
+    try {
+      st = await sched.start();
+    } catch {
+      threw = true;
+    }
+    assert(!threw, "B1: start 不裸抛");
+    assertEqual(st.success, false, "B1: success false");
+    assertEqual(st.errorCode, "SCHEDULER_UNEXPECTED_FAILED", "B1: errorCode");
+    assertEqual(st.timerArmed, false, "B1: timerArmed false");
+    assertEqual(st.nextWakeAt, null, "B1: nextWakeAt null");
+    assertEqual(st.started, false, "B1: started false");
+    assertEqual(sched.getStatus().started, false, "B1: getStatus started false");
+    assertEqual(timers.list().length, 0, "B1: 无活跃 timer");
+
+    // 可再次 start
+    const st2 = await sched.start();
+    assert(st2.success, "B1: 可再次 start");
+    assertEqual(st2.started, true, "B1: 二次 start ok");
+    await sched.stop();
+  }
+
+  // B.2 运行周期重新 arm 时 setTimeout 抛异常
+  {
+    const dir = mkdtempSync(join(tmpdir(), "fb-sched-"));
+    dirs.push(dir);
+    const store = await bootStore(dir);
+    const baseTimers = makeTimers();
+    let allowArm = true;
+    const timers = {
+      setTimeout(fn, ms) {
+        if (!allowArm) throw new Error("rearm boom");
+        return baseTimers.setTimeout(fn, ms);
+      },
+      clearTimeout: (h) => baseTimers.clearTimeout(h),
+      list: () => baseTimers.list(),
+    };
+    const sched = createForumBumpScheduler({
+      scanCandidates: async () => ({ candidates: [] }),
+      bumpService: { bumpThread: async () => ({ status: "skipped" }) },
+      stateStore: store,
+      config: makeConfig(),
+      clock: makeClock(),
+      timers,
+      random: () => 0,
+      logger: { info() {}, warn() {}, error() {} },
+    });
+    await sched.start();
+    clearScheduleForTest(sched, baseTimers);
+    allowArm = false;
+    let threw = false;
+    let r;
+    try {
+      r = await sched.runOnce();
+    } catch {
+      threw = true;
+    }
+    assert(!threw, "B2: runOnce 不裸抛");
+    assertEqual(r.status, "unexpected_failed", "B2: arm 失败 → unexpected_failed");
+    assertEqual(r.errorCode, "SCHEDULER_UNEXPECTED_FAILED", "B2: errorCode");
+    assertEqual(sched.getStatus().lastRunStatus, "unexpected_failed", "B2: lastRunStatus");
+    await assertNoTimer(sched, timers, "B2 rearm fail");
+  }
+
+  // B.3 Timer callback 入口 clock.now 抛异常
+  {
+    const dir = mkdtempSync(join(tmpdir(), "fb-sched-"));
+    dirs.push(dir);
+    const store = await bootStore(dir);
+    const clock = makeClock();
+    const timers = makeTimers();
+    let nowThrows = false;
+    const clockWrap = {
+      now: () => {
+        if (nowThrows) throw new Error("clock boom");
+        return clock.now();
+      },
+    };
+    const sched = createForumBumpScheduler({
+      scanCandidates: async () => ({ candidates: [] }),
+      bumpService: { bumpThread: async () => ({ status: "skipped" }) },
+      stateStore: store,
+      config: makeConfig(),
+      clock: clockWrap,
+      timers,
+      random: () => 0,
+      logger: { info() {}, warn() {}, error() {} },
+    });
+    await sched.start();
+    assert(timers.list().length >= 1, "B3: start 有 timer");
+    nowThrows = true;
+    let unhandled = 0;
+    const onUR = () => { unhandled += 1; };
+    process.on("unhandledRejection", onUR);
+    try {
+      await flushAllTimers(timers);
+      await tick();
+      await tick();
+    } finally {
+      process.removeListener("unhandledRejection", onUR);
+    }
+    assertEqual(unhandled, 0, "B3: 无 unhandled rejection");
+    assertEqual(sched.getStatus().nextWakeAt, null, "B3: nextWakeAt null");
+    assertEqual(timers.list().length, 0, "B3: 无活跃 timer");
+    assertEqual(sched.getStatus().lastRunStatus, "unexpected_failed", "B3: lastRunStatus");
+  }
+
+  // B.4 提前触发后重新 schedule 时 setTimeout 抛异常
+  {
+    const dir = mkdtempSync(join(tmpdir(), "fb-sched-"));
+    dirs.push(dir);
+    const store = await bootStore(dir);
+    const clock = makeClock(Date.parse("2026-07-28T12:00:00.000Z"));
+    const baseTimers = makeTimers();
+    let throwOnArm = false;
+    let scans = 0;
+    let bumps = 0;
+    const timers = {
+      setTimeout(fn, ms) {
+        if (throwOnArm) throw new Error("early rearm boom");
+        return baseTimers.setTimeout(fn, ms);
+      },
+      clearTimeout: (h) => baseTimers.clearTimeout(h),
+      list: () => baseTimers.list(),
+    };
+    const sched = createForumBumpScheduler({
+      scanCandidates: async () => {
+        scans += 1;
+        return { candidates: [] };
+      },
+      bumpService: {
+        bumpThread: async () => {
+          bumps += 1;
+          return { status: "skipped" };
+        },
+      },
+      stateStore: store,
+      config: makeConfig({ idlePollMs: 60_000 }),
+      clock,
+      timers,
+      random: () => 0,
+      logger: { info() {}, warn() {}, error() {} },
+    });
+    await sched.start();
+    clearScheduleForTest(sched, baseTimers);
+    const once = await sched.runOnce();
+    assertEqual(once.status, "no_candidate", "B4: no_candidate");
+    assert(baseTimers.list().length === 1, "B4: idle timer armed");
+    const scansBefore = scans;
+    const bumpsBefore = bumps;
+    throwOnArm = true;
+    // 不 advance clock → callback 视为提前触发 → rearm 抛异常
+    await flushAllTimers(baseTimers);
+    await tick();
+    await tick();
+    assertEqual(scans, scansBefore, "B4: 不扫描");
+    assertEqual(bumps, bumpsBefore, "B4: 不 bump");
+    assertEqual(sched.getStatus().nextWakeAt, null, "B4: nextWakeAt null");
+    assertEqual(baseTimers.list().length, 0, "B4: 无活跃 timer");
+    assertEqual(sched.getStatus().lastRunStatus, "unexpected_failed", "B4: lastRunStatus");
+  }
+
+  // C.1 markMessageSent 返回失败
+  {
+    const dir = mkdtempSync(join(tmpdir(), "fb-sched-"));
+    dirs.push(dir);
+    const store = await bootStore(dir);
+    const timers = makeTimers();
+    let markDeleted = 0;
+    let complete = 0;
+    let pauseCalls = 0;
+    const sched = createForumBumpScheduler({
+      scanCandidates: async () => ({
+        candidates: [{ threadId: T, forumChannelId: F }],
+      }),
+      bumpService: {
+        // 模拟真实 bump：send 已成功 → onMessageSent 失败 → 仍 delete 一次
+        bumpThread: async ({ lifecycle }) => {
+          if (lifecycle?.onBeforeSend) await lifecycle.onBeforeSend({});
+          try {
+            if (lifecycle?.onMessageSent) {
+              await lifecycle.onMessageSent({ sentMessageId: M });
+            }
+          } catch {
+            // delete once (cleaned)
+            return {
+              status: "failed",
+              success: false,
+              cleanupRequired: false,
+              errorCode: "LIFECYCLE_AFTER_SEND_FAILED",
+              sentMessageId: M,
+            };
+          }
+          return { status: "succeeded", success: true, sentMessageId: M };
+        },
+      },
+      stateStore: wrapStore(store, {
+        markMessageSent: async () => ({ success: false, errorCode: "STATE_WRITE_FAILED" }),
+        markMessageDeleted: async (...a) => {
+          markDeleted += 1;
+          return store.markMessageDeleted(...a);
+        },
+        completeSuccess: async (...a) => {
+          complete += 1;
+          return store.completeSuccess(...a);
+        },
+        pause: async (...a) => {
+          pauseCalls += 1;
+          return store.pause(...a);
+        },
+      }),
+      config: makeConfig(),
+      clock: makeClock(),
+      timers,
+      random: () => 0,
+      createOperationId: () => "op-ms-fail",
+      logger: { info() {}, warn() {}, error() {} },
+    });
+    await sched.start();
+    clearScheduleForTest(sched, timers);
+    const r = await sched.runOnce();
+    assertEqual(r.status, "halted", "C1: markSent fail → halted");
+    assertEqual(markDeleted, 0, "C1: 不调用 markMessageDeleted");
+    assertEqual(complete, 0, "C1: 不 completeSuccess");
+    assertEqual(pauseCalls, 1, "C1: 尝试 pause");
+    await store.load();
+    assertEqual(store.getSnapshot().successCount, 0, "C1: 不增加额度");
+    assertEqual(store.getSnapshot().inFlight?.phase, "before_send", "C1: phase before_send");
+    assertEqual(store.getSnapshot().paused, true, "C1: paused");
+    await assertNoTimer(sched, timers, "C1 markSent fail");
+  }
+
+  // C.2 markMessageSent throw
+  {
+    const dir = mkdtempSync(join(tmpdir(), "fb-sched-"));
+    dirs.push(dir);
+    const store = await bootStore(dir);
+    const timers = makeTimers();
+    let markDeleted = 0;
+    let complete = 0;
+    const sched = createForumBumpScheduler({
+      scanCandidates: async () => ({
+        candidates: [{ threadId: T, forumChannelId: F }],
+      }),
+      bumpService: {
+        bumpThread: async ({ lifecycle }) => {
+          if (lifecycle?.onBeforeSend) await lifecycle.onBeforeSend({});
+          try {
+            if (lifecycle?.onMessageSent) {
+              await lifecycle.onMessageSent({ sentMessageId: M });
+            }
+          } catch {
+            return {
+              status: "failed",
+              success: false,
+              cleanupRequired: false,
+              errorCode: "LIFECYCLE_AFTER_SEND_FAILED",
+              sentMessageId: M,
+            };
+          }
+          return { status: "succeeded", success: true, sentMessageId: M };
+        },
+      },
+      stateStore: wrapStore(store, {
+        markMessageSent: async () => { throw new Error("markSent boom"); },
+        markMessageDeleted: async (...a) => {
+          markDeleted += 1;
+          return store.markMessageDeleted(...a);
+        },
+        completeSuccess: async (...a) => {
+          complete += 1;
+          return store.completeSuccess(...a);
+        },
+      }),
+      config: makeConfig(),
+      clock: makeClock(),
+      timers,
+      random: () => 0,
+      createOperationId: () => "op-ms-throw",
+      logger: { info() {}, warn() {}, error() {} },
+    });
+    await sched.start();
+    clearScheduleForTest(sched, timers);
+    const r = await sched.runOnce();
+    assertEqual(r.status, "halted", "C2: markSent throw → halted");
+    assertEqual(markDeleted, 0, "C2: 不 markDeleted");
+    assertEqual(complete, 0, "C2: 不 complete");
+    await store.load();
+    assertEqual(store.getSnapshot().inFlight?.phase, "before_send", "C2: before_send");
+    assertEqual(store.getSnapshot().paused, true, "C2: paused");
+    await assertNoTimer(sched, timers, "C2 markSent throw");
+  }
+
+  // C.3 markMessageDeleted 返回失败
+  {
+    const dir = mkdtempSync(join(tmpdir(), "fb-sched-"));
+    dirs.push(dir);
+    const store = await bootStore(dir);
+    const timers = makeTimers();
+    let complete = 0;
+    const sched = createForumBumpScheduler({
+      scanCandidates: async () => ({
+        candidates: [{ threadId: T, forumChannelId: F }],
+      }),
+      bumpService: {
+        bumpThread: async ({ lifecycle }) => {
+          if (lifecycle?.onBeforeSend) await lifecycle.onBeforeSend({});
+          if (lifecycle?.onMessageSent) {
+            await lifecycle.onMessageSent({ sentMessageId: M });
+          }
+          try {
+            if (lifecycle?.onMessageDeleted) await lifecycle.onMessageDeleted({});
+          } catch {
+            return {
+              status: "failed",
+              success: false,
+              cleanupRequired: false,
+              errorCode: "LIFECYCLE_AFTER_DELETE_FAILED",
+              sentMessageId: M,
+            };
+          }
+          return { status: "succeeded", success: true, sentMessageId: M };
+        },
+      },
+      stateStore: wrapStore(store, {
+        markMessageDeleted: async () => ({ success: false, errorCode: "STATE_WRITE_FAILED" }),
+        completeSuccess: async (...a) => {
+          complete += 1;
+          return store.completeSuccess(...a);
+        },
+      }),
+      config: makeConfig(),
+      clock: makeClock(),
+      timers,
+      random: () => 0,
+      createOperationId: () => "op-md-fail",
+      logger: { info() {}, warn() {}, error() {} },
+    });
+    await sched.start();
+    clearScheduleForTest(sched, timers);
+    const r = await sched.runOnce();
+    assertEqual(r.status, "halted", "C3: markDeleted fail → halted");
+    assertEqual(complete, 0, "C3: 不 completeSuccess");
+    await store.load();
+    assertEqual(store.getSnapshot().successCount, 0, "C3: 额度不增");
+    assertEqual(store.getSnapshot().inFlight?.phase, "after_send", "C3: phase after_send");
+    assertEqual(store.getSnapshot().inFlight?.sentMessageId, M, "C3: sentMessageId 保留");
+    assertEqual(store.getSnapshot().paused, true, "C3: paused");
+    await assertNoTimer(sched, timers, "C3 markDeleted fail");
+  }
+
+  // C.4 markMessageDeleted throw
+  {
+    const dir = mkdtempSync(join(tmpdir(), "fb-sched-"));
+    dirs.push(dir);
+    const store = await bootStore(dir);
+    const timers = makeTimers();
+    let complete = 0;
+    const sched = createForumBumpScheduler({
+      scanCandidates: async () => ({
+        candidates: [{ threadId: T, forumChannelId: F }],
+      }),
+      bumpService: {
+        bumpThread: async ({ lifecycle }) => {
+          if (lifecycle?.onBeforeSend) await lifecycle.onBeforeSend({});
+          if (lifecycle?.onMessageSent) {
+            await lifecycle.onMessageSent({ sentMessageId: M });
+          }
+          try {
+            if (lifecycle?.onMessageDeleted) await lifecycle.onMessageDeleted({});
+          } catch {
+            return {
+              status: "failed",
+              success: false,
+              cleanupRequired: false,
+              errorCode: "LIFECYCLE_AFTER_DELETE_FAILED",
+              sentMessageId: M,
+            };
+          }
+          return { status: "succeeded", success: true, sentMessageId: M };
+        },
+      },
+      stateStore: wrapStore(store, {
+        markMessageDeleted: async () => { throw new Error("markDel boom"); },
+        completeSuccess: async (...a) => {
+          complete += 1;
+          return store.completeSuccess(...a);
+        },
+      }),
+      config: makeConfig(),
+      clock: makeClock(),
+      timers,
+      random: () => 0,
+      createOperationId: () => "op-md-throw",
+      logger: { info() {}, warn() {}, error() {} },
+    });
+    await sched.start();
+    clearScheduleForTest(sched, timers);
+    const r = await sched.runOnce();
+    assertEqual(r.status, "halted", "C4: markDeleted throw → halted");
+    assertEqual(complete, 0, "C4: 不 complete");
+    await store.load();
+    assertEqual(store.getSnapshot().inFlight?.phase, "after_send", "C4: after_send");
+    assertEqual(store.getSnapshot().inFlight?.sentMessageId, M, "C4: sentMessageId");
+    await assertNoTimer(sched, timers, "C4 markDeleted throw");
+  }
+
+  // C.5 lifecycle 失败后 pause 失败 → state_failed
+  {
+    const dir = mkdtempSync(join(tmpdir(), "fb-sched-"));
+    dirs.push(dir);
+    const store = await bootStore(dir);
+    const timers = makeTimers();
+    const sched = createForumBumpScheduler({
+      scanCandidates: async () => ({
+        candidates: [{ threadId: T, forumChannelId: F }],
+      }),
+      bumpService: {
+        bumpThread: async ({ lifecycle }) => {
+          if (lifecycle?.onBeforeSend) await lifecycle.onBeforeSend({});
+          try {
+            if (lifecycle?.onMessageSent) {
+              await lifecycle.onMessageSent({ sentMessageId: M });
+            }
+          } catch {
+            return {
+              status: "failed",
+              success: false,
+              cleanupRequired: false,
+              errorCode: "LIFECYCLE_AFTER_SEND_FAILED",
+              sentMessageId: M,
+            };
+          }
+          return { status: "succeeded", success: true };
+        },
+      },
+      stateStore: wrapStore(store, {
+        markMessageSent: async () => ({ success: false, errorCode: "STATE_WRITE_FAILED" }),
+        pause: async () => ({ success: false, errorCode: "STATE_REVISION_CONFLICT" }),
+      }),
+      config: makeConfig(),
+      clock: makeClock(),
+      timers,
+      random: () => 0,
+      createOperationId: () => "op-pause-fail",
+      logger: { info() {}, warn() {}, error() {} },
+    });
+    await sched.start();
+    clearScheduleForTest(sched, timers);
+    const r = await sched.runOnce();
+    assertEqual(r.status, "state_failed", "C5: pause fail → state_failed");
+    assertEqual(r.primaryErrorCode, "LIFECYCLE_AFTER_SEND_FAILED", "C5: primary");
+    assertEqual(r.stateErrorCode, "STATE_REVISION_CONFLICT", "C5: stateErrorCode");
+    await assertNoTimer(sched, timers, "C5 pause fail");
+  }
+
+  // D. Stop after send：真实 Bump Service + fake Discord
+  {
+    const dir = mkdtempSync(join(tmpdir(), "fb-sched-"));
+    dirs.push(dir);
+    const store = await bootStore(dir);
+    const timers = makeTimers();
+    const clock = makeClock();
+    let sendCount = 0;
+    let deleteCount = 0;
+    let releaseSend;
+    const sendGate = new Promise((resolve) => { releaseSend = resolve; });
+    const message = {
+      id: M,
+      delete: async () => { deleteCount += 1; },
+    };
+    const thread = {
+      id: T,
+      type: ChannelType.PublicThread,
+      guildId: G,
+      parentId: F,
+      parent: { id: F, type: ChannelType.GuildForum, defaultSortOrder: 0 },
+      name: "t",
+      archived: true,
+      locked: false,
+      pinned: false,
+      autoArchiveDuration: 4320,
+      archiveTimestamp: 1_700_000_000_000,
+      lastMessageId: "1429163615671423037",
+      messageCount: 1,
+      totalMessageSent: 1,
+      appliedTags: [],
+      permissionsFor() {
+        return {
+          has: (f) => [
+            PermissionFlagsBits.ViewChannel,
+            PermissionFlagsBits.SendMessagesInThreads,
+          ].includes(f),
+        };
+      },
+      send: async () => {
+        sendCount += 1;
+        await sendGate;
+        thread.lastMessageId = M;
+        thread.archived = false;
+        return message;
+      },
+    };
+    const client = {
+      user: { id: "bot" },
+      isReady: () => true,
+      channels: {
+        fetch: async (id, options) => {
+          if (!options?.force) throw new Error("force required");
+          if (id === T) return thread;
+          if (id === F) return thread.parent;
+          throw new Error(`unknown ${id}`);
+        },
+      },
+    };
+    const sleepLog = [];
+    const bumpService = createForumBumpService({
+      client,
+      logger: { info() {}, warn() {}, error() {} },
+      clock: { now: () => clock.now() },
+      sleep: async (ms) => { sleepLog.push(ms); },
+    });
+    const sched = createForumBumpScheduler({
+      scanCandidates: async () => ({
+        candidates: [{
+          threadId: T,
+          forumChannelId: F,
+          guildId: G,
+        }],
+      }),
+      bumpService,
+      stateStore: store,
+      config: makeConfig(),
+      clock,
+      timers,
+      random: () => 0,
+      createOperationId: () => "op-stop-send",
+      logger: { info() {}, warn() {}, error() {} },
+    });
+    await sched.start();
+    clearScheduleForTest(sched, timers);
+    const onceP = sched.runOnce();
+    // 等到 send 被调用
+    for (let i = 0; i < 50 && sendCount === 0; i += 1) await tick();
+    assertEqual(sendCount, 1, "D: send 已开始");
+    const stopP = sched.stop();
+    releaseSend();
+    const [onceR, stopR] = await Promise.all([onceP, stopP]);
+    // stop 后可能 cancelled 或 succeeded，取决于 abort 时点；
+    // 规范要求：真实 send+delete 成功仍计入额度
+    assert(stopR.success, "D: stop 成功");
+    assertEqual(sendCount, 1, "D: send 一次");
+    assertEqual(deleteCount, 1, "D: delete 一次");
+    await store.load();
+    const snap = store.getSnapshot();
+    // 若完整成功路径：successCount+1；若 abort 在 send 后仍应 delete 并 complete
+    assertEqual(snap.successCount, 1, "D: successCount +1");
+    assertEqual(snap.inFlight, null, "D: inFlight 清空");
+    assert(snap.lastSuccessAt != null, "D: lastSuccessAt");
+    assert(snap.nextEligibleAt != null, "D: nextEligibleAt");
+    assertEqual(timers.list().length, 0, "D: 无下一 timer");
+    void onceR;
+    void sleepLog;
+  }
+
+  // E. 三种 Startup Recovery
+  for (const scenario of [
+    { phase: "before_send", expected: "manual_review_required", withMsg: false },
+    { phase: "after_send", expected: "cleanup_required", withMsg: true },
+    { phase: "after_delete", expected: "reconciliation_required", withMsg: true },
+  ]) {
+    const dir = mkdtempSync(join(tmpdir(), "fb-sched-"));
+    dirs.push(dir);
+    const store = await bootStore(dir);
+    await store.load();
+    let rev = 0;
+    await store.beginInFlight({
+      expectedRevision: rev,
+      operationId: `op-${scenario.phase}`,
+      guildId: G,
+      forumChannelId: F,
+      threadId: T,
+      startedAt: "2026-07-28T12:00:00.000Z",
+    });
+    rev += 1;
+    if (scenario.phase === "after_send" || scenario.phase === "after_delete") {
+      await store.markMessageSent({
+        expectedRevision: rev,
+        operationId: `op-${scenario.phase}`,
+        sentMessageId: M,
+        sentAt: "2026-07-28T12:00:01.000Z",
+      });
+      rev += 1;
+    }
+    if (scenario.phase === "after_delete") {
+      await store.markMessageDeleted({
+        expectedRevision: rev,
+        operationId: `op-${scenario.phase}`,
+        deletedAt: "2026-07-28T12:00:02.000Z",
+      });
+    }
+    let scans = 0;
+    let bumps = 0;
+    const timers = makeTimers();
+    const sched = createForumBumpScheduler({
+      scanCandidates: async () => {
+        scans += 1;
+        return { candidates: [] };
+      },
+      bumpService: {
+        bumpThread: async () => {
+          bumps += 1;
+          return { status: "skipped" };
+        },
+      },
+      stateStore: store,
+      config: makeConfig(),
+      clock: makeClock(),
+      timers,
+      random: () => 0,
+      logger: { info() {}, warn() {} },
+    });
+    const st = await sched.start();
+    assertEqual(st.recoveryStatus, scenario.expected, `E: ${scenario.phase} recovery`);
+    assertEqual(st.timerArmed, false, `E: ${scenario.phase} no timerArmed`);
+    assertEqual(st.nextWakeAt, null, `E: ${scenario.phase} nextWakeAt null`);
+    assertEqual(timers.list().length, 0, `E: ${scenario.phase} 无活跃 timer`);
+    assertEqual(scans, 0, `E: ${scenario.phase} 不扫描`);
+    assertEqual(bumps, 0, `E: ${scenario.phase} 不 bump`);
+    await store.load();
+    assert(store.getSnapshot().inFlight != null, `E: ${scenario.phase} 保留 inFlight`);
+    assertEqual(store.getSnapshot().inFlight.phase, scenario.phase, `E: ${scenario.phase} phase`);
+    void scenario.withMsg;
+  }
+
+  // F. Random 异常精确断言（补充 status 词表）
+  // 见上文 random throw 块，已精确为 halted + SCHEDULER_RANDOM_INVALID
+
+  // G. State fallback 分类
+  {
+    // load 未知 throw → STATE_READ_FAILED
+    {
+      const r = await safeStateCall(async () => { throw new Error("load boom"); }, "STATE_READ_FAILED");
+      assertEqual(r.ok, false, "G: load throw ok=false");
+      assertEqual(r.errorCode, "STATE_READ_FAILED", "G: load → STATE_READ_FAILED");
+    }
+    // recoverOnStartup 未知 throw → STATE_RECOVERY_FAILED
+    {
+      const r = await safeStateCall(async () => { throw new Error("rec boom"); }, "STATE_RECOVERY_FAILED");
+      assertEqual(r.ok, false, "G: recover throw");
+      assertEqual(r.errorCode, "STATE_RECOVERY_FAILED", "G: recover → STATE_RECOVERY_FAILED");
+    }
+    // recoverOnStartup 返回 STATE_WRITE_FAILED → 保留
+    {
+      const r = await safeStateCall(
+        async () => ({ success: false, errorCode: "STATE_WRITE_FAILED" }),
+        "STATE_RECOVERY_FAILED",
+      );
+      assertEqual(r.errorCode, "STATE_WRITE_FAILED", "G: store errorCode 优先于 recovery fallback");
+    }
+    // deferUntil 未知 throw → STATE_WRITE_FAILED
+    {
+      const r = await safeStateCall(async () => { throw new Error("defer boom"); }, "STATE_WRITE_FAILED");
+      assertEqual(r.errorCode, "STATE_WRITE_FAILED", "G: defer throw → STATE_WRITE_FAILED");
+    }
+    // pause 未知 throw → STATE_WRITE_FAILED
+    {
+      const r = await safeStateCall(async () => { throw new Error("pause boom"); }, "STATE_WRITE_FAILED");
+      assertEqual(r.errorCode, "STATE_WRITE_FAILED", "G: pause throw → STATE_WRITE_FAILED");
+    }
+    // Store 自带合法 errorCode 优先（throw code）
+    {
+      const err = new Error("x");
+      err.code = "STATE_REVISION_CONFLICT";
+      const r = await safeStateCall(async () => { throw err; }, "STATE_WRITE_FAILED");
+      assertEqual(r.errorCode, "STATE_REVISION_CONFLICT", "G: throw.code 优先");
+    }
+    // Store 自带合法 errorCode 优先（return）
+    {
+      const r = await safeStateCall(
+        async () => ({ success: false, errorCode: "STATE_DATE_ROLLBACK" }),
+        "STATE_WRITE_FAILED",
+      );
+      assertEqual(r.errorCode, "STATE_DATE_ROLLBACK", "G: result.errorCode 优先");
+    }
+
+    // 集成：load throw 在 start
+    {
+      const dir = mkdtempSync(join(tmpdir(), "fb-sched-"));
+      dirs.push(dir);
+      const store = await bootStore(dir);
+      const sched = createForumBumpScheduler({
+        scanCandidates: async () => ({ candidates: [] }),
+        bumpService: { bumpThread: async () => ({ status: "skipped" }) },
+        stateStore: wrapStore(store, {
+          load: async () => { throw new Error("load boom"); },
+        }),
+        config: makeConfig(),
+        clock: makeClock(),
+        timers: makeTimers(),
+        random: () => 0,
+        logger: { info() {}, warn() {}, error() {} },
+      });
+      const st = await sched.start();
+      assertEqual(st.success, false, "G: start load throw fail");
+      assertEqual(st.errorCode, "STATE_READ_FAILED", "G: start → STATE_READ_FAILED");
+    }
+    // 集成：recoverOnStartup throw
+    {
+      const dir = mkdtempSync(join(tmpdir(), "fb-sched-"));
+      dirs.push(dir);
+      const store = await bootStore(dir);
+      const sched = createForumBumpScheduler({
+        scanCandidates: async () => ({ candidates: [] }),
+        bumpService: { bumpThread: async () => ({ status: "skipped" }) },
+        stateStore: wrapStore(store, {
+          recoverOnStartup: async () => { throw new Error("rec boom"); },
+        }),
+        config: makeConfig(),
+        clock: makeClock(),
+        timers: makeTimers(),
+        random: () => 0,
+        logger: { info() {}, warn() {}, error() {} },
+      });
+      const st = await sched.start();
+      assertEqual(st.success, false, "G: recover throw fail");
+      assertEqual(st.errorCode, "STATE_RECOVERY_FAILED", "G: start → STATE_RECOVERY_FAILED");
+    }
+    // 集成：recoverOnStartup 返回 STATE_WRITE_FAILED
+    {
+      const dir = mkdtempSync(join(tmpdir(), "fb-sched-"));
+      dirs.push(dir);
+      const store = await bootStore(dir);
+      const sched = createForumBumpScheduler({
+        scanCandidates: async () => ({ candidates: [] }),
+        bumpService: { bumpThread: async () => ({ status: "skipped" }) },
+        stateStore: wrapStore(store, {
+          recoverOnStartup: async () => ({ success: false, errorCode: "STATE_WRITE_FAILED" }),
+        }),
+        config: makeConfig(),
+        clock: makeClock(),
+        timers: makeTimers(),
+        random: () => 0,
+        logger: { info() {}, warn() {}, error() {} },
+      });
+      const st = await sched.start();
+      assertEqual(st.success, false, "G: recover write fail");
+      assertEqual(st.errorCode, "STATE_WRITE_FAILED", "G: 保留 STATE_WRITE_FAILED");
+    }
+  }
+
+  // completeSuccess 失败 → reconciliation_required（pause 成功）
+  {
+    const dir = mkdtempSync(join(tmpdir(), "fb-sched-"));
+    dirs.push(dir);
+    const store = await bootStore(dir);
+    const timers = makeTimers();
+    const sched = createForumBumpScheduler({
+      scanCandidates: async () => ({
+        candidates: [{ threadId: T, forumChannelId: F }],
+      }),
+      bumpService: {
+        bumpThread: async ({ lifecycle }) => {
+          if (lifecycle?.onBeforeSend) await lifecycle.onBeforeSend({});
+          if (lifecycle?.onMessageSent) {
+            await lifecycle.onMessageSent({ sentMessageId: M });
+          }
+          if (lifecycle?.onMessageDeleted) await lifecycle.onMessageDeleted({});
+          return {
+            status: "succeeded",
+            success: true,
+            cleanupRequired: false,
+            sentMessageId: M,
+          };
+        },
+      },
+      stateStore: wrapStore(store, {
+        completeSuccess: async () => ({ success: false, errorCode: "STATE_WRITE_FAILED" }),
+      }),
+      config: makeConfig(),
+      clock: makeClock(),
+      timers,
+      random: () => 0,
+      createOperationId: () => "op-cs-fail",
+      logger: { info() {}, warn() {}, error() {} },
+    });
+    await sched.start();
+    clearScheduleForTest(sched, timers);
+    const r = await sched.runOnce();
+    assertEqual(r.status, "reconciliation_required", "completeSuccess fail → reconciliation");
+    await store.load();
+    assertEqual(store.getSnapshot().inFlight?.phase, "after_delete", "complete fail 保留 after_delete");
+    assertEqual(store.getSnapshot().paused, true, "complete fail paused");
+    assertEqual(store.getSnapshot().successCount, 0, "complete fail 不增额度");
+    await assertNoTimer(sched, timers, "completeSuccess fail");
   }
 
 } finally {
