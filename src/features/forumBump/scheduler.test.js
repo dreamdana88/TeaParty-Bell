@@ -1429,6 +1429,108 @@ try {
     await assertNoTimer(sched, timers, "C2 markSent throw");
   }
 
+  // C.2b 真实 Bump Service + markMessageSent 失败：仍 delete 一次，状态 before_send
+  {
+    const dir = mkdtempSync(join(tmpdir(), "fb-sched-"));
+    dirs.push(dir);
+    const store = await bootStore(dir);
+    const timers = makeTimers();
+    const clock = makeClock();
+    let sendCount = 0;
+    let deleteCount = 0;
+    let markDeleted = 0;
+    let complete = 0;
+    const message = {
+      id: M,
+      delete: async () => { deleteCount += 1; },
+    };
+    const thread = {
+      id: T,
+      type: ChannelType.PublicThread,
+      guildId: G,
+      parentId: F,
+      parent: { id: F, type: ChannelType.GuildForum, defaultSortOrder: 0 },
+      name: "t",
+      archived: true,
+      locked: false,
+      pinned: false,
+      autoArchiveDuration: 4320,
+      archiveTimestamp: 1_700_000_000_000,
+      lastMessageId: "1429163615671423037",
+      messageCount: 1,
+      totalMessageSent: 1,
+      appliedTags: [],
+      permissionsFor() {
+        return {
+          has: (f) => [
+            PermissionFlagsBits.ViewChannel,
+            PermissionFlagsBits.SendMessagesInThreads,
+          ].includes(f),
+        };
+      },
+      send: async () => {
+        sendCount += 1;
+        thread.lastMessageId = M;
+        thread.archived = false;
+        return message;
+      },
+    };
+    const client = {
+      user: { id: "bot" },
+      isReady: () => true,
+      channels: {
+        fetch: async (id, options) => {
+          if (!options?.force) throw new Error("force required");
+          if (id === T) return thread;
+          if (id === F) return thread.parent;
+          throw new Error(`unknown ${id}`);
+        },
+      },
+    };
+    const bumpService = createForumBumpService({
+      client,
+      logger: { info() {}, warn() {}, error() {} },
+      clock: { now: () => clock.now() },
+      sleep: async () => {},
+    });
+    const sched = createForumBumpScheduler({
+      scanCandidates: async () => ({
+        candidates: [{ threadId: T, forumChannelId: F, guildId: G }],
+      }),
+      bumpService,
+      stateStore: wrapStore(store, {
+        markMessageSent: async () => ({ success: false, errorCode: "STATE_WRITE_FAILED" }),
+        markMessageDeleted: async (...a) => {
+          markDeleted += 1;
+          return store.markMessageDeleted(...a);
+        },
+        completeSuccess: async (...a) => {
+          complete += 1;
+          return store.completeSuccess(...a);
+        },
+      }),
+      config: makeConfig(),
+      clock,
+      timers,
+      random: () => 0,
+      createOperationId: () => "op-ms-real",
+      logger: { info() {}, warn() {}, error() {} },
+    });
+    await sched.start();
+    clearScheduleForTest(sched, timers);
+    const r = await sched.runOnce();
+    assertEqual(sendCount, 1, "C2b: send 一次");
+    assertEqual(deleteCount, 1, "C2b: delete 一次");
+    assertEqual(markDeleted, 0, "C2b: 不调用 markMessageDeleted");
+    assertEqual(complete, 0, "C2b: 不调用 completeSuccess");
+    assertEqual(r.status, "halted", "C2b: status halted");
+    await store.load();
+    assertEqual(store.getSnapshot().inFlight?.phase, "before_send", "C2b: before_send");
+    assertEqual(store.getSnapshot().paused, true, "C2b: paused");
+    assertEqual(store.getSnapshot().successCount, 0, "C2b: 不增加额度");
+    await assertNoTimer(sched, timers, "C2b real bump markSent fail");
+  }
+
   // C.3 markMessageDeleted 返回失败
   {
     const dir = mkdtempSync(join(tmpdir(), "fb-sched-"));

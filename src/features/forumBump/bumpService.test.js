@@ -639,6 +639,31 @@ console.log("\n=== ForumBump bumpService ===\n");
   assertEqual(send, 0, "beforeSend 失败不 send");
 }
 
+// ---- onMessageSent 抛异常：仍 delete 一次，不调用 onMessageDeleted ----
+{
+  const h = makeHarness();
+  let deletedHook = 0;
+  const r = await call(makeService(h), {
+    lifecycle: {
+      onBeforeSend: async () => {},
+      onMessageSent: async () => {
+        throw new Error("markSent boom");
+      },
+      onMessageDeleted: async () => {
+        deletedHook += 1;
+      },
+    },
+  });
+  assertEqual(h.sendCount, 1, "onMessageSent 失败 send=1");
+  assertEqual(h.deleteCount, 1, "onMessageSent 失败 delete=1");
+  assertEqual(r.status, "failed", "onMessageSent 失败 status");
+  assertEqual(r.success, false, "onMessageSent 失败 success");
+  assertEqual(r.errorCode, "LIFECYCLE_AFTER_SEND_FAILED", "LIFECYCLE_AFTER_SEND_FAILED");
+  assertEqual(r.cleanupRequired, false, "onMessageSent 失败 cleanupRequired=false");
+  assertEqual(r.sentMessageId, MSG, "onMessageSent 失败 sentMessageId 保留");
+  assertEqual(deletedHook, 0, "onMessageSent 失败不调用 onMessageDeleted");
+}
+
 // ---- send 返回对象但缺少合法 id ----
 {
   let deleteCount = 0;
