@@ -287,11 +287,17 @@ try {
     const dir = mkdtempSync(join(tmpdir(), "fb-ctl-"));
     dirs.push(dir);
     const h = await bootExecute(dir, {}, {
-      preflightForumsFn: async () => ({
-        success: false,
-        errorCode: "DYNAMIC_CONFIG_PREFLIGHT_FAILED",
-        failures: [{ forumId: F2, errorCode: "BOT_MISSING_PERMISSION" }],
-      }),
+      // 启动对现有 F 通过；更新加入 F2 时失败
+      preflightForumsFn: async ({ forumChannelIds }) => {
+        if (forumChannelIds.includes(F2)) {
+          return {
+            success: false,
+            errorCode: "DYNAMIC_CONFIG_PREFLIGHT_FAILED",
+            failures: [{ forumId: F2, errorCode: "BOT_MISSING_PERMISSION" }],
+          };
+        }
+        return { success: true, errorCode: null, failures: [] };
+      },
     });
     h.timers.cancelAll();
     const before = await h.rt.getControlSnapshot();
@@ -565,6 +571,350 @@ try {
       assert(true, `runOnce status=${r.status}（配置间隔已校验）`);
     }
     await h.rt.stop();
+  }
+
+  // ========== D-6A Review Fix: 事务补偿 + 启动 Preflight ==========
+
+  // --- 保存成功但 deferUntil 失败 → 完整回滚 ---
+  {
+    const dir = mkdtempSync(join(tmpdir(), "fb-ctl-"));
+    dirs.push(dir);
+    const statePath = join(dir, "state.json");
+    const dynamicConfigPath = join(dir, "config.json");
+    const baseStore = createForumBumpStateStore({
+      statePath,
+      logger: { info() {}, warn() {}, error() {} },
+    });
+    await baseStore.initialize({ localDate: "2026-07-28" });
+    // 预设 nextEligibleAt
+    await baseStore.load();
+    const priorNext = "2026-07-28T18:00:00.000Z";
+    await baseStore.deferUntil({
+      expectedRevision: baseStore.getSnapshot().revision,
+      nextEligibleAt: priorNext,
+    });
+
+    let deferCalls = 0;
+    const store = new Proxy(baseStore, {
+      get(target, prop, receiver) {
+        if (prop === "deferUntil") {
+          return async (...a) => {
+            deferCalls += 1;
+            // 配置更新中的 defer 失败；补偿走 restoreNextEligibleAt
+            if (deferCalls === 1) {
+              return { success: false, errorCode: "STATE_WRITE_FAILED" };
+            }
+            return target.deferUntil(...a);
+          };
+        }
+        const v = Reflect.get(target, prop, receiver);
+        return typeof v === "function" ? v.bind(target) : v;
+      },
+    });
+
+    const timers = makeTimers();
+    const rt = createForumBumpRuntime({
+      client: makeClient({ [F]: defaultForum(F) }),
+      config: {
+        forumBump: makeFb("execute", { statePath, dynamicConfigPath, dailyLimit: 3 }),
+      },
+      logger: { info() {}, warn() {}, error() {} },
+      clock: { now: () => Date.parse("2026-07-28T12:00:00.000Z") },
+      timers,
+      alertNotifier: { notifyFailure: async () => {}, notifyRecovery: async () => {} },
+      createStateStoreFn: () => store,
+      scanCandidatesFn: async () => ({ candidates: [] }),
+      createBumpServiceFn: () => ({
+        bumpThread: async () => ({ success: true, status: "succeeded" }),
+      }),
+      preflightForumsFn: async () => ({ success: true, errorCode: null, failures: [] }),
+    });
+    const started = await rt.start();
+    assert(started.success, `start ok (got ${started.errorCode})`);
+    timers.cancelAll();
+
+    const beforeRev = (await rt.getControlSnapshot()).dynamicConfigRevision;
+    const upd = await rt.updateDynamicConfig({ dailyLimit: 5 });
+    assertEqual(upd.success, false, "defer 失败 → update 失败");
+    assertEqual(upd.compensated, true, "已完整补偿");
+    assert(!upd.partial, "无 partial");
+    assertEqual(upd.errorCode, "STATE_WRITE_FAILED", "primary STATE_WRITE_FAILED");
+
+    // 磁盘配置应回滚 dailyLimit=3，revision 前进
+    const diskCfg = JSON.parse(readFileSync(dynamicConfigPath, "utf8"));
+    assertEqual(diskCfg.dailyLimit, 3, "磁盘 dailyLimit 回滚为 3");
+    assert(diskCfg.revision > (beforeRev ?? 0), "回滚后 revision 前进");
+
+    const mem = await rt.getControlSnapshot();
+    assertEqual(mem.dailyLimit, 3, "内存 dailyLimit=3");
+    assertEqual(mem.dynamicConfigRevision, diskCfg.revision, "内存 revision=磁盘");
+
+    await baseStore.load();
+    assertEqual(baseStore.getSnapshot().nextEligibleAt, priorNext, "nextEligibleAt 已恢复");
+
+    // 再次修改不应 revision conflict
+    timers.cancelAll();
+    const upd2 = await rt.updateDynamicConfig({ silenceDays: 14 });
+    assert(upd2.success, "回滚后再次修改成功");
+    assertEqual(upd2.config.silenceDays, 14, "silenceDays 更新");
+    assertEqual(upd2.config.dailyLimit, 3, "dailyLimit 仍为回滚值");
+    await rt.stop();
+  }
+
+  // --- 保存成功但 reschedule 失败 → 完整回滚 ---
+  {
+    const dir = mkdtempSync(join(tmpdir(), "fb-ctl-"));
+    dirs.push(dir);
+    const h = await bootExecute(dir, { dailyLimit: 3 });
+    h.timers.cancelAll();
+    await h.store.load();
+    const priorNext = "2026-07-28T17:00:00.000Z";
+    await h.store.deferUntil({
+      expectedRevision: h.store.getSnapshot().revision,
+      nextEligibleAt: priorNext,
+    });
+    h.timers.cancelAll();
+
+    const sched = h.rt.getScheduler();
+    const origReschedule = sched.rescheduleFromState.bind(sched);
+    let reschedCalls = 0;
+    sched.rescheduleFromState = async (...a) => {
+      reschedCalls += 1;
+      // 更新路径第一次 reschedule 失败；补偿路径允许成功
+      if (reschedCalls === 1) {
+        return {
+          success: false,
+          timerArmed: false,
+          nextWakeAt: null,
+          errorCode: "SCHEDULER_UNEXPECTED_FAILED",
+          reason: "arm_failed",
+        };
+      }
+      return origReschedule(...a);
+    };
+
+    const upd = await h.rt.updateDynamicConfig({ dailyLimit: 5 });
+    assertEqual(upd.success, false, "reschedule 失败");
+    assertEqual(upd.compensated, true, "reschedule 失败已补偿");
+    assertEqual(upd.errorCode, "SCHEDULER_UNEXPECTED_FAILED", "primary arm fail");
+
+    const diskCfg = JSON.parse(readFileSync(h.dynamicConfigPath, "utf8"));
+    assertEqual(diskCfg.dailyLimit, 3, "reschedule 失败后磁盘回滚");
+    const mem = await h.rt.getControlSnapshot();
+    assertEqual(mem.dynamicConfigRevision, diskCfg.revision, "revision 一致");
+    await h.store.load();
+    assertEqual(h.store.getSnapshot().nextEligibleAt, priorNext, "nextEligible 恢复");
+
+    // 再次修改
+    h.timers.cancelAll();
+    sched.rescheduleFromState = origReschedule;
+    const upd2 = await h.rt.updateDynamicConfig({ dailyLimit: 4 });
+    assert(upd2.success, "补偿后可再改");
+    assertEqual(upd2.config.dailyLimit, 4, "新 dailyLimit=4");
+    await h.rt.stop();
+  }
+
+  // --- 补偿失败 → 无 timer + fail closed ---
+  {
+    const dir = mkdtempSync(join(tmpdir(), "fb-ctl-"));
+    dirs.push(dir);
+    const statePath = join(dir, "state.json");
+    const dynamicConfigPath = join(dir, "config.json");
+    const baseStore = createForumBumpStateStore({
+      statePath,
+      logger: { info() {}, warn() {}, error() {} },
+    });
+    await baseStore.initialize({ localDate: "2026-07-28" });
+
+    const dynStore = createForumBumpDynamicConfigStore({
+      configPath: dynamicConfigPath,
+      logger: { info() {}, warn() {}, error() {} },
+    });
+    let saveCount = 0;
+    const wrappedDyn = {
+      configPath: dynamicConfigPath,
+      load: (...a) => dynStore.load(...a),
+      getSnapshot: () => dynStore.getSnapshot(),
+      exists: () => dynStore.exists(),
+      save: async (...a) => {
+        saveCount += 1;
+        // 第 1 次：正常更新；第 2 次：补偿回滚写失败
+        if (saveCount === 2) {
+          return { success: false, errorCode: "DYNAMIC_CONFIG_WRITE_FAILED" };
+        }
+        return dynStore.save(...a);
+      },
+    };
+
+    let deferCalls = 0;
+    const store = new Proxy(baseStore, {
+      get(target, prop, receiver) {
+        if (prop === "deferUntil") {
+          return async (...a) => {
+            deferCalls += 1;
+            if (deferCalls === 1) {
+              return { success: false, errorCode: "STATE_WRITE_FAILED" };
+            }
+            return target.deferUntil(...a);
+          };
+        }
+        const v = Reflect.get(target, prop, receiver);
+        return typeof v === "function" ? v.bind(target) : v;
+      },
+    });
+
+    const timers = makeTimers();
+    const alerts = [];
+    const rt = createForumBumpRuntime({
+      client: makeClient({ [F]: defaultForum(F) }),
+      config: {
+        forumBump: makeFb("execute", { statePath, dynamicConfigPath }),
+      },
+      logger: { info() {}, warn() {}, error() {} },
+      clock: { now: () => Date.parse("2026-07-28T12:00:00.000Z") },
+      timers,
+      alertNotifier: {
+        notifyFailure: async (k) => { alerts.push(k); },
+        notifyRecovery: async () => {},
+      },
+      createStateStoreFn: () => store,
+      createDynamicConfigStoreFn: () => wrappedDyn,
+      scanCandidatesFn: async () => ({ candidates: [] }),
+      createBumpServiceFn: () => ({
+        bumpThread: async () => ({ success: true, status: "succeeded" }),
+      }),
+      preflightForumsFn: async () => ({ success: true, errorCode: null, failures: [] }),
+    });
+    const started = await rt.start();
+    assert(started.success, `start (got ${started.errorCode})`);
+    timers.cancelAll();
+
+    const upd = await rt.updateDynamicConfig({ dailyLimit: 5 });
+    assertEqual(upd.success, false, "补偿失败 update 失败");
+    assertEqual(upd.errorCode, "DYNAMIC_CONFIG_COMPENSATE_FAILED", "COMPENSATE_FAILED");
+    assertEqual(upd.compensated, false, "compensated=false");
+    assertEqual(timers.list().length, 0, "补偿失败无 timer");
+    const st = rt.getStatus();
+    assertEqual(st.dynamicConfigSource, "failed", "source=failed");
+    // 后续 update 应拒绝
+    const upd2 = await rt.updateDynamicConfig({ silenceDays: 10 });
+    assertEqual(upd2.success, false, "fail closed 后拒绝再改");
+    await rt.stop();
+  }
+
+  // --- 动态文件含 .env 没有的 Forum，重启 Preflight ---
+  {
+    const dir = mkdtempSync(join(tmpdir(), "fb-ctl-"));
+    dirs.push(dir);
+    const statePath = join(dir, "state.json");
+    const dynamicConfigPath = join(dir, "config.json");
+    const store = createForumBumpStateStore({
+      statePath,
+      logger: { info() {}, warn() {}, error() {} },
+    });
+    await store.initialize({ localDate: "2026-07-28" });
+    writeFileSync(dynamicConfigPath, JSON.stringify(createDynamicConfigDocument({
+      dailyLimit: 3,
+      activeStart: "10:00",
+      activeEnd: "22:00",
+      forumChannelIds: [F2], // .env 只有 F
+      silenceDays: 30,
+      revision: 1,
+      updatedAt: "2026-07-28T10:00:00.000Z",
+      updatedBy: "test",
+    }), null, 2));
+
+    const preflighted = [];
+    const timers = makeTimers();
+    const rt = createForumBumpRuntime({
+      client: makeClient({ [F]: defaultForum(F), [F2]: defaultForum(F2) }),
+      config: {
+        forumBump: makeFb("execute", {
+          statePath,
+          dynamicConfigPath,
+          forumChannelIds: [F], // .env
+        }),
+      },
+      logger: { info() {}, warn() {}, error() {} },
+      clock: { now: () => Date.parse("2026-07-28T12:00:00.000Z") },
+      timers,
+      alertNotifier: { notifyFailure: async () => {}, notifyRecovery: async () => {} },
+      createStateStoreFn: () => store,
+      scanCandidatesFn: async () => ({ candidates: [] }),
+      createBumpServiceFn: () => ({
+        bumpThread: async () => ({ success: true, status: "succeeded" }),
+      }),
+      preflightForumsFn: async ({ forumChannelIds }) => {
+        preflighted.push([...forumChannelIds]);
+        return { success: true, errorCode: null, failures: [] };
+      },
+    });
+    const s = await rt.start();
+    assert(s.success, "动态 Forum 启动成功");
+    assert(preflighted.length >= 1, "执行了 Preflight");
+    assertEqual(preflighted[0].join(","), F2, "Preflight 使用动态 F2");
+    const snap = await rt.getControlSnapshot();
+    assertEqual(snap.forumChannelIds.join(","), F2, "effective 为 F2");
+    await rt.stop();
+  }
+
+  // --- 动态 Forum 权限失败 → 重启无 timer ---
+  {
+    const dir = mkdtempSync(join(tmpdir(), "fb-ctl-"));
+    dirs.push(dir);
+    const statePath = join(dir, "state.json");
+    const dynamicConfigPath = join(dir, "config.json");
+    const store = createForumBumpStateStore({
+      statePath,
+      logger: { info() {}, warn() {}, error() {} },
+    });
+    await store.initialize({ localDate: "2026-07-28" });
+    writeFileSync(dynamicConfigPath, JSON.stringify(createDynamicConfigDocument({
+      dailyLimit: 3,
+      activeStart: "10:00",
+      activeEnd: "22:00",
+      forumChannelIds: [F2],
+      silenceDays: 30,
+      revision: 1,
+      updatedAt: "2026-07-28T10:00:00.000Z",
+      updatedBy: "test",
+    }), null, 2));
+
+    const timers = makeTimers();
+    const alerts = [];
+    const rt = createForumBumpRuntime({
+      client: makeClient({ [F]: defaultForum(F) }),
+      config: {
+        forumBump: makeFb("execute", {
+          statePath,
+          dynamicConfigPath,
+          forumChannelIds: [F],
+        }),
+      },
+      logger: { info() {}, warn() {}, error() {} },
+      clock: { now: () => Date.parse("2026-07-28T12:00:00.000Z") },
+      timers,
+      alertNotifier: {
+        notifyFailure: async (k) => { alerts.push(k); },
+        notifyRecovery: async () => {},
+      },
+      createStateStoreFn: () => store,
+      scanCandidatesFn: async () => ({ candidates: [] }),
+      createBumpServiceFn: () => ({
+        bumpThread: async () => ({ success: true, status: "succeeded" }),
+      }),
+      preflightForumsFn: async () => ({
+        success: false,
+        errorCode: "DYNAMIC_CONFIG_PREFLIGHT_FAILED",
+        failures: [{ forumId: F2, errorCode: "BOT_MISSING_PERMISSION" }],
+      }),
+    });
+    const s = await rt.start();
+    assertEqual(s.success, false, "权限失败 start 失败");
+    assertEqual(s.errorCode, "DYNAMIC_CONFIG_PREFLIGHT_FAILED", "PREFLIGHT code");
+    assertEqual(s.timerArmed, false, "无 timerArmed");
+    assertEqual(timers.list().length, 0, "无活跃 timer");
+    await rt.stop();
   }
 
 } finally {

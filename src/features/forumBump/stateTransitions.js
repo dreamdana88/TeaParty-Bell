@@ -265,6 +265,33 @@ export function deferUntilTransition(state, input) {
   return ok(next);
 }
 
+/**
+ * 配置热更新补偿：允许将 nextEligibleAt 恢复为任意合法值（含 null / 回拨）。
+ * 不用于普通 defer 路径。
+ * @param {object} state
+ * @param {object} input
+ */
+export function restoreNextEligibleAtTransition(state, input) {
+  const current = validateState(state);
+  if (current.inFlight) {
+    return fail("STATE_INFLIGHT_EXISTS");
+  }
+  const raw = input?.nextEligibleAt;
+  let target = null;
+  if (raw !== null && raw !== undefined) {
+    if (!isValidIsoTimestamp(raw)) {
+      return fail("STATE_ARGUMENT_INVALID");
+    }
+    target = raw;
+  }
+  if (current.nextEligibleAt === target) {
+    return ok(current, false);
+  }
+  const next = cloneState(current);
+  next.nextEligibleAt = target;
+  return ok(next);
+}
+
 export function rolloverLocalDateTransition(state, input) {
   const current = validateState(state);
   const localDate = input?.localDate;

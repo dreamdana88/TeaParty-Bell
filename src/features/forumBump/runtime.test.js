@@ -1,10 +1,23 @@
 import { mkdtempSync, rmSync, existsSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { createForumBumpRuntime } from "./runtime.js";
+import { createForumBumpRuntime as createForumBumpRuntimeImpl } from "./runtime.js";
 import { createForumBumpStateStore } from "./stateStore.js";
 import { createForumBumpScheduler } from "./scheduler.js";
 import { SCHEDULER_REFERENCE_DEFAULTS } from "./schedulerConfig.js";
+
+/** 测试默认 Preflight 通过，避免无 Discord client 时启动失败 */
+async function passPreflight() {
+  return { success: true, errorCode: null, failures: [] };
+}
+
+function createForumBumpRuntime(opts) {
+  return createForumBumpRuntimeImpl({
+    preflightForumsFn: passPreflight,
+    ...opts,
+    preflightForumsFn: opts.preflightForumsFn ?? passPreflight,
+  });
+}
 
 let passed = 0;
 let failed = 0;

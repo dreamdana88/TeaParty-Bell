@@ -382,6 +382,77 @@ export function createForumBumpRuntime({
       return startResult;
     }
 
+    // 对 effective 全量 Forum 做 Preflight（含动态文件中 .env 没有的频道）
+    try {
+      const pf = await preflightForumsFn({
+        client,
+        guildId,
+        forumChannelIds: effectiveForumBump.forumChannelIds ?? [],
+      });
+      if (!pf.success) {
+        started = true;
+        startResult = {
+          success: false,
+          mode,
+          started: true,
+          errorCode: "DYNAMIC_CONFIG_PREFLIGHT_FAILED",
+          timerArmed: false,
+          nextWakeAt: null,
+          halted: true,
+          failures: pf.failures ?? [],
+        };
+        if (alertHandler) {
+          try {
+            await alertHandler.handleCycleResult({
+              status: "state_failed",
+              errorCode: "DYNAMIC_CONFIG_PREFLIGHT_FAILED",
+            });
+          } catch (alertErr) {
+            fireCriticalOnce({
+              errorCode: "ALERT_PERSISTENCE_FAILED",
+              status: "state_failed",
+              errorName: typeof alertErr?.name === "string" ? alertErr.name : "Error",
+            });
+          }
+        }
+        try {
+          logger?.error?.("[ForumBumpRuntime] effective Forum Preflight 失败，fail closed", {
+            errorCode: "DYNAMIC_CONFIG_PREFLIGHT_FAILED",
+            failureCount: (pf.failures ?? []).length,
+          });
+        } catch {
+          // ignore
+        }
+        return startResult;
+      }
+    } catch (error) {
+      started = true;
+      startResult = {
+        success: false,
+        mode,
+        started: true,
+        errorCode: "DYNAMIC_CONFIG_PREFLIGHT_FAILED",
+        timerArmed: false,
+        nextWakeAt: null,
+        halted: true,
+      };
+      if (alertHandler) {
+        try {
+          await alertHandler.handleCycleResult({
+            status: "state_failed",
+            errorCode: "DYNAMIC_CONFIG_PREFLIGHT_FAILED",
+          });
+        } catch (alertErr) {
+          fireCriticalOnce({
+            errorCode: "ALERT_PERSISTENCE_FAILED",
+            status: "state_failed",
+            errorName: typeof alertErr?.name === "string" ? alertErr.name : "Error",
+          });
+        }
+      }
+      return startResult;
+    }
+
     stateStore = createStateStoreFn({
       statePath: resolvedStatePath,
       logger,
@@ -693,7 +764,202 @@ export function createForumBumpRuntime({
   }
 
   /**
+   * 持久化成功后的失败补偿：恢复配置文件 / Scheduler / nextEligibleAt。
+   * 内存 revision 必须使用回滚 save 返回值。任一补偿失败 → fail closed。
+   */
+  async function compensateDynamicConfigUpdate({
+    previousDoc,
+    previousSchedConfig,
+    previousNextEligibleAt,
+    diskRevisionAfterSave,
+    primaryErrorCode,
+  }) {
+    let compensateOk = true;
+    let rolledConfig = null;
+
+    // 1) 恢复旧动态配置文件（内容=previous，revision 由 store 递增）
+    try {
+      const rb = await dynamicConfigStore.save({
+        config: {
+          ...previousDoc,
+          revision: diskRevisionAfterSave,
+        },
+        expectedRevision: diskRevisionAfterSave,
+        updatedBy: "rollback",
+      });
+      if (!rb.success || !rb.config) {
+        compensateOk = false;
+      } else {
+        rolledConfig = cloneDynamicConfig(rb.config);
+        dynamicConfigDoc = rolledConfig;
+        effectiveForumBump = applyDynamicConfigOverlay(baseForumBump, rolledConfig);
+        dynamicConfigSource = "file";
+        dynamicConfigError = null;
+      }
+    } catch {
+      compensateOk = false;
+    }
+
+    // 2) 恢复旧 Scheduler 配置
+    try {
+      if (scheduler && previousSchedConfig) {
+        scheduler.replaceConfig(previousSchedConfig);
+      } else {
+        compensateOk = false;
+      }
+    } catch {
+      compensateOk = false;
+    }
+
+    // 3) 恢复配置修改前的 nextEligibleAt（允许回拨 / null）
+    try {
+      if (stateStore) {
+        await stateStore.load();
+        const s = stateStore.getSnapshot?.();
+        if (!s) {
+          compensateOk = false;
+        } else if (s.nextEligibleAt !== previousNextEligibleAt) {
+          if (typeof stateStore.restoreNextEligibleAt === "function") {
+            const restored = await stateStore.restoreNextEligibleAt({
+              expectedRevision: s.revision,
+              nextEligibleAt: previousNextEligibleAt,
+            });
+            if (!restored.success) {
+              compensateOk = false;
+            }
+          } else if (previousNextEligibleAt != null) {
+            // 测试替身无 restore API 时退化为 deferUntil（仅能前向）
+            const def = await stateStore.deferUntil({
+              expectedRevision: s.revision,
+              nextEligibleAt: previousNextEligibleAt,
+            });
+            if (!def.success) {
+              compensateOk = false;
+            }
+          }
+        }
+      }
+    } catch {
+      compensateOk = false;
+    }
+
+    if (!compensateOk) {
+      try {
+        scheduler?.clearSchedule?.();
+      } catch {
+        // ignore
+      }
+      dynamicConfigSource = "failed";
+      dynamicConfigError = "DYNAMIC_CONFIG_COMPENSATE_FAILED";
+      try {
+        logger?.error?.("[ForumBumpRuntime] 动态配置补偿失败，fail closed", {
+          primaryErrorCode,
+        });
+      } catch {
+        // ignore
+      }
+      if (alertHandler) {
+        try {
+          await alertHandler.handleCycleResult({
+            status: "state_failed",
+            errorCode: "DYNAMIC_CONFIG_COMPENSATE_FAILED",
+            primaryErrorCode,
+          });
+        } catch (alertErr) {
+          fireCriticalOnce({
+            errorCode: "ALERT_PERSISTENCE_FAILED",
+            status: "state_failed",
+            errorName: typeof alertErr?.name === "string" ? alertErr.name : "Error",
+          });
+        }
+      }
+      return {
+        success: false,
+        errorCode: "DYNAMIC_CONFIG_COMPENSATE_FAILED",
+        primaryErrorCode,
+        compensated: false,
+        timerArmed: false,
+        nextWakeAt: null,
+        safeMessage: "配置更新失败且补偿不完整，已 fail closed。",
+      };
+    }
+
+    // 补偿成功：按旧配置重新排程（暂停则无 timer）
+    let arm = { success: true, timerArmed: false, nextWakeAt: null };
+    try {
+      await stateStore.load();
+      const s = stateStore.getSnapshot?.();
+      if (s?.paused) {
+        scheduler.clearSchedule?.();
+      } else {
+        arm = await scheduler.rescheduleFromState({ reason: "ready" });
+        if (!arm.success && arm.errorCode) {
+          try {
+            scheduler.clearSchedule?.();
+          } catch {
+            // ignore
+          }
+          dynamicConfigSource = "failed";
+          dynamicConfigError = "DYNAMIC_CONFIG_COMPENSATE_FAILED";
+          if (alertHandler) {
+            try {
+              await alertHandler.handleCycleResult({
+                status: "state_failed",
+                errorCode: "DYNAMIC_CONFIG_COMPENSATE_FAILED",
+                primaryErrorCode,
+              });
+            } catch (alertErr) {
+              fireCriticalOnce({
+                errorCode: "ALERT_PERSISTENCE_FAILED",
+                status: "state_failed",
+                errorName: typeof alertErr?.name === "string" ? alertErr.name : "Error",
+              });
+            }
+          }
+          return {
+            success: false,
+            errorCode: "DYNAMIC_CONFIG_COMPENSATE_FAILED",
+            primaryErrorCode,
+            compensated: false,
+            timerArmed: false,
+            nextWakeAt: null,
+            safeMessage: "配置已回滚但重新排程失败，已 fail closed。",
+          };
+        }
+      }
+    } catch {
+      try {
+        scheduler?.clearSchedule?.();
+      } catch {
+        // ignore
+      }
+      dynamicConfigSource = "failed";
+      dynamicConfigError = "DYNAMIC_CONFIG_COMPENSATE_FAILED";
+      return {
+        success: false,
+        errorCode: "DYNAMIC_CONFIG_COMPENSATE_FAILED",
+        primaryErrorCode,
+        compensated: false,
+        timerArmed: false,
+        nextWakeAt: null,
+      };
+    }
+
+    return {
+      success: false,
+      errorCode: primaryErrorCode,
+      compensated: true,
+      config: cloneDynamicConfig(dynamicConfigDoc),
+      revision: dynamicConfigDoc.revision,
+      nextWakeAt: arm.nextWakeAt ?? null,
+      timerArmed: arm.timerArmed === true,
+      safeMessage: "配置更新失败，已完整回滚。",
+    };
+  }
+
+  /**
    * 热更新动态配置：全有或全无。
+   * 持久化之后的任何失败必须完整补偿，禁止 partial 成功。
    * @param {object} patch
    * @param {{ actorId?: string, actorTag?: string }|null} [actorContext]
    */
@@ -728,9 +994,12 @@ export function createForumBumpRuntime({
         };
       }
 
-      const previousEffective = { ...effectiveForumBump };
       const previousDoc = cloneDynamicConfig(dynamicConfigDoc);
       const previousSchedConfig = scheduler.getConfig();
+      /** @type {string|null} */
+      let previousNextEligibleAt = null;
+      /** @type {number|null} */
+      let diskRevisionAfterSave = null;
 
       try {
         // 1. 等待当前周期安全结束
@@ -767,7 +1036,7 @@ export function createForumBumpRuntime({
           }
         }
 
-        // 4. 确认无 inFlight
+        // 4. 确认无 inFlight，并记录修改前 nextEligibleAt
         await stateStore.load();
         let snap = stateStore.getSnapshot?.();
         if (snap?.inFlight) {
@@ -778,6 +1047,7 @@ export function createForumBumpRuntime({
             inFlightPhase: snap.inFlight.phase ?? null,
           };
         }
+        previousNextEligibleAt = snap?.nextEligibleAt ?? null;
 
         const actor = actorContext?.actorTag
           || actorContext?.actorId
@@ -797,61 +1067,50 @@ export function createForumBumpRuntime({
             safeMessage: "动态配置持久化失败。",
           };
         }
+        diskRevisionAfterSave = saved.revision;
 
-        // 6. 热替换 Runtime / Scheduler 配置
+        // 自此之后失败必须完整补偿
         const nextEffective = applyDynamicConfigOverlay(baseForumBump, saved.config);
         let nextSchedConfig;
         try {
           nextSchedConfig = toSchedulerConfig(nextEffective);
           scheduler.replaceConfig(nextSchedConfig);
         } catch (error) {
-          // 回滚磁盘：写回 previousDoc（best effort）
-          try {
-            await dynamicConfigStore.save({
-              config: previousDoc,
-              expectedRevision: saved.revision,
-              updatedBy: "rollback",
-            });
-          } catch {
-            // ignore
-          }
-          dynamicConfigDoc = previousDoc;
-          effectiveForumBump = previousEffective;
-          try {
-            scheduler.replaceConfig(previousSchedConfig);
-          } catch {
-            // ignore
-          }
-          return {
-            success: false,
-            errorCode: error?.code || "DYNAMIC_CONFIG_UPDATE_FAILED",
-            safeMessage: "热替换配置失败，已回滚。",
-          };
+          return compensateDynamicConfigUpdate({
+            previousDoc,
+            previousSchedConfig,
+            previousNextEligibleAt,
+            diskRevisionAfterSave,
+            primaryErrorCode: typeof error?.code === "string"
+              ? error.code
+              : "DYNAMIC_CONFIG_UPDATE_FAILED",
+          });
         }
 
+        // 暂用新配置（补偿时会写回）
         dynamicConfigDoc = cloneDynamicConfig(saved.config);
         effectiveForumBump = nextEffective;
         dynamicConfigSource = "file";
         dynamicConfigError = null;
 
-        // 7–8. 重算 nextEligibleAt + 清 timer 重排
-        await stateStore.load();
-        snap = stateStore.getSnapshot?.();
+        // 6. 重读状态
+        try {
+          await stateStore.load();
+          snap = stateStore.getSnapshot?.();
+        } catch {
+          snap = null;
+        }
         if (!snap) {
-          // 状态丢失：保留新配置但无 timer
-          try {
-            scheduler.clearSchedule?.();
-          } catch {
-            // ignore
-          }
-          return {
-            success: false,
-            errorCode: "STATE_READ_FAILED",
-            safeMessage: "配置已保存但状态不可读。",
-            config: cloneDynamicConfig(dynamicConfigDoc),
-          };
+          return compensateDynamicConfigUpdate({
+            previousDoc,
+            previousSchedConfig,
+            previousNextEligibleAt,
+            diskRevisionAfterSave,
+            primaryErrorCode: "STATE_READ_FAILED",
+          });
         }
 
+        // 7. 重算 nextEligibleAt
         if (!snap.paused && !snap.inFlight) {
           const recomputed = recomputeNextEligibleAfterConfigChange({
             nowMs: clock.now(),
@@ -864,31 +1123,18 @@ export function createForumBumpRuntime({
               nextEligibleAt: recomputed.nextEligibleAt,
             });
             if (!def.success) {
-              // 配置已写入；尽量恢复旧 scheduler 配置并无 timer
-              try {
-                scheduler.replaceConfig(previousSchedConfig);
-                scheduler.clearSchedule?.();
-              } catch {
-                // ignore
-              }
-              // 配置文件保持新值（已成功），但排程失败 → 仍报告失败并清 timer
-              try {
-                await scheduler.rescheduleFromState({ reason: "halt" });
-              } catch {
-                // ignore
-              }
-              return {
-                success: false,
-                errorCode: def.errorCode || "STATE_WRITE_FAILED",
-                safeMessage: "配置已保存但 nextEligibleAt 更新失败。",
-                config: cloneDynamicConfig(dynamicConfigDoc),
-                partial: true,
-              };
+              return compensateDynamicConfigUpdate({
+                previousDoc,
+                previousSchedConfig,
+                previousNextEligibleAt,
+                diskRevisionAfterSave,
+                primaryErrorCode: def.errorCode || "STATE_WRITE_FAILED",
+              });
             }
           }
         }
 
-        // 暂停中：不 arm
+        // 暂停中：配置已更新，无 timer
         if (snap.paused) {
           try {
             scheduler.clearSchedule?.();
@@ -904,15 +1150,16 @@ export function createForumBumpRuntime({
           };
         }
 
+        // 8. 重新排程
         const arm = await scheduler.rescheduleFromState({ reason: "ready" });
         if (!arm.success && arm.errorCode) {
-          return {
-            success: false,
-            errorCode: arm.errorCode,
-            safeMessage: "配置已保存但重新排程失败。",
-            config: cloneDynamicConfig(dynamicConfigDoc),
-            partial: true,
-          };
+          return compensateDynamicConfigUpdate({
+            previousDoc,
+            previousSchedConfig,
+            previousNextEligibleAt,
+            diskRevisionAfterSave,
+            primaryErrorCode: arm.errorCode || "SCHEDULER_UNEXPECTED_FAILED",
+          });
         }
 
         try {
@@ -933,23 +1180,23 @@ export function createForumBumpRuntime({
           autoIntervalMinutes: autoIntervalSummary().autoIntervalMinutes,
         };
       } catch (error) {
-        // 尽力恢复旧配置内存态
-        try {
-          effectiveForumBump = previousEffective;
-          dynamicConfigDoc = previousDoc;
-          if (scheduler && previousSchedConfig) {
-            scheduler.replaceConfig(previousSchedConfig);
-            await scheduler.rescheduleFromState({ reason: "ready" });
-          }
-        } catch {
-          // ignore
+        if (diskRevisionAfterSave != null) {
+          return compensateDynamicConfigUpdate({
+            previousDoc,
+            previousSchedConfig,
+            previousNextEligibleAt,
+            diskRevisionAfterSave,
+            primaryErrorCode: typeof error?.code === "string"
+              ? error.code
+              : "DYNAMIC_CONFIG_UPDATE_FAILED",
+          });
         }
         return {
           success: false,
           errorCode: typeof error?.code === "string"
             ? error.code
             : "DYNAMIC_CONFIG_UPDATE_FAILED",
-          safeMessage: "配置热更新异常，已尝试回滚。",
+          safeMessage: "配置热更新异常。",
         };
       }
     });

@@ -33,6 +33,7 @@ import {
   markMessageDeletedTransition,
   markMessageSentTransition,
   pauseTransition,
+  restoreNextEligibleAtTransition,
   resumeTransition,
   rolloverLocalDateTransition,
 } from "./stateTransitions.js";
@@ -456,6 +457,14 @@ export function createForumBumpStateStore({
       deferUntilTransition(state, { nextEligibleAt }));
   }
 
+  /**
+   * 配置补偿专用：可回写更早的 nextEligibleAt 或 null。
+   */
+  async function restoreNextEligibleAt({ expectedRevision, nextEligibleAt } = {}) {
+    return _applyTransition("restoreNextEligibleAt", expectedRevision, (state) =>
+      restoreNextEligibleAtTransition(state, { nextEligibleAt }));
+  }
+
   async function recoverOnStartup() {
     return _enqueue(async () => {
       try {
@@ -534,6 +543,7 @@ export function createForumBumpStateStore({
     rolloverLocalDate,
     abandonBeforeSend,
     deferUntil,
+    restoreNextEligibleAt,
     recoverOnStartup,
   };
 }
