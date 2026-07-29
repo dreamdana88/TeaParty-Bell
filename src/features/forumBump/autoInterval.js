@@ -1,6 +1,6 @@
 /**
  * 自动顶帖间隔：活跃时段总时长 ÷ 每日额度。
- * 最短 30 分钟；无随机抖动；不追赶补齐。
+ * 最短间隔 30 分钟；绝对每日上限 30；无随机抖动；不追赶补齐。
  */
 
 import { parseHhMm } from "./schedulerConfig.js";
@@ -14,6 +14,9 @@ import {
 import { isValidIsoTimestamp } from "./stateSchema.js";
 
 export const MIN_AUTO_INTERVAL_MINUTES = 30;
+/** 绝对每日顶帖上限 */
+export const ABSOLUTE_DAILY_LIMIT_MAX = 30;
+export const DAILY_LIMIT_MIN = 1;
 
 /**
  * 活跃窗口总分钟数（同日 start < end）。
@@ -32,21 +35,14 @@ export function computeActiveWindowMinutes(activeStart, activeEnd) {
 }
 
 /**
- * 自动间隔（分钟）。不足 30 分钟返回 ok=false。
+ * 当前活跃窗可用的最大 dailyLimit。
+ * max = min(30, floor(窗口分钟 / 30))
  * @param {string} activeStart
  * @param {string} activeEnd
- * @param {number} dailyLimit
- * @returns {{ ok: true, intervalMinutes: number, intervalMs: number, windowMinutes: number }
+ * @returns {{ ok: true, maxDailyLimit: number, windowMinutes: number }
  *   | { ok: false, errorCode: string, safeMessage: string }}
  */
-export function computeAutoInterval(activeStart, activeEnd, dailyLimit) {
-  if (!Number.isInteger(dailyLimit) || dailyLimit < 1 || dailyLimit > 10) {
-    return {
-      ok: false,
-      errorCode: "DYNAMIC_CONFIG_INTERVAL_INVALID",
-      safeMessage: "dailyLimit 必须为 1–10 的整数。",
-    };
-  }
+export function computeMaxDailyLimit(activeStart, activeEnd) {
   const windowMinutes = computeActiveWindowMinutes(activeStart, activeEnd);
   if (windowMinutes == null) {
     return {
@@ -55,17 +51,100 @@ export function computeAutoInterval(activeStart, activeEnd, dailyLimit) {
       safeMessage: "活跃时间窗非法。",
     };
   }
+  if (windowMinutes < MIN_AUTO_INTERVAL_MINUTES) {
+    return {
+      ok: false,
+      errorCode: "DYNAMIC_CONFIG_INTERVAL_TOO_SHORT",
+      safeMessage: "活跃时段过短，至少需要 30 分钟。",
+      windowMinutes,
+      maxDailyLimit: 0,
+    };
+  }
+  const byInterval = Math.floor(windowMinutes / MIN_AUTO_INTERVAL_MINUTES);
+  const maxDailyLimit = Math.min(ABSOLUTE_DAILY_LIMIT_MAX, byInterval);
+  if (maxDailyLimit < DAILY_LIMIT_MIN) {
+    return {
+      ok: false,
+      errorCode: "DYNAMIC_CONFIG_INTERVAL_TOO_SHORT",
+      safeMessage: "活跃时段过短，无法安排顶帖。",
+      windowMinutes,
+      maxDailyLimit: 0,
+    };
+  }
+  return {
+    ok: true,
+    maxDailyLimit,
+    windowMinutes,
+  };
+}
+
+/**
+ * 校验 dailyLimit 相对活跃窗与绝对上限。
+ * @returns {{ ok: true, maxDailyLimit: number, windowMinutes: number }
+ *   | { ok: false, errorCode: string, safeMessage: string, maxDailyLimit?: number }}
+ */
+export function validateDailyLimitForWindow(activeStart, activeEnd, dailyLimit) {
+  if (!Number.isInteger(dailyLimit) || dailyLimit < DAILY_LIMIT_MIN) {
+    return {
+      ok: false,
+      errorCode: "DYNAMIC_CONFIG_INTERVAL_INVALID",
+      safeMessage: "每日额度必须是至少为 1 的整数。",
+    };
+  }
+  if (dailyLimit > ABSOLUTE_DAILY_LIMIT_MAX) {
+    return {
+      ok: false,
+      errorCode: "DYNAMIC_CONFIG_INTERVAL_INVALID",
+      safeMessage: "每日额度最多为 30 次。",
+      maxDailyLimit: ABSOLUTE_DAILY_LIMIT_MAX,
+    };
+  }
+  const maxInfo = computeMaxDailyLimit(activeStart, activeEnd);
+  if (!maxInfo.ok) {
+    return maxInfo;
+  }
+  if (dailyLimit > maxInfo.maxDailyLimit) {
+    return {
+      ok: false,
+      errorCode: "DYNAMIC_CONFIG_INTERVAL_TOO_SHORT",
+      safeMessage: `当前活跃时段最多支持 ${maxInfo.maxDailyLimit} 次，请降低每日额度或延长活跃时间。`,
+      maxDailyLimit: maxInfo.maxDailyLimit,
+      windowMinutes: maxInfo.windowMinutes,
+    };
+  }
+  return {
+    ok: true,
+    maxDailyLimit: maxInfo.maxDailyLimit,
+    windowMinutes: maxInfo.windowMinutes,
+  };
+}
+
+/**
+ * 自动间隔（分钟）。
+ * @param {string} activeStart
+ * @param {string} activeEnd
+ * @param {number} dailyLimit
+ * @returns {{ ok: true, intervalMinutes: number, intervalMs: number, windowMinutes: number, maxDailyLimit: number }
+ *   | { ok: false, errorCode: string, safeMessage: string, maxDailyLimit?: number }}
+ */
+export function computeAutoInterval(activeStart, activeEnd, dailyLimit) {
+  const validated = validateDailyLimitForWindow(activeStart, activeEnd, dailyLimit);
+  if (!validated.ok) {
+    return validated;
+  }
+  const { windowMinutes, maxDailyLimit } = validated;
   const exactMinutes = windowMinutes / dailyLimit;
+  // 理论上 validate 已保证 >= 30；双保险
   if (exactMinutes < MIN_AUTO_INTERVAL_MINUTES) {
     return {
       ok: false,
       errorCode: "DYNAMIC_CONFIG_INTERVAL_TOO_SHORT",
-      safeMessage: `自动间隔 ${exactMinutes.toFixed(2)} 分钟低于最短 ${MIN_AUTO_INTERVAL_MINUTES} 分钟。`,
+      safeMessage: `当前活跃时段最多支持 ${maxDailyLimit} 次，请降低每日额度或延长活跃时间。`,
       windowMinutes,
       exactMinutes,
+      maxDailyLimit,
     };
   }
-  // 使用精确毫秒（总毫秒 / limit），避免浮点误差；展示用 floor 分钟
   const intervalMs = Math.floor((windowMinutes * 60 * 1000) / dailyLimit);
   const intervalMinutes = Math.floor(intervalMs / 60_000);
   return {
@@ -74,6 +153,7 @@ export function computeAutoInterval(activeStart, activeEnd, dailyLimit) {
     intervalMs,
     windowMinutes,
     exactMinutes,
+    maxDailyLimit,
   };
 }
 

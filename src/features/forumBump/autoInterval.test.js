@@ -1,11 +1,14 @@
 /**
- * 自动顶帖间隔纯函数测试。
+ * 自动顶帖间隔与动态额度纯函数测试。
  */
 import {
   computeActiveWindowMinutes,
   computeAutoInterval,
+  computeMaxDailyLimit,
   recomputeNextEligibleAfterConfigChange,
+  validateDailyLimitForWindow,
   MIN_AUTO_INTERVAL_MINUTES,
+  ABSOLUTE_DAILY_LIMIT_MAX,
 } from "./autoInterval.js";
 
 let passed = 0;
@@ -27,22 +30,46 @@ console.log("\n=== forumBump autoInterval ===\n");
   assertEqual(r.windowMinutes, 300, "窗口 300 分钟");
   assertEqual(r.intervalMinutes, 60, "间隔 60 分钟");
   assertEqual(r.intervalMs, 60 * 60_000, "间隔 60min ms");
+  assertEqual(r.maxDailyLimit, 10, "08–13 max=10");
 }
 
-// 08:00–13:00 + 10 → 30 分钟
+// 08:00–13:00 + 10 通过；11 拒绝
 {
-  const r = computeAutoInterval("08:00", "13:00", 10);
-  assert(r.ok, "10 次可计算");
-  assertEqual(r.intervalMinutes, 30, "间隔 30 分钟");
-  assertEqual(r.intervalMs, 30 * 60_000, "间隔 30min ms");
+  const r10 = computeAutoInterval("08:00", "13:00", 10);
+  assert(r10.ok, "08–13 额度 10 通过");
+  assertEqual(r10.intervalMinutes, 30, "间隔 30 分钟");
+
+  const r11 = computeAutoInterval("08:00", "13:00", 11);
+  assert(!r11.ok, "08–13 额度 11 拒绝");
+  assertEqual(r11.errorCode, "DYNAMIC_CONFIG_INTERVAL_TOO_SHORT", "TOO_SHORT");
+  assertEqual(r11.maxDailyLimit, 10, "提示 max=10");
+  assert(r11.safeMessage.includes("最多支持 10 次"), "中文 max 提示");
 }
 
-// 不足 30 分钟拒绝
+// 10:00–22:00 + 24 通过；25 拒绝
 {
-  // 60 分钟窗口 / 3 = 20 分钟 < 30
-  const r = computeAutoInterval("10:00", "11:00", 3);
-  assert(!r.ok, "过短间隔拒绝");
-  assertEqual(r.errorCode, "DYNAMIC_CONFIG_INTERVAL_TOO_SHORT", "TOO_SHORT");
+  const max = computeMaxDailyLimit("10:00", "22:00");
+  assert(max.ok, "10–22 max ok");
+  assertEqual(max.maxDailyLimit, 24, "720/30=24");
+  assertEqual(max.windowMinutes, 720, "720 分钟");
+
+  assert(computeAutoInterval("10:00", "22:00", 24).ok, "额度 24 通过");
+  const r25 = computeAutoInterval("10:00", "22:00", 25);
+  assert(!r25.ok, "额度 25 拒绝");
+  assertEqual(r25.maxDailyLimit, 24, "max 24");
+}
+
+// 08:00–23:00 + 30 通过；超过 30 永远拒绝
+{
+  const max = computeMaxDailyLimit("08:00", "23:00");
+  assert(max.ok, "08–23 max ok");
+  assertEqual(max.maxDailyLimit, 30, "900min 钳到 30");
+  assert(computeAutoInterval("08:00", "23:00", 30).ok, "额度 30 通过");
+
+  const r31 = computeAutoInterval("08:00", "23:00", 31);
+  assert(!r31.ok, "超过 30 拒绝");
+  assertEqual(r31.safeMessage, "每日额度最多为 30 次。", "绝对上限文案");
+  assertEqual(ABSOLUTE_DAILY_LIMIT_MAX, 30, "常量 30");
 }
 
 // dailyLimit=1
@@ -52,20 +79,36 @@ console.log("\n=== forumBump autoInterval ===\n");
   assertEqual(r.intervalMinutes, 12 * 60, "全日窗间隔=窗口长");
 }
 
+// 非整小时活跃时间 floor
+{
+  // 08:00–13:15 = 315 分钟 → floor(315/30)=10
+  const max = computeMaxDailyLimit("08:00", "13:15");
+  assertEqual(max.maxDailyLimit, 10, "315/30 floor=10");
+  assert(computeAutoInterval("08:00", "13:15", 10).ok, "非整点 10 通过");
+  assert(!computeAutoInterval("08:00", "13:15", 11).ok, "非整点 11 拒绝");
+}
+
 // 非整除时间窗
 {
-  // 300 / 7 ≈ 42.857 → >= 30 ok
   const r = computeAutoInterval("08:00", "13:00", 7);
   assert(r.ok, "非整除可接受");
   assert(r.exactMinutes > 42 && r.exactMinutes < 43, "exact ~42.86");
   assert(r.intervalMs === Math.floor((300 * 60_000) / 7), "ms floor 精确");
 }
 
-// 边界恰好 30
+// 边界恰好 30 分钟间隔
 {
   const r = computeAutoInterval("10:00", "15:00", 10); // 300/10=30
   assert(r.ok, "恰好 30 分钟通过");
   assertEqual(r.intervalMinutes, MIN_AUTO_INTERVAL_MINUTES, "min 30");
+}
+
+// validateDailyLimitForWindow 与 compute 一致
+{
+  const v = validateDailyLimitForWindow("10:00", "22:00", 24);
+  assert(v.ok, "validate 24 ok");
+  const bad = validateDailyLimitForWindow("10:00", "22:00", 25);
+  assert(!bad.ok, "validate 25 fail");
 }
 
 // recompute：已达 dailyLimit
@@ -88,7 +131,7 @@ console.log("\n=== forumBump autoInterval ===\n");
 
 // recompute：窗外
 {
-  const nowMs = Date.parse("2026-07-28T02:00:00.000Z"); // UTC 02:00 在 10–22 外
+  const nowMs = Date.parse("2026-07-28T02:00:00.000Z");
   const r = recomputeNextEligibleAfterConfigChange({
     nowMs,
     config: {

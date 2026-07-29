@@ -34,7 +34,8 @@ export const FORUM_BUMP_DEFAULTS = Object.freeze({
   statePath: FORUM_BUMP_STATE_PATH,
   dynamicConfigPath: FORUM_BUMP_DYNAMIC_CONFIG_PATH,
   dailyLimitMin: 1,
-  dailyLimitMax: 10,
+  /** 绝对上限；具体可用上限还受活跃窗 / 30 分钟约束 */
+  dailyLimitMax: 30,
 });
 
 /**
@@ -183,7 +184,10 @@ export function loadForumBumpConfig(env = process.env, options = {}) {
     env.FORUM_BUMP_DAILY_LIMIT,
     FORUM_BUMP_DEFAULTS.dailyLimit,
     "FORUM_BUMP_DAILY_LIMIT",
-    { min: FORUM_BUMP_DEFAULTS.dailyLimitMin, max: FORUM_BUMP_DEFAULTS.dailyLimitMax },
+    {
+      min: FORUM_BUMP_DEFAULTS.dailyLimitMin,
+      max: FORUM_BUMP_DEFAULTS.dailyLimitMax,
+    },
   );
   const cooldownMinutes = parseStrictInt(
     env.FORUM_BUMP_COOLDOWN_MINUTES,

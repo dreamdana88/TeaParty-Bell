@@ -34,8 +34,11 @@ function restoreEnv() {
 function setRequired() {
   setEnv("DISCORD_BOT_TOKEN", "t");
   setEnv("DISCORD_APPLICATION_ID", "t");
-  setEnv("DISCORD_GUILD_ID", "t");
+  // 合法 Snowflake：避免 .env 中 FORUM_BUMP_MODE=dry_run/execute 时 guild 校验失败
+  setEnv("DISCORD_GUILD_ID", "1047080654573158420");
   setEnv("DISCORD_THANKS_CHANNEL_ID", "t");
+  // 配置单测默认禁用 Forum，避免依赖真实 Forum ID
+  setEnv("FORUM_BUMP_MODE", "disabled");
 }
 
 // ============================

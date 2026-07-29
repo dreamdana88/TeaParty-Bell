@@ -154,7 +154,8 @@ export function validateDynamicConfig(data) {
     });
   }
 
-  if (!Number.isInteger(data.dailyLimit) || data.dailyLimit < 1 || data.dailyLimit > 10) {
+  // dailyLimit 整数范围粗检；与活跃窗关系由 computeAutoInterval 统一判定
+  if (!Number.isInteger(data.dailyLimit) || data.dailyLimit < 1) {
     throw createDynamicConfigError("DYNAMIC_CONFIG_INVALID", undefined, {
       field: "dailyLimit",
     });

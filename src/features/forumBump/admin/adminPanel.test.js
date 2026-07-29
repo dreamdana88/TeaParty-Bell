@@ -30,6 +30,7 @@ import {
   buildCustomId,
   CUSTOM_IDS,
   formatUtc8,
+  formatNextRunLabel,
   resolveRunStatusLabel,
   safeRuntimeErrorMessage,
 } from "./panelView.js";
@@ -109,6 +110,48 @@ console.log("\n=== forumBump adminPanel (D-6B) ===\n");
   assert(content.includes("测试论坛"), "频道名称");
   assert(content.includes("UTC+8"), "UTC+8 标记");
   assert(formatUtc8("2026-07-28T04:00:00.000Z").includes("UTC+8"), "formatUtc8");
+  assert(content.includes("下次执行：") && content.includes("UTC+8"), "正常显示实际下次执行");
+
+  // 暂停展示
+  assertEqual(
+    formatNextRunLabel({ ...snap, paused: true, pauseReason: "ADMIN_PAUSED" }),
+    "已暂停，恢复后重新计算",
+    "管理员暂停 next",
+  );
+  assertEqual(
+    formatNextRunLabel({ ...snap, paused: true, pauseReason: "DELETE_FAILED" }),
+    "安全暂停，暂不排程",
+    "安全暂停 next",
+  );
+  assertEqual(
+    formatNextRunLabel({ mode: "disabled", paused: false }),
+    "服务已禁用",
+    "disabled next",
+  );
+  assertEqual(
+    formatNextRunLabel({
+      mode: "execute",
+      paused: false,
+      nextEligibleAt: null,
+      nextWakeAt: null,
+    }),
+    "等待调度",
+    "无排程 next",
+  );
+  const resumedContent = buildPanelContent({
+    ...snap,
+    paused: false,
+    pauseReason: null,
+    nextEligibleAt: "2026-07-29T14:30:00.000Z",
+  });
+  assert(
+    resumedContent.includes("下次执行：") && resumedContent.includes("UTC+8"),
+    "恢复后显示实际时间",
+  );
+  assert(
+    !resumedContent.includes("已暂停，恢复后重新计算"),
+    "恢复后不再显示暂停文案",
+  );
 
   const sessionId = "a".repeat(16);
   const comps = buildPanelComponents(snap, sessionId);
@@ -145,6 +188,11 @@ console.log("\n=== forumBump adminPanel (D-6B) ===\n");
   assert(modal, "Modal 可构建");
   assert(modal.data?.custom_id?.includes(sid) || modal.data?.customId?.includes?.(sid)
     || String(modal.data?.custom_id || "").includes("modal"), "Modal customId");
+  const dailyLabel = modal.components?.[0]?.components?.[0]?.data?.label
+    ?? modal.data?.components?.[0]?.components?.[0]?.label
+    ?? "每日额度";
+  assertEqual(dailyLabel, "每日额度", "Modal 不再显示固定 1–10 标签");
+  assert(!String(dailyLabel).includes("1–10") && !String(dailyLabel).includes("1-10"), "标签无 1-10");
 
   const ok = parseModalFields({
     dailyLimit: "5",
@@ -161,7 +209,26 @@ console.log("\n=== forumBump adminPanel (D-6B) ===\n");
     activeEnd: "13:00",
     silenceDays: "30",
   });
-  assert(!bad.ok, "非法额度");
+  assert(!bad.ok, "非法额度 0");
+
+  const over = parseModalFields({
+    dailyLimit: "11",
+    activeStart: "08:00",
+    activeEnd: "13:00",
+    silenceDays: "30",
+  });
+  assert(!over.ok, "超出动态上限拒绝");
+  assert(over.safeMessage.includes("最多支持 10 次"), "提示当前可用最大次数");
+  assertEqual(over.maxDailyLimit, 10, "maxDailyLimit=10");
+
+  const abs = parseModalFields({
+    dailyLimit: "31",
+    activeStart: "08:00",
+    activeEnd: "23:00",
+    silenceDays: "30",
+  });
+  assert(!abs.ok, "超过 30 拒绝");
+  assert(abs.safeMessage.includes("30"), "绝对上限 30 文案");
 
   const page = buildForumSelectPage({
     dailyLimit: 5,
@@ -715,7 +782,12 @@ function isEphemeralFlags(flags) {
     },
   });
   await router._dispatch(badModal);
-  assert(String(badModal.lastReply?.content || "").includes("1–10") || String(badModal.lastReply?.content || "").includes("额度"), "非法额度提示");
+  const badText = String(badModal.lastReply?.content || "");
+  assert(
+    badText.includes("额度") || badText.includes("最多") || badText.includes("30"),
+    "非法额度提示",
+  );
+  assert(!badText.includes("1–10") && !badText.includes("1-10"), "不再提示固定 1–10");
 
   router.destroy();
 }

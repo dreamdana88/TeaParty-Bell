@@ -13,6 +13,7 @@ import {
   TextInputBuilder,
   TextInputStyle,
 } from "discord.js";
+import { validateDailyLimitForWindow } from "../autoInterval.js";
 
 export const FB_CUSTOM_PREFIX = "fbump:v1";
 export const DISPLAY_TIMEZONE = "Asia/Shanghai";
@@ -125,6 +126,35 @@ export function formatForumList(forumChannelIds, nameMap = null) {
 }
 
 /**
+ * 下次执行展示文案（仅展示语义，不改变 Runtime 排程）。
+ * @param {object} snap
+ */
+export function formatNextRunLabel(snap) {
+  if (!snap || snap.mode === "disabled") {
+    return "服务已禁用";
+  }
+  if (snap.paused === true) {
+    if (snap.pauseReason === "ADMIN_PAUSED") {
+      return "已暂停，恢复后重新计算";
+    }
+    return "安全暂停，暂不排程";
+  }
+  if (snap.fatal === true || snap.dynamicConfigSource === "failed") {
+    return "安全暂停，暂不排程";
+  }
+  if (snap.nextEligibleAt) {
+    return formatUtc8(snap.nextEligibleAt);
+  }
+  if (snap.nextWakeAt != null) {
+    const iso = typeof snap.nextWakeAt === "number"
+      ? new Date(snap.nextWakeAt).toISOString()
+      : String(snap.nextWakeAt);
+    return formatUtc8(iso);
+  }
+  return "等待调度";
+}
+
+/**
  * @param {object} snap
  * @param {{ forumNameMap?: Map|object }} [opts]
  */
@@ -134,8 +164,6 @@ export function buildPanelContent(snap, opts = {}) {
   const successCount = snap?.successCount ?? 0;
   const dailyLimit = snap?.dailyLimit ?? "?";
   const lastSuccess = formatUtc8(snap?.lastSuccessAt);
-  const nextEligible = formatUtc8(snap?.nextEligibleAt);
-  const nextWake = formatUtc8(snap?.nextWakeAt ? new Date(snap.nextWakeAt).toISOString() : null);
   const inFlight = snap?.inFlightPhase
     ? String(snap.inFlightPhase)
     : "无";
@@ -164,7 +192,7 @@ export function buildPanelContent(snap, opts = {}) {
     `模式：\`${mode}\`（只读）`,
     `今日进度：${successCount} / ${dailyLimit}`,
     `最近成功：${lastSuccess}`,
-    `下次执行：${snap?.nextEligibleAt ? formatUtc8(snap.nextEligibleAt) : (snap?.nextWakeAt != null ? formatUtc8(new Date(snap.nextWakeAt).toISOString()) : "无")}`,
+    `下次执行：${formatNextRunLabel(snap)}`,
     `inFlight：${inFlight}`,
     `异常原因：${fault}`,
     "",
@@ -237,11 +265,12 @@ export function buildConfigModal(draft, sessionId) {
 
   const daily = new TextInputBuilder()
     .setCustomId("dailyLimit")
-    .setLabel("每日额度（1–10）")
+    .setLabel("每日额度")
     .setStyle(TextInputStyle.Short)
     .setRequired(true)
     .setMinLength(1)
     .setMaxLength(2)
+    .setPlaceholder("根据活跃时间自动限制，最多 30")
     .setValue(String(draft?.dailyLimit ?? "3"));
 
   const start = new TextInputBuilder()
@@ -283,8 +312,8 @@ export function buildConfigModal(draft, sessionId) {
 }
 
 /**
- * 解析 Modal 文本字段（基础格式校验）。
- * @returns {{ ok: true, values } | { ok: false, safeMessage: string }}
+ * 解析 Modal 文本字段（基础格式 + 活跃窗动态额度校验）。
+ * @returns {{ ok: true, values } | { ok: false, safeMessage: string, maxDailyLimit?: number }}
  */
 export function parseModalFields(fields) {
   const rawLimit = String(fields?.dailyLimit ?? "").trim();
@@ -292,13 +321,6 @@ export function parseModalFields(fields) {
   const rawEnd = String(fields?.activeEnd ?? "").trim();
   const rawSilence = String(fields?.silenceDays ?? "").trim();
 
-  if (!/^\d+$/.test(rawLimit)) {
-    return { ok: false, safeMessage: "每日额度必须是 1–10 的整数。" };
-  }
-  const dailyLimit = Number(rawLimit);
-  if (!Number.isInteger(dailyLimit) || dailyLimit < 1 || dailyLimit > 10) {
-    return { ok: false, safeMessage: "每日额度必须是 1–10 的整数。" };
-  }
   if (!HHMM_RE.test(rawStart) || !HHMM_RE.test(rawEnd)) {
     return { ok: false, safeMessage: "活跃时间必须为 HH:mm 格式。" };
   }
@@ -307,6 +329,23 @@ export function parseModalFields(fields) {
   if (sh * 60 + sm >= eh * 60 + em) {
     return { ok: false, safeMessage: "开始时间必须早于结束时间（不支持跨午夜）。" };
   }
+
+  if (!/^\d+$/.test(rawLimit)) {
+    return { ok: false, safeMessage: "每日额度必须是至少为 1 的整数。" };
+  }
+  const dailyLimit = Number(rawLimit);
+  if (!Number.isInteger(dailyLimit) || dailyLimit < 1) {
+    return { ok: false, safeMessage: "每日额度必须是至少为 1 的整数。" };
+  }
+  const limitCheck = validateDailyLimitForWindow(rawStart, rawEnd, dailyLimit);
+  if (!limitCheck.ok) {
+    return {
+      ok: false,
+      safeMessage: limitCheck.safeMessage,
+      maxDailyLimit: limitCheck.maxDailyLimit,
+    };
+  }
+
   if (!/^\d+$/.test(rawSilence)) {
     return { ok: false, safeMessage: "无回复天数必须是 1–3650 的整数。" };
   }
@@ -323,6 +362,7 @@ export function parseModalFields(fields) {
       activeEnd: rawEnd,
       silenceDays,
     },
+    maxDailyLimit: limitCheck.maxDailyLimit,
   };
 }
 
@@ -389,7 +429,13 @@ export function safeRuntimeErrorMessage(result) {
     return "配置已被其他操作更新，请重新打开顶帖面板。";
   }
   if (result?.errorCode === "DYNAMIC_CONFIG_INTERVAL_TOO_SHORT") {
-    return "自动间隔低于 30 分钟，请调整额度或活跃时间。";
+    if (Number.isInteger(result?.maxDailyLimit)) {
+      return `当前活跃时段最多支持 ${result.maxDailyLimit} 次，请降低每日额度或延长活跃时间。`;
+    }
+    return "当前活跃时段额度过高，请降低每日额度或延长活跃时间。";
+  }
+  if (result?.errorCode === "DYNAMIC_CONFIG_INTERVAL_INVALID") {
+    return result?.safeMessage || "每日额度或活跃时间不合法。";
   }
   if (result?.errorCode === "DYNAMIC_CONFIG_PREFLIGHT_FAILED") {
     return "Forum 频道校验失败，请检查频道类型与权限。";

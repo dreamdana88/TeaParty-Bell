@@ -99,7 +99,7 @@ console.log("\n=== forumBumpConfig ===\n");
   }
 }
 
-// dailyLimit 边界
+// dailyLimit 边界（默认 10:00–22:00 → max 24；绝对上限 30）
 {
   const c1 = loadForumBumpConfig(baseEnv({
     FORUM_BUMP_MODE: "execute",
@@ -108,12 +108,20 @@ console.log("\n=== forumBumpConfig ===\n");
   }), { projectRoot: "/tmp" });
   assertEqual(c1.dailyLimit, 1, "dailyLimit=1");
 
+  // 旧配置 dailyLimit=10 在默认窗下继续正常加载
   const c10 = loadForumBumpConfig(baseEnv({
     FORUM_BUMP_MODE: "execute",
     FORUM_BUMP_FORUM_CHANNEL_IDS: F,
     FORUM_BUMP_DAILY_LIMIT: "10",
   }), { projectRoot: "/tmp" });
-  assertEqual(c10.dailyLimit, 10, "dailyLimit=10");
+  assertEqual(c10.dailyLimit, 10, "旧额度 10 正常加载");
+
+  const c24 = loadForumBumpConfig(baseEnv({
+    FORUM_BUMP_MODE: "execute",
+    FORUM_BUMP_FORUM_CHANNEL_IDS: F,
+    FORUM_BUMP_DAILY_LIMIT: "24",
+  }), { projectRoot: "/tmp" });
+  assertEqual(c24.dailyLimit, 24, "10–22 额度 24 通过");
 
   try {
     loadForumBumpConfig(baseEnv({
@@ -126,16 +134,57 @@ console.log("\n=== forumBumpConfig ===\n");
     assert(e instanceof ConfigError, "dailyLimit=0 失败");
   }
 
+  // 默认窗 max=24 → 25 拒绝
   try {
     loadForumBumpConfig(baseEnv({
       FORUM_BUMP_MODE: "execute",
       FORUM_BUMP_FORUM_CHANNEL_IDS: F,
+      FORUM_BUMP_DAILY_LIMIT: "25",
+    }), { projectRoot: "/tmp" });
+    failed++; console.error("  FAIL: dailyLimit=25 应拒绝");
+  } catch (e) {
+    assert(e instanceof ConfigError, "默认窗 dailyLimit=25 失败");
+    assert(String(e.message).includes("24") || String(e.message).includes("最多"), "提示可用上限");
+  }
+
+  // 08:00–13:00 额度 11 拒绝
+  try {
+    loadForumBumpConfig(baseEnv({
+      FORUM_BUMP_MODE: "execute",
+      FORUM_BUMP_FORUM_CHANNEL_IDS: F,
+      FORUM_BUMP_ACTIVE_START: "08:00",
+      FORUM_BUMP_ACTIVE_END: "13:00",
       FORUM_BUMP_DAILY_LIMIT: "11",
     }), { projectRoot: "/tmp" });
-    failed++; console.error("  FAIL: dailyLimit=11");
+    failed++; console.error("  FAIL: 08–13 dailyLimit=11");
   } catch (e) {
-    assert(e instanceof ConfigError, "dailyLimit>10 失败");
+    assert(e instanceof ConfigError, "08–13 额度 11 失败");
+    assert(String(e.message).includes("10"), "提示最多 10");
   }
+
+  // 绝对上限 30
+  try {
+    loadForumBumpConfig(baseEnv({
+      FORUM_BUMP_MODE: "execute",
+      FORUM_BUMP_FORUM_CHANNEL_IDS: F,
+      FORUM_BUMP_ACTIVE_START: "08:00",
+      FORUM_BUMP_ACTIVE_END: "23:00",
+      FORUM_BUMP_DAILY_LIMIT: "31",
+    }), { projectRoot: "/tmp" });
+    failed++; console.error("  FAIL: dailyLimit=31");
+  } catch (e) {
+    assert(e instanceof ConfigError, "dailyLimit=31 失败");
+    assert(String(e.message).includes("30"), "提示最多 30");
+  }
+
+  const c30 = loadForumBumpConfig(baseEnv({
+    FORUM_BUMP_MODE: "execute",
+    FORUM_BUMP_FORUM_CHANNEL_IDS: F,
+    FORUM_BUMP_ACTIVE_START: "08:00",
+    FORUM_BUMP_ACTIVE_END: "23:00",
+    FORUM_BUMP_DAILY_LIMIT: "30",
+  }), { projectRoot: "/tmp" });
+  assertEqual(c30.dailyLimit, 30, "08–23 额度 30 通过");
 }
 
 // 非法布尔 / 时区 / 时间窗 / 数字不回退
