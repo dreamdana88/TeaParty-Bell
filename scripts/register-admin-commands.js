@@ -3,7 +3,7 @@ import { resolve } from "path";
 import { pathToFileURL } from "url";
 import { loadConfig } from "../src/config/index.js";
 import { logger as defaultLogger } from "../src/utils/logger.js";
-import { adminCommandDefinitions } from "../src/features/manualMessage/commands.js";
+import { allAdminCommandDefinitions } from "../src/features/adminCommands.js";
 import {
   AdminCommandRegistrationError,
   registerAdminCommands,
@@ -98,9 +98,9 @@ export async function runRegisterCommands({
       mode: "dry-run",
       applicationId: config.discordApplicationId,
       guildId: config.discordGuildId,
-      commands: commandSummary(adminCommandDefinitions),
+      commands: commandSummary(allAdminCommandDefinitions),
     }));
-    return { exitCode: 0, count: adminCommandDefinitions.length };
+    return { exitCode: 0, count: allAdminCommandDefinitions.length };
   }
 
   if (!args.confirmGuild || args.confirmGuild !== config.discordGuildId) {
@@ -114,7 +114,7 @@ export async function runRegisterCommands({
       rest,
       applicationId: config.discordApplicationId,
       guildId: config.discordGuildId,
-      commandDefinitions: adminCommandDefinitions,
+      commandDefinitions: allAdminCommandDefinitions,
       logger,
     });
     writeOut(`已同步 ${result.count} 个 Guild 命令：${result.names.join("、")}`);

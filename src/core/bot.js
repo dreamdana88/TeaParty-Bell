@@ -21,6 +21,7 @@ import { createManualMessageService } from "../features/manualMessage/service.js
 import { createManualInteractionRouter } from "../features/manualMessage/interactionRouter.js";
 import { createForumBumpRuntime } from "../features/forumBump/runtime.js";
 import { FORUM_BUMP_INCIDENT_KEYS } from "../features/forumBump/runtimeAlerts.js";
+import { createForumBumpAdminRouter } from "../features/forumBump/admin/adminRouter.js";
 import {
   createInstanceLock,
   InstanceLockError,
@@ -88,6 +89,7 @@ export async function start(options = {}) {
     createManualMessageServiceFn = createManualMessageService,
     createManualInteractionRouterFn = createManualInteractionRouter,
     createForumBumpRuntimeFn = createForumBumpRuntime,
+    createForumBumpAdminRouterFn = createForumBumpAdminRouter,
     createInstanceLockFn = createInstanceLock,
     logger = defaultLogger,
     exitFn = (code) => process.exit(code),
@@ -281,6 +283,7 @@ export async function start(options = {}) {
   // ---- 15. 进程退出处理（先定义，供 Forum 致命通道复用）----
   let shuttingDown = false;
   let forumBumpRuntime = null;
+  let forumBumpAdminRouter = null;
 
   async function shutdown(signal, exitCode = EXIT_OK) {
     if (shuttingDown) return;
@@ -290,7 +293,12 @@ export async function start(options = {}) {
     } catch {
       // ignore
     }
-    // 先停 Forum Bump（等待 send/delete/complete 收尾），再 destroy Discord
+    // 先停 Admin Router（停止接收新操作），再停 Forum Runtime，再 destroy Discord
+    try {
+      if (forumBumpAdminRouter) forumBumpAdminRouter.destroy();
+    } catch (err) {
+      try { logger.error("Forum Bump Admin Router 停止异常", { message: err.message }); } catch { /* */ }
+    }
     try {
       if (forumBumpRuntime) await forumBumpRuntime.stop();
     } catch (err) {
@@ -356,7 +364,25 @@ export async function start(options = {}) {
         recoveryStatus: fbStart.recoveryStatus ?? null,
       });
     }
+
+    // Runtime 就绪后再启动 Admin Router（即使 partial start 也可查看面板）
+    try {
+      forumBumpAdminRouter = createForumBumpAdminRouterFn({
+        client,
+        guildId: config.discordGuildId,
+        forumBumpRuntime,
+        logger,
+      });
+      forumBumpAdminRouter.start();
+    } catch (adminErr) {
+      try { logger.error("Forum Bump Admin Router 启动失败", { message: adminErr?.message }); } catch { /* */ }
+      // 面板失败不阻断 Bot；无 Admin 面板
+      forumBumpAdminRouter = null;
+    }
   } catch (error) {
+    try {
+      if (forumBumpAdminRouter) forumBumpAdminRouter.destroy();
+    } catch { /* ignore */ }
     try {
       if (forumBumpRuntime) await forumBumpRuntime.stop();
     } catch { /* ignore */ }
@@ -375,6 +401,7 @@ export async function start(options = {}) {
       excludeIncidentKeys: FORUM_BUMP_INCIDENT_KEYS,
     });
   } catch (err) {
+    try { if (forumBumpAdminRouter) forumBumpAdminRouter.destroy(); } catch { /* ignore */ }
     try { if (forumBumpRuntime) await forumBumpRuntime.stop(); } catch { /* ignore */ }
     await safelyDestroyManualRouter(manualInteractionRouter, logger, "Router 启动后清理失败");
     try { instanceLock?.release(); } catch { /* ignore */ }
@@ -385,6 +412,7 @@ export async function start(options = {}) {
 
   // 检查 recovery 是否有失败
   if (readyResult && readyResult.failedRecoveries && readyResult.failedRecoveries.length > 0) {
+    try { if (forumBumpAdminRouter) forumBumpAdminRouter.destroy(); } catch { /* ignore */ }
     try { if (forumBumpRuntime) await forumBumpRuntime.stop(); } catch { /* ignore */ }
     await safelyDestroyManualRouter(manualInteractionRouter, logger, "Router 启动后清理失败");
     try { instanceLock?.release(); } catch { /* ignore */ }
@@ -416,6 +444,7 @@ export async function start(options = {}) {
     destroy,
     healthMonitor,
     forumBumpRuntime,
+    forumBumpAdminRouter,
     shutdown,
   };
 }

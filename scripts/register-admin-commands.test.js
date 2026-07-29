@@ -48,7 +48,12 @@ assertEqual(parseRegisterCommandArgs(["--confirm-guild", CONFIG.discordGuildId])
   assertEqual(result.exitCode, 0, "dry-run 退出码 0");
   assertEqual(restCreated, false, "dry-run 不创建 REST Client");
   assertEqual(registerCalled, false, "dry-run 不调用注册模块");
-  assert(serialized.includes("小G宝回复") && serialized.includes("小g宝发言"), "dry-run 输出两个命令摘要");
+  assert(
+    serialized.includes("小G宝回复")
+      && serialized.includes("小g宝发言")
+      && serialized.includes("顶帖"),
+    "dry-run 输出三个管理员命令摘要",
+  );
   assert(serialized.includes(CONFIG.discordApplicationId) && serialized.includes(CONFIG.discordGuildId), "dry-run 输出安全 ID 摘要");
   assert(!serialized.includes(CONFIG.discordBotToken), "dry-run 不输出 Token");
   assertEqual(stderr.lines.length, 0, "dry-run 无错误输出");
@@ -78,7 +83,7 @@ for (const argv of [[], ["--confirm-guild", "wrong-guild"]]) {
     restFactory: (options) => { restToken = options.token; return { put: async () => {} }; },
     registerFn: async (options) => {
       registrationOptions = options;
-      return { count: 2, names: ["小G宝回复", "小g宝发言"] };
+      return { count: 3, names: ["小G宝回复", "小g宝发言", "顶帖"] };
     },
     stdout,
   });
@@ -86,7 +91,11 @@ for (const argv of [[], ["--confirm-guild", "wrong-guild"]]) {
   assertEqual(restToken, CONFIG.discordBotToken, "真实模式使用配置 Bot Token 创建 REST");
   assertEqual(registrationOptions.applicationId, CONFIG.discordApplicationId, "注册使用配置 Application ID");
   assertEqual(registrationOptions.guildId, CONFIG.discordGuildId, "注册使用配置 Guild ID");
-  assertEqual(registrationOptions.commandDefinitions.length, 2, "注册使用统一两个命令");
+  assertEqual(registrationOptions.commandDefinitions.length, 3, "注册使用全部三个管理员命令");
+  assert(
+    registrationOptions.commandDefinitions.some((c) => c.name === "顶帖"),
+    "注册体含顶帖命令",
+  );
   assert(!JSON.stringify(stdout.lines).includes(CONFIG.discordBotToken), "成功输出不包含 Token");
 }
 

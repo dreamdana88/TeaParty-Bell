@@ -1,6 +1,6 @@
 import { Routes } from "discord.js";
 import { logger as defaultLogger } from "../../utils/logger.js";
-import { adminCommandDefinitions } from "./commands.js";
+import { allAdminCommandDefinitions } from "../adminCommands.js";
 
 const SAFE_REGISTRATION_ERROR_MESSAGE = "Guild 命令注册失败。";
 
@@ -28,18 +28,28 @@ function toCommandJson(definition) {
   throw new AdminCommandRegistrationError("INVALID_COMMAND_DEFINITIONS");
 }
 
+/**
+ * 接受 1+ 个命令定义；不再写死数量为 2。
+ * 每项必须含 name。
+ */
 function normalizeCommandDefinitions(commandDefinitions) {
-  if (!Array.isArray(commandDefinitions) || commandDefinitions.length !== 2) {
+  if (!Array.isArray(commandDefinitions) || commandDefinitions.length < 1) {
     throw new AdminCommandRegistrationError("INVALID_COMMAND_DEFINITIONS");
   }
-  return commandDefinitions.map(toCommandJson);
+  const body = commandDefinitions.map(toCommandJson);
+  for (const cmd of body) {
+    if (!cmd || typeof cmd.name !== "string" || cmd.name.trim().length === 0) {
+      throw new AdminCommandRegistrationError("INVALID_COMMAND_DEFINITIONS");
+    }
+  }
+  return body;
 }
 
 export async function registerAdminCommands({
   rest,
   applicationId,
   guildId,
-  commandDefinitions = adminCommandDefinitions,
+  commandDefinitions = allAdminCommandDefinitions,
   logger = defaultLogger,
 } = {}) {
   if (!rest || typeof rest.put !== "function") {
