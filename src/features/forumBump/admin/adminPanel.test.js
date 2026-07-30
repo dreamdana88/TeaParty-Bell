@@ -21,7 +21,8 @@ import {
   SLASH_SEND_COMMAND_NAME,
 } from "../../manualMessage/commands.js";
 import {
-  buildPanelContent,
+  buildPanelEmbed,
+  buildPanelMessage,
   buildPanelComponents,
   buildConfigModal,
   buildForumSelectPage,
@@ -29,10 +30,15 @@ import {
   parseCustomId,
   buildCustomId,
   CUSTOM_IDS,
-  formatUtc8,
+  formatNaturalTime,
   formatNextRunLabel,
-  resolveRunStatusLabel,
+  formatInFlightNotice,
+  formatForumList,
+  resolveStatusHeadline,
   safeRuntimeErrorMessage,
+  PANEL_EMBED_COLOR,
+  PANEL_TITLE,
+  MAX_FORUM_LINES_IN_PANEL,
 } from "./panelView.js";
 import { createForumBumpPanelSessionStore } from "./sessionStore.js";
 import { createForumBumpAdminRouter } from "./adminRouter.js";
@@ -76,55 +82,108 @@ console.log("\n=== forumBump adminPanel (D-6B) ===\n");
   assertEqual(getManualMessageCommands().length, 2, "人工命令列表仍为 2");
 }
 
-// ---------- 展示 ----------
+// ---------- 展示（Embed 美化）----------
+function embedJson(embed) {
+  return typeof embed.toJSON === "function" ? embed.toJSON() : embed.data;
+}
+
 {
+  // 固定「今天」为 2026-07-28 上海下午（UTC 06:00 = 上海 14:00）
+  const nowMs = Date.parse("2026-07-28T06:00:00.000Z");
   const snap = {
     mode: "execute",
     started: true,
     fatal: false,
     paused: false,
     pauseReason: null,
-    successCount: 1,
-    dailyLimit: 3,
-    lastSuccessAt: "2026-07-28T04:00:00.000Z",
-    nextEligibleAt: "2026-07-28T08:00:00.000Z",
+    successCount: 3,
+    dailyLimit: 10,
+    lastSuccessAt: "2026-07-28T11:44:00.000Z", // 上海 19:44
+    nextEligibleAt: "2026-07-29T02:00:00.000Z", // 上海 明天 10:00
     inFlightPhase: null,
-    activeStart: "08:00",
-    activeEnd: "13:00",
+    activeStart: "10:00",
+    activeEnd: "22:00",
     forumChannelIds: [F],
     silenceDays: 30,
-    autoIntervalMinutes: 60,
-    nextWakeAt: Date.parse("2026-07-28T08:00:00.000Z"),
+    autoIntervalMinutes: 72,
+    nextWakeAt: Date.parse("2026-07-29T02:00:00.000Z"),
     dynamicConfigRevision: 2,
   };
-  assertEqual(resolveRunStatusLabel(snap), "运行中", "运行中");
-  assertEqual(resolveRunStatusLabel({ ...snap, paused: true, pauseReason: "ADMIN_PAUSED" }), "管理员暂停", "管理员暂停");
-  assertEqual(resolveRunStatusLabel({ ...snap, paused: true, pauseReason: "DELETE_FAILED" }), "安全故障暂停", "安全故障");
-  assertEqual(resolveRunStatusLabel({ ...snap, fatal: true }), "Runtime 异常", "fatal");
-  assertEqual(resolveRunStatusLabel({ mode: "disabled", started: true }), "已禁用", "disabled");
 
-  const content = buildPanelContent(snap, { forumNameMap: new Map([[F, "测试论坛"]]) });
-  assert(content.includes("1 / 3"), "今日进度");
-  assert(content.includes("08:00–13:00"), "活跃时间");
-  assert(content.includes("约 60 分钟"), "自动间隔");
-  assert(content.includes("测试论坛"), "频道名称");
-  assert(content.includes("UTC+8"), "UTC+8 标记");
-  assert(formatUtc8("2026-07-28T04:00:00.000Z").includes("UTC+8"), "formatUtc8");
-  assert(content.includes("下次执行：") && content.includes("UTC+8"), "正常显示实际下次执行");
-
-  // 暂停展示
+  assertEqual(resolveStatusHeadline(snap), "🟢 自动顶帖运行中", "正常运行文案");
   assertEqual(
-    formatNextRunLabel({ ...snap, paused: true, pauseReason: "ADMIN_PAUSED" }),
-    "已暂停，恢复后重新计算",
+    resolveStatusHeadline({ ...snap, paused: true, pauseReason: "ADMIN_PAUSED" }),
+    "⏸️ 自动顶帖已暂停",
+    "管理员暂停文案",
+  );
+  assertEqual(
+    resolveStatusHeadline({ ...snap, paused: true, pauseReason: "DELETE_FAILED" }),
+    "⚠️ 自动顶帖因安全问题暂停",
+    "安全暂停文案",
+  );
+  assertEqual(
+    resolveStatusHeadline({ ...snap, fatal: true }),
+    "🔴 顶帖服务暂时不可用",
+    "fatal 文案",
+  );
+  assertEqual(
+    resolveStatusHeadline({ mode: "disabled", started: true }),
+    "⏹️ 自动顶帖功能已关闭",
+    "disabled 文案",
+  );
+  assertEqual(
+    resolveStatusHeadline({ ...snap, mode: "dry_run" }),
+    "🧪 当前为预览模式，不会真实顶帖",
+    "dry_run 文案",
+  );
+
+  const embed = buildPanelEmbed(snap, {
+    forumNameMap: new Map([[F, "沉醉梦境·红茶"]]),
+    nowMs,
+  });
+  const ej = embedJson(embed);
+  assertEqual(ej.color, PANEL_EMBED_COLOR, "Embed 颜色 0xB8B5FF");
+  assertEqual(ej.title, PANEL_TITLE, "标题 小G宝顶帖控制台");
+  assert(ej.description.includes("🟢 自动顶帖运行中"), "description 状态");
+  assert(!ej.description.includes("execute"), "execute 隐藏 mode");
+  assert(!ej.description.includes("inFlight"), "隐藏 inFlight 字段");
+  assert(!ej.description.includes("异常原因"), "隐藏空异常");
+  assert(!String(JSON.stringify(ej)).includes(F), "面板不出现 Forum ID");
+  assert(!String(JSON.stringify(ej)).includes("UTC+8"), "不显示 UTC+8 标记");
+  assert(!String(JSON.stringify(ej)).includes("before_send"), "不展示 phase");
+
+  const fieldMap = Object.fromEntries((ej.fields || []).map((f) => [f.name, f.value]));
+  assertEqual(fieldMap["今日进度"], "3 / 10", "今日进度字段");
+  assertEqual(fieldMap["最近顶帖"], "今天 19:44", "最近顶帖自然时间");
+  assertEqual(fieldMap["下次顶帖"], "明天 10:00", "下次顶帖明天");
+  assert(fieldMap["📅 排班配置"]?.includes("10:00–22:00"), "排班活跃时间");
+  assert(fieldMap["📅 排班配置"]?.includes("约 72 分钟"), "排班间隔");
+  assert(fieldMap["📚 服务版块"]?.includes("沉醉梦境·红茶"), "版块名称");
+  assert(fieldMap["📚 服务版块"]?.includes("｜"), "版块 emoji 分隔");
+  assert(!fieldMap["📚 服务版块"]?.includes("#"), "版块无 #");
+
+  // 其他日期
+  assertEqual(
+    formatNaturalTime("2026-07-31T02:00:00.000Z", nowMs),
+    "7月31日 10:00",
+    "其他日期格式",
+  );
+  assert(!formatNaturalTime("2026-07-28T11:44:30.000Z", nowMs).includes(":30"), "不显示秒");
+  assertEqual(formatNaturalTime(null, nowMs), "暂无", "无最近成功");
+
+  // 暂停 next
+  assertEqual(
+    formatNextRunLabel({ ...snap, paused: true, pauseReason: "ADMIN_PAUSED" }, nowMs),
+    "恢复后重新计算",
     "管理员暂停 next",
   );
   assertEqual(
-    formatNextRunLabel({ ...snap, paused: true, pauseReason: "DELETE_FAILED" }),
+    formatNextRunLabel({ ...snap, paused: true, pauseReason: "DELETE_FAILED" }, nowMs),
     "安全暂停，暂不排程",
     "安全暂停 next",
   );
   assertEqual(
-    formatNextRunLabel({ mode: "disabled", paused: false }),
+    formatNextRunLabel({ mode: "disabled", paused: false }, nowMs),
     "服务已禁用",
     "disabled next",
   );
@@ -134,29 +193,61 @@ console.log("\n=== forumBump adminPanel (D-6B) ===\n");
       paused: false,
       nextEligibleAt: null,
       nextWakeAt: null,
-    }),
+    }, nowMs),
     "等待调度",
     "无排程 next",
   );
-  const resumedContent = buildPanelContent({
+
+  // dry_run / disabled embed
+  const dry = embedJson(buildPanelEmbed({ ...snap, mode: "dry_run" }, { nowMs }));
+  assert(dry.description.includes("预览模式"), "dry_run 预览提示");
+  const dis = embedJson(buildPanelEmbed({ ...snap, mode: "disabled" }, { nowMs }));
+  assert(dis.description.includes("已关闭"), "disabled 关闭提示");
+
+  // inFlight
+  assertEqual(formatInFlightNotice({ ...snap, inFlightPhase: null }), null, "空 inFlight 隐藏");
+  assertEqual(
+    formatInFlightNotice({ ...snap, inFlightPhase: "after_send", running: true }),
+    "🔄 当前正在处理一项顶帖任务",
+    "正常执行中 inFlight",
+  );
+  assertEqual(
+    formatInFlightNotice({
+      ...snap,
+      inFlightPhase: "after_send",
+      paused: true,
+      pauseReason: "DELETE_FAILED",
+    }),
+    "⚠️ 上一次顶帖任务未正常完成，请检查运行状态",
+    "风险 inFlight 警告",
+  );
+  const riskEmbed = embedJson(buildPanelEmbed({
     ...snap,
-    paused: false,
-    pauseReason: null,
-    nextEligibleAt: "2026-07-29T14:30:00.000Z",
-  });
-  assert(
-    resumedContent.includes("下次执行：") && resumedContent.includes("UTC+8"),
-    "恢复后显示实际时间",
-  );
-  assert(
-    !resumedContent.includes("已暂停，恢复后重新计算"),
-    "恢复后不再显示暂停文案",
-  );
+    inFlightPhase: "before_send",
+    paused: true,
+    pauseReason: "DELETE_FAILED",
+  }, { nowMs }));
+  assert(riskEmbed.description.includes("未正常完成"), "风险警告在 description");
+  assert(!riskEmbed.description.includes("before_send"), "原始 phase 不展示");
+
+  // Forum 截断
+  const manyIds = Array.from({ length: MAX_FORUM_LINES_IN_PANEL + 3 }, (_, i) =>
+    String(200000000000000000n + BigInt(i)));
+  const names = new Map(manyIds.map((id, i) => [id, `版块${i}`]));
+  const fl = formatForumList(manyIds, names);
+  assert(fl.truncated, "频道过多截断");
+  assertEqual(fl.hiddenCount, 3, "hiddenCount=3");
+  assert(fl.text.includes("另有 3 个服务版块"), "截断提示");
+  assertEqual(formatForumList([F], null).text.includes("未知或不可用的 Forum"), true, "无法解析名称");
 
   const sessionId = "a".repeat(16);
-  const comps = buildPanelComponents(snap, sessionId);
-  assertEqual(comps.length, 1, "主面板一行按钮");
-  const labels = comps[0].components.map((b) => b.data?.label ?? b.label);
+  const msg = buildPanelMessage(snap, sessionId, {
+    forumNameMap: new Map([[F, "测试论坛"]]),
+    nowMs,
+  });
+  assertEqual(msg.embeds.length, 1, "一条 embed");
+  assertEqual(msg.components.length, 1, "主面板一行按钮");
+  const labels = msg.components[0].components.map((b) => b.data?.label ?? b.label);
   assert(labels.includes("编辑配置"), "编辑配置按钮");
   assert(labels.includes("暂停顶帖"), "暂停按钮");
 
@@ -173,7 +264,7 @@ console.log("\n=== forumBump adminPanel (D-6B) ===\n");
     sessionId,
   );
   const resumeBtn = safety[0].components.find((b) => (b.data?.label ?? b.label) === "恢复顶帖");
-  assert(resumeBtn?.data?.disabled === true || resumeBtn?.data?.disabled === true, "安全暂停禁用恢复");
+  assert(resumeBtn?.data?.disabled === true, "安全暂停禁用恢复");
 }
 
 // ---------- Modal / Select ----------
@@ -454,9 +545,14 @@ function isEphemeralFlags(flags) {
   await router._dispatch(ix);
   assertEqual(firstAck(ix), "deferReply", "slash 先 deferReply");
   assert(ix.deferred, "slash deferred");
-  assert(String(ix.lastReply?.content || "").includes("顶帖控制面板"), "面板内容");
-  assert(String(ix.lastReply?.content || "").includes("execute"), "显示 mode");
-  assert(String(ix.lastReply?.content || "").includes("论坛A") || String(ix.lastReply?.content || "").includes(F), "频道展示");
+  assert(Array.isArray(ix.lastReply?.embeds) && ix.lastReply.embeds.length === 1, "面板使用 Embed");
+  const replyEmbed = embedJson(ix.lastReply.embeds[0]);
+  assertEqual(replyEmbed.color, PANEL_EMBED_COLOR, "回复 Embed 颜色");
+  assertEqual(replyEmbed.title, PANEL_TITLE, "回复 Embed 标题");
+  assert(replyEmbed.description?.includes("运行中") || replyEmbed.description?.includes("🟢"), "状态文案");
+  assert(!JSON.stringify(replyEmbed).includes("execute"), "隐藏 execute 模式");
+  assert(JSON.stringify(replyEmbed).includes("论坛A"), "频道名称展示");
+  assert(!JSON.stringify(replyEmbed).includes(F), "不展示频道 ID");
   assert(ix.lastReply?.components?.length >= 1, "有按钮");
   assert(ackOps(ix).includes("editReply"), "最终 editReply");
   assertEqual(ackOps(ix).filter((o) => o === "deferReply" || o === "reply").length, 1, "slash 只确认一次");
@@ -526,8 +622,14 @@ function isEphemeralFlags(flags) {
   assertEqual(firstAck(pauseIx), "deferUpdate", "暂停先 deferUpdate");
   assertEqual(runtime.calls.pause.length, 1, "pauseByAdmin 调用");
   assertEqual(runtime.calls.pause[0].source, "discord_admin_panel", "actor source");
-  const pauseContent = pauseIx.lastReply?.content || "";
-  assert(pauseContent.includes("已暂停") || pauseContent.includes("管理员暂停"), "暂停后面板更新");
+  const pauseEmbed = pauseIx.lastReply?.embeds?.[0]
+    ? embedJson(pauseIx.lastReply.embeds[0])
+    : null;
+  assert(pauseEmbed, "暂停后仍 Embed");
+  assert(
+    pauseEmbed.description?.includes("已暂停") || pauseEmbed.description?.includes("⏸️"),
+    "暂停后面板更新",
+  );
   assert(ackOps(pauseIx).includes("editReply"), "暂停后 editReply");
 
   // 再次暂停幂等
@@ -556,7 +658,9 @@ function isEphemeralFlags(flags) {
   });
   await router._dispatch(resumeIx);
   assertEqual(firstAck(resumeIx), "deferUpdate", "恢复先 deferUpdate");
-  const resumeText = resumeIx.lastReply?.content || "";
+  const resumeText = resumeIx.lastReply?.embeds?.[0]
+    ? JSON.stringify(embedJson(resumeIx.lastReply.embeds[0]))
+    : (resumeIx.lastReply?.content || "");
   assert(
     resumeText.includes("无法恢复") || resumeText.includes("DELETE_FAILED") || resumeText.includes("安全"),
     "安全故障拒绝恢复",
@@ -682,7 +786,9 @@ function isEphemeralFlags(flags) {
   });
   await router2._dispatch(failIx);
   assertEqual(firstAck(failIx), "deferUpdate", "失败保存先 deferUpdate");
-  const failText = failIx.lastReply?.content || "";
+  const failText = failIx.lastReply?.embeds?.[0]
+    ? JSON.stringify(embedJson(failIx.lastReply.embeds[0]))
+    : (failIx.lastReply?.content || "");
   assert(failText.includes("间隔") || failText.includes("失败") || failText.includes("30"), "安全错误提示");
   assert(!failText.includes("stack"), "无 stack");
   assertEqual((await failRt.getControlSnapshot()).dailyLimit, 3, "旧 dailyLimit 保持");

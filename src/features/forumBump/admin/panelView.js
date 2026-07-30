@@ -1,6 +1,7 @@
 /**
  * Forum Bump 管理员面板展示与组件构建。
- * 时间统一按 UTC+8 展示。
+ * 面板使用 Discord Embed；时间按 Asia/Shanghai 自然化展示。
+ * 仅 UI 层，不修改 Runtime / 状态文件。
  */
 
 import {
@@ -9,6 +10,7 @@ import {
   ButtonStyle,
   ChannelSelectMenuBuilder,
   ChannelType,
+  EmbedBuilder,
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
@@ -17,6 +19,15 @@ import { validateDailyLimitForWindow } from "../autoInterval.js";
 
 export const FB_CUSTOM_PREFIX = "fbump:v1";
 export const DISPLAY_TIMEZONE = "Asia/Shanghai";
+export const PANEL_EMBED_COLOR = 0xB8B5FF;
+export const PANEL_TITLE = "🌸 小G宝顶帖控制台";
+
+/** Embed field value 上限 1024；预留下限避免发送失败 */
+export const MAX_FORUM_LINES_IN_PANEL = 12;
+
+export const FORUM_LINE_EMOJIS = Object.freeze([
+  "💜", "🛠️", "🗺️", "✨", "🌸", "📘", "🌙", "☕", "🍃", "💫", "🔮", "🎀",
+]);
 
 export const CUSTOM_IDS = Object.freeze({
   edit: "edit",
@@ -32,9 +43,6 @@ const HHMM_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
 
 /**
  * customId: fbump:v1:{kind}:{action}:{sessionId}
- * @param {string} kind btn|modal|select
- * @param {string} action
- * @param {string} sessionId
  */
 export function buildCustomId(kind, action, sessionId) {
   const id = `${FB_CUSTOM_PREFIX}:${kind}:${action}:${sessionId}`;
@@ -51,7 +59,6 @@ export function parseCustomId(customId) {
     return null;
   }
   const parts = customId.split(":");
-  // fbump v1 kind action sessionId
   if (parts.length !== 5) return null;
   if (parts[0] !== "fbump" || parts[1] !== "v1") return null;
   const kind = parts[2];
@@ -66,76 +73,153 @@ export function isForumBumpCustomId(customId) {
 }
 
 /**
- * @param {string|null|undefined} iso
- * @returns {string}
+ * @param {number} ms
+ * @returns {{ year: number, month: number, day: number, hour: number, minute: number }|null}
  */
-export function formatUtc8(iso) {
-  if (!iso || typeof iso !== "string") return "无";
-  const ms = Date.parse(iso);
-  if (!Number.isFinite(ms)) return "无";
+export function getShanghaiParts(ms) {
+  if (!Number.isFinite(ms)) return null;
   try {
-    const dtf = new Intl.DateTimeFormat("zh-CN", {
+    const dtf = new Intl.DateTimeFormat("en-US", {
       timeZone: DISPLAY_TIMEZONE,
       year: "numeric",
       month: "2-digit",
       day: "2-digit",
       hour: "2-digit",
       minute: "2-digit",
-      second: "2-digit",
       hourCycle: "h23",
     });
-    return `${dtf.format(new Date(ms))}（UTC+8）`;
+    const parts = dtf.formatToParts(new Date(ms));
+    const map = Object.fromEntries(parts.filter((p) => p.type !== "literal").map((p) => [p.type, p.value]));
+    return {
+      year: Number(map.year),
+      month: Number(map.month),
+      day: Number(map.day),
+      hour: Number(map.hour),
+      minute: Number(map.minute),
+    };
   } catch {
-    return "无";
+    return null;
   }
 }
 
+function ymdKey(p) {
+  return p.year * 10_000 + p.month * 100 + p.day;
+}
+
+function addDaysShanghai(parts, deltaDays) {
+  // 以中午 UTC 近似平移，再取上海日历日
+  const noonGuess = Date.UTC(parts.year, parts.month - 1, parts.day, 4, 0, 0)
+    + deltaDays * 24 * 3600_000;
+  return getShanghaiParts(noonGuess);
+}
+
 /**
- * @param {object} snap getControlSnapshot()
+ * 自然时间：今天 / 明天 / M月D日 HH:mm（无秒、无 UTC+8 后缀）。
+ * @param {string|null|undefined} iso
+ * @param {number} [nowMs]
  */
-export function resolveRunStatusLabel(snap) {
-  if (!snap) return "Runtime 异常";
-  if (snap.mode === "disabled") return "已禁用";
-  if (snap.fatal) return "Runtime 异常";
-  if (snap.dynamicConfigError || snap.dynamicConfigSource === "failed") {
-    return "Runtime 异常";
+export function formatNaturalTime(iso, nowMs = Date.now()) {
+  if (!iso || typeof iso !== "string") return "暂无";
+  const ms = Date.parse(iso);
+  if (!Number.isFinite(ms)) return "暂无";
+  const target = getShanghaiParts(ms);
+  const now = getShanghaiParts(nowMs);
+  if (!target || !now) return "暂无";
+
+  const hh = String(target.hour).padStart(2, "0");
+  const mm = String(target.minute).padStart(2, "0");
+  const clock = `${hh}:${mm}`;
+
+  const tKey = ymdKey(target);
+  const nKey = ymdKey(now);
+  if (tKey === nKey) return `今天 ${clock}`;
+
+  const tomorrow = addDaysShanghai(now, 1);
+  if (tomorrow && tKey === ymdKey(tomorrow)) return `明天 ${clock}`;
+
+  return `${target.month}月${target.day}日 ${clock}`;
+}
+
+/**
+ * 兼容旧名：自然时间（无秒）。
+ * @deprecated 面板请用 formatNaturalTime
+ */
+export function formatUtc8(iso, nowMs = Date.now()) {
+  return formatNaturalTime(iso, nowMs);
+}
+
+/**
+ * 状态主文案（Embed description 首行）。
+ */
+export function resolveStatusHeadline(snap) {
+  if (!snap) return "🔴 顶帖服务暂时不可用";
+  if (snap.mode === "disabled") return "⏹️ 自动顶帖功能已关闭";
+  if (snap.fatal || snap.dynamicConfigSource === "failed") {
+    return "🔴 顶帖服务暂时不可用";
+  }
+  if (snap.mode === "dry_run") {
+    return "🧪 当前为预览模式，不会真实顶帖";
   }
   if (snap.paused === true) {
-    if (snap.pauseReason === "ADMIN_PAUSED") return "管理员暂停";
-    return "安全故障暂停";
+    if (snap.pauseReason === "ADMIN_PAUSED") return "⏸️ 自动顶帖已暂停";
+    return "⚠️ 自动顶帖因安全问题暂停";
   }
-  if (snap.started && snap.mode !== "disabled") return "运行中";
-  return "Runtime 异常";
+  if (snap.started) return "🟢 自动顶帖运行中";
+  return "🔴 顶帖服务暂时不可用";
+}
+
+/** @deprecated 使用 resolveStatusHeadline */
+export function resolveRunStatusLabel(snap) {
+  return resolveStatusHeadline(snap);
 }
 
 /**
- * @param {string[]} forumChannelIds
- * @param {Map<string, string>|Record<string, string>|null} nameMap
+ * inFlight 展示：null 隐藏；正常执行中简短提示；风险状态醒目警告。
+ * 不展示 before_send / after_send / after_delete。
+ * @returns {string|null}
  */
-export function formatForumList(forumChannelIds, nameMap = null) {
-  if (!Array.isArray(forumChannelIds) || forumChannelIds.length === 0) {
-    return "（未配置）";
+export function formatInFlightNotice(snap) {
+  const phase = snap?.inFlightPhase ?? null;
+  if (!phase) return null;
+
+  const risky = snap?.paused === true
+    || snap?.fatal === true
+    || snap?.dynamicConfigSource === "failed"
+    || (typeof snap?.pauseReason === "string"
+      && snap.pauseReason !== "ADMIN_PAUSED"
+      && snap.pauseReason.length > 0);
+
+  if (risky) {
+    return "⚠️ 上一次顶帖任务未正常完成，请检查运行状态";
   }
-  return forumChannelIds.map((id) => {
-    const name = nameMap instanceof Map
-      ? nameMap.get(id)
-      : nameMap?.[id];
-    if (name) return `#${name} (\`${id}\`)`;
-    return `<#${id}>`;
-  }).join("\n");
+  return "🔄 当前正在处理一项顶帖任务";
 }
 
 /**
- * 下次执行展示文案（仅展示语义，不改变 Runtime 排程）。
- * @param {object} snap
+ * 安全故障时的可读说明（无内部错误码）。
+ * @returns {string|null}
  */
-export function formatNextRunLabel(snap) {
+export function formatSafetyNotice(snap) {
+  if (!snap) return null;
+  if (snap.fatal || snap.dynamicConfigSource === "failed") {
+    return "顶帖服务遇到问题，已停止自动调度。请联系维护者检查运行日志。";
+  }
+  if (snap.paused === true && snap.pauseReason && snap.pauseReason !== "ADMIN_PAUSED") {
+    return "因安全原因已暂停自动顶帖，请勿强制恢复。请联系维护者检查残留消息或状态。";
+  }
+  return null;
+}
+
+/**
+ * 下次执行展示。
+ */
+export function formatNextRunLabel(snap, nowMs = Date.now()) {
   if (!snap || snap.mode === "disabled") {
     return "服务已禁用";
   }
   if (snap.paused === true) {
     if (snap.pauseReason === "ADMIN_PAUSED") {
-      return "已暂停，恢复后重新计算";
+      return "恢复后重新计算";
     }
     return "安全暂停，暂不排程";
   }
@@ -143,37 +227,84 @@ export function formatNextRunLabel(snap) {
     return "安全暂停，暂不排程";
   }
   if (snap.nextEligibleAt) {
-    return formatUtc8(snap.nextEligibleAt);
+    return formatNaturalTime(snap.nextEligibleAt, nowMs);
   }
   if (snap.nextWakeAt != null) {
     const iso = typeof snap.nextWakeAt === "number"
       ? new Date(snap.nextWakeAt).toISOString()
       : String(snap.nextWakeAt);
-    return formatUtc8(iso);
+    return formatNaturalTime(iso, nowMs);
   }
   return "等待调度";
 }
 
 /**
- * @param {object} snap
- * @param {{ forumNameMap?: Map|object }} [opts]
+ * 最近顶帖。
  */
-export function buildPanelContent(snap, opts = {}) {
-  const status = resolveRunStatusLabel(snap);
-  const mode = snap?.mode ?? "unknown";
-  const successCount = snap?.successCount ?? 0;
-  const dailyLimit = snap?.dailyLimit ?? "?";
-  const lastSuccess = formatUtc8(snap?.lastSuccessAt);
-  const inFlight = snap?.inFlightPhase
-    ? String(snap.inFlightPhase)
-    : "无";
-  let fault = "无";
-  if (snap?.fatal && snap?.fatalCode) fault = String(snap.fatalCode);
-  else if (snap?.dynamicConfigError) fault = String(snap.dynamicConfigError);
-  else if (snap?.paused && snap?.pauseReason && snap.pauseReason !== "ADMIN_PAUSED") {
-    fault = String(snap.pauseReason);
+export function formatLastSuccessLabel(snap, nowMs = Date.now()) {
+  if (!snap?.lastSuccessAt) return "暂无";
+  return formatNaturalTime(snap.lastSuccessAt, nowMs);
+}
+
+/**
+ * 服务版块列表：名称 + emoji，无 #、无 ID；过多时截断。
+ * @returns {{ text: string, truncated: boolean, hiddenCount: number }}
+ */
+export function formatForumList(forumChannelIds, nameMap = null, options = {}) {
+  const maxLines = Number.isInteger(options.maxLines)
+    ? options.maxLines
+    : MAX_FORUM_LINES_IN_PANEL;
+
+  if (!Array.isArray(forumChannelIds) || forumChannelIds.length === 0) {
+    return { text: "（未配置）", truncated: false, hiddenCount: 0 };
   }
 
+  const lines = [];
+  for (let i = 0; i < forumChannelIds.length; i += 1) {
+    const id = forumChannelIds[i];
+    const name = nameMap instanceof Map
+      ? nameMap.get(id)
+      : nameMap?.[id];
+    const emoji = FORUM_LINE_EMOJIS[i % FORUM_LINE_EMOJIS.length];
+    const label = (typeof name === "string" && name.trim())
+      ? name.trim()
+      : "未知或不可用的 Forum";
+    lines.push(`${emoji}｜${label}`);
+  }
+
+  if (lines.length <= maxLines) {
+    return { text: lines.join("\n"), truncated: false, hiddenCount: 0 };
+  }
+
+  const shown = lines.slice(0, maxLines);
+  const hiddenCount = lines.length - maxLines;
+  shown.push(`另有 ${hiddenCount} 个服务版块`);
+  return { text: shown.join("\n"), truncated: true, hiddenCount };
+}
+
+/**
+ * 构建面板 Embed。
+ * @param {object} snap
+ * @param {{ forumNameMap?: Map|object, nowMs?: number, notice?: string|null }} [opts]
+ */
+export function buildPanelEmbed(snap, opts = {}) {
+  const nowMs = opts.nowMs ?? Date.now();
+  const headline = resolveStatusHeadline(snap);
+  const notice = typeof opts.notice === "string" && opts.notice.trim()
+    ? opts.notice.trim()
+    : null;
+
+  const descriptionParts = [headline];
+  if (notice) descriptionParts.push("", notice);
+
+  const inFlightNotice = formatInFlightNotice(snap);
+  if (inFlightNotice) descriptionParts.push("", inFlightNotice);
+
+  const safety = formatSafetyNotice(snap);
+  if (safety) descriptionParts.push("", safety);
+
+  const successCount = snap?.successCount ?? 0;
+  const dailyLimit = snap?.dailyLimit ?? "?";
   const activeStart = snap?.activeStart ?? "?";
   const activeEnd = snap?.activeEnd ?? "?";
   const silenceDays = snap?.silenceDays ?? "?";
@@ -182,28 +313,85 @@ export function buildPanelContent(snap, opts = {}) {
     ? `约 ${autoMin} 分钟`
     : "不可用";
 
-  const forums = formatForumList(snap?.forumChannelIds, opts.forumNameMap ?? null);
-
-  return [
-    "**顶帖控制面板**",
-    "",
-    "**运行状态**",
-    `状态：${status}`,
-    `模式：\`${mode}\`（只读）`,
-    `今日进度：${successCount} / ${dailyLimit}`,
-    `最近成功：${lastSuccess}`,
-    `下次执行：${formatNextRunLabel(snap)}`,
-    `inFlight：${inFlight}`,
-    `异常原因：${fault}`,
-    "",
-    "**当前配置**",
-    `每日额度：${dailyLimit}`,
-    `活跃时间：${activeStart}–${activeEnd}（UTC+8）`,
-    `服务 Forum：`,
-    forums,
-    `帖子入选范围：${silenceDays} 天无回复`,
+  const scheduleBody = [
+    `活跃时间：${activeStart}–${activeEnd}`,
     `自动间隔：${autoLabel}`,
+    `入选范围：${silenceDays} 天无回复`,
   ].join("\n");
+
+  const forums = formatForumList(
+    snap?.forumChannelIds,
+    opts.forumNameMap ?? null,
+  );
+
+  const embed = new EmbedBuilder()
+    .setColor(PANEL_EMBED_COLOR)
+    .setTitle(PANEL_TITLE)
+    .setDescription(descriptionParts.join("\n"))
+    .addFields(
+      {
+        name: "今日进度",
+        value: `${successCount} / ${dailyLimit}`,
+        inline: true,
+      },
+      {
+        name: "最近顶帖",
+        value: formatLastSuccessLabel(snap, nowMs),
+        inline: true,
+      },
+      {
+        name: "下次顶帖",
+        value: formatNextRunLabel(snap, nowMs),
+        inline: true,
+      },
+      {
+        name: "📅 排班配置",
+        value: scheduleBody,
+        inline: false,
+      },
+      {
+        name: "📚 服务版块",
+        value: forums.text.slice(0, 1024) || "（未配置）",
+        inline: false,
+      },
+    );
+
+  return embed;
+}
+
+/**
+ * 完整面板消息载荷（Embed + 可选 notice content）。
+ * @returns {{ embeds: EmbedBuilder[], components: ActionRowBuilder[], content: string|undefined }}
+ */
+export function buildPanelMessage(snap, sessionId, opts = {}) {
+  const embed = buildPanelEmbed(snap, opts);
+  const components = sessionId
+    ? buildPanelComponents(snap, sessionId)
+    : [];
+  // 操作成功提示放 content，避免挤进 embed description 过长；空则省略
+  const content = typeof opts.notice === "string" && opts.notice.trim()
+    ? opts.notice.trim()
+    : undefined;
+  // notice 已写入 embed description，content 可空（避免重复）
+  return {
+    embeds: [embed],
+    components,
+    // 不重复发 notice content
+    content: undefined,
+  };
+}
+
+/**
+ * 兼容旧测试：返回可检索的纯文本摘要（非发送用）。
+ * @deprecated 面板发送请用 buildPanelMessage / buildPanelEmbed
+ */
+export function buildPanelContent(snap, opts = {}) {
+  const embed = buildPanelEmbed(snap, opts);
+  const data = typeof embed.toJSON === "function" ? embed.toJSON() : embed.data;
+  const fields = (data.fields || [])
+    .map((f) => `${f.name}\n${f.value}`)
+    .join("\n");
+  return [data.title, data.description, fields].filter(Boolean).join("\n");
 }
 
 /**
@@ -235,7 +423,6 @@ export function buildPanelComponents(snap, sessionId) {
       .setStyle(ButtonStyle.Success)
       .setDisabled(false);
   } else if (isSafetyPause) {
-    // 安全故障：按钮禁用，防止绕过
     controlBtn = new ButtonBuilder()
       .setCustomId(buildCustomId("btn", CUSTOM_IDS.resume, sessionId))
       .setLabel("恢复顶帖")
@@ -256,8 +443,6 @@ export function buildPanelComponents(snap, sessionId) {
 
 /**
  * Modal 预填四项配置。
- * @param {object} draft
- * @param {string} sessionId
  */
 export function buildConfigModal(draft, sessionId) {
   const customId = buildCustomId("modal", CUSTOM_IDS.modal, sessionId);
@@ -312,8 +497,7 @@ export function buildConfigModal(draft, sessionId) {
 }
 
 /**
- * 解析 Modal 文本字段（基础格式 + 活跃窗动态额度校验）。
- * @returns {{ ok: true, values } | { ok: false, safeMessage: string, maxDailyLimit?: number }}
+ * 解析 Modal 文本字段。
  */
 export function parseModalFields(fields) {
   const rawLimit = String(fields?.dailyLimit ?? "").trim();
@@ -368,8 +552,6 @@ export function parseModalFields(fields) {
 
 /**
  * 频道选择 + 保存/取消。
- * @param {object} draft
- * @param {string} sessionId
  */
 export function buildForumSelectPage(draft, sessionId) {
   const selectId = buildCustomId("select", CUSTOM_IDS.select, sessionId);

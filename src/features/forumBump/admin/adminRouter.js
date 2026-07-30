@@ -19,8 +19,7 @@ import {
   CUSTOM_IDS,
   buildConfigModal,
   buildForumSelectPage,
-  buildPanelComponents,
-  buildPanelContent,
+  buildPanelMessage,
   isForumBumpCustomId,
   parseCustomId,
   parseModalFields,
@@ -195,14 +194,14 @@ export function createForumBumpAdminRouter({
     return map;
   }
 
-  async function snapshotPanelPayload(sessionId) {
+  async function snapshotPanelPayload(sessionId, notice = null) {
     const snap = await forumBumpRuntime.getControlSnapshot();
     const nameMap = await resolveForumNames(snap.forumChannelIds ?? []);
-    const content = buildPanelContent(snap, { forumNameMap: nameMap });
-    const components = sessionId
-      ? buildPanelComponents(snap, sessionId)
-      : [];
-    return { snap, content, components };
+    const message = buildPanelMessage(snap, sessionId, {
+      forumNameMap: nameMap,
+      notice,
+    });
+    return { snap, ...message };
   }
 
   function openSessionFromSnap(snap, actorId) {
@@ -255,9 +254,13 @@ export function createForumBumpAdminRouter({
       const snap = await forumBumpRuntime.getControlSnapshot();
       const session = openSessionFromSnap(snap, actor.actorId);
       const nameMap = await resolveForumNames(snap.forumChannelIds ?? []);
-      const content = buildPanelContent(snap, { forumNameMap: nameMap });
-      const components = buildPanelComponents(snap, session.sessionId);
-      await editReplyPanel(interaction, { content, components });
+      const message = buildPanelMessage(snap, session.sessionId, {
+        forumNameMap: nameMap,
+      });
+      await editReplyPanel(interaction, {
+        embeds: message.embeds,
+        components: message.components,
+      });
     } catch (error) {
       log("error", "打开面板失败", safeErrorFields(error));
       await editReplyPanel(interaction, { content: GENERIC, components: [] });
@@ -265,12 +268,14 @@ export function createForumBumpAdminRouter({
   }
 
   /**
-   * 已 defer 后刷新面板（仅 editReply）。
+   * 已 defer 后刷新面板（Embed + editReply）。
    */
   async function refreshPanelAfterDefer(interaction, sessionId, notice = null) {
-    const { content, components } = await snapshotPanelPayload(sessionId);
-    const text = notice ? `${notice}\n\n${content}` : content;
-    await editReplyPanel(interaction, { content: text, components });
+    const payload = await snapshotPanelPayload(sessionId, notice);
+    await editReplyPanel(interaction, {
+      embeds: payload.embeds,
+      components: payload.components,
+    });
   }
 
   /**
