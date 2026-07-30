@@ -39,6 +39,7 @@ import {
   PANEL_EMBED_COLOR,
   PANEL_TITLE,
   MAX_FORUM_LINES_IN_PANEL,
+  UNKNOWN_FORUM_LABEL,
 } from "./panelView.js";
 import { createForumBumpPanelSessionStore } from "./sessionStore.js";
 import { createForumBumpAdminRouter } from "./adminRouter.js";
@@ -138,7 +139,7 @@ function embedJson(embed) {
   );
 
   const embed = buildPanelEmbed(snap, {
-    forumNameMap: new Map([[F, "沉醉梦境·红茶"]]),
+    forumNameMap: new Map([[F, "💜｜沉醉梦境·红茶"]]),
     nowMs,
   });
   const ej = embedJson(embed);
@@ -158,8 +159,11 @@ function embedJson(embed) {
   assertEqual(fieldMap["下次顶帖"], "明天 10:00", "下次顶帖明天");
   assert(fieldMap["📅 排班配置"]?.includes("10:00–22:00"), "排班活跃时间");
   assert(fieldMap["📅 排班配置"]?.includes("约 72 分钟"), "排班间隔");
-  assert(fieldMap["📚 服务版块"]?.includes("沉醉梦境·红茶"), "版块名称");
-  assert(fieldMap["📚 服务版块"]?.includes("｜"), "版块 emoji 分隔");
+  assertEqual(fieldMap["📚 服务版块"], "💜｜沉醉梦境·红茶", "真实名称原样展示");
+  assert(
+    !fieldMap["📚 服务版块"]?.includes("💜｜💜｜"),
+    "已带 emoji｜ 的名称不重复装饰",
+  );
   assert(!fieldMap["📚 服务版块"]?.includes("#"), "版块无 #");
 
   // 其他日期
@@ -230,7 +234,28 @@ function embedJson(embed) {
   assert(riskEmbed.description.includes("未正常完成"), "风险警告在 description");
   assert(!riskEmbed.description.includes("before_send"), "原始 phase 不展示");
 
-  // Forum 截断
+  // Forum：普通名 / 已装饰名 / 无法解析 / 截断
+  assertEqual(
+    formatForumList([F], new Map([[F, "工具插件"]])).text,
+    "工具插件",
+    "普通频道名按原名显示",
+  );
+  assertEqual(
+    formatForumList([F], new Map([[F, "💜｜沉醉梦境·红茶"]])).text,
+    "💜｜沉醉梦境·红茶",
+    "已带 Emoji 和｜的真实名不重复装饰",
+  );
+  assertEqual(
+    formatForumList([F], null).text,
+    UNKNOWN_FORUM_LABEL,
+    "无法解析时统一占位",
+  );
+  assertEqual(
+    formatForumList([F], new Map([[F, "  "]])).text,
+    UNKNOWN_FORUM_LABEL,
+    "空白名称视为无法解析",
+  );
+
   const manyIds = Array.from({ length: MAX_FORUM_LINES_IN_PANEL + 3 }, (_, i) =>
     String(200000000000000000n + BigInt(i)));
   const names = new Map(manyIds.map((id, i) => [id, `版块${i}`]));
@@ -238,7 +263,7 @@ function embedJson(embed) {
   assert(fl.truncated, "频道过多截断");
   assertEqual(fl.hiddenCount, 3, "hiddenCount=3");
   assert(fl.text.includes("另有 3 个服务版块"), "截断提示");
-  assertEqual(formatForumList([F], null).text.includes("未知或不可用的 Forum"), true, "无法解析名称");
+  assert(fl.text.startsWith("版块0\n"), "截断后仍原名显示");
 
   const sessionId = "a".repeat(16);
   const msg = buildPanelMessage(snap, sessionId, {

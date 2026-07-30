@@ -25,9 +25,8 @@ export const PANEL_TITLE = "🌸 小G宝顶帖控制台";
 /** Embed field value 上限 1024；预留下限避免发送失败 */
 export const MAX_FORUM_LINES_IN_PANEL = 12;
 
-export const FORUM_LINE_EMOJIS = Object.freeze([
-  "💜", "🛠️", "🗺️", "✨", "🌸", "📘", "🌙", "☕", "🍃", "💫", "🔮", "🎀",
-]);
+/** 无法解析频道名称时的占位（统一装饰，避免与真实名称重复） */
+export const UNKNOWN_FORUM_LABEL = "❔｜未知或不可用的 Forum";
 
 export const CUSTOM_IDS = Object.freeze({
   edit: "edit",
@@ -247,7 +246,8 @@ export function formatLastSuccessLabel(snap, nowMs = Date.now()) {
 }
 
 /**
- * 服务版块列表：名称 + emoji，无 #、无 ID；过多时截断。
+ * 服务版块列表：直接显示 Discord 真实频道名称，不再统一追加 emoji / ｜。
+ * 无法解析时使用固定占位。不显示频道 ID；过多时截断。
  * @returns {{ text: string, truncated: boolean, hiddenCount: number }}
  */
 export function formatForumList(forumChannelIds, nameMap = null, options = {}) {
@@ -265,11 +265,11 @@ export function formatForumList(forumChannelIds, nameMap = null, options = {}) {
     const name = nameMap instanceof Map
       ? nameMap.get(id)
       : nameMap?.[id];
-    const emoji = FORUM_LINE_EMOJIS[i % FORUM_LINE_EMOJIS.length];
+    // 真实名称原样展示（频道名本身可含 emoji / ｜）；禁止再次装饰
     const label = (typeof name === "string" && name.trim())
       ? name.trim()
-      : "未知或不可用的 Forum";
-    lines.push(`${emoji}｜${label}`);
+      : UNKNOWN_FORUM_LABEL;
+    lines.push(label);
   }
 
   if (lines.length <= maxLines) {
