@@ -39,6 +39,16 @@ function setRequired() {
   setEnv("DISCORD_THANKS_CHANNEL_ID", "t");
   // 配置单测默认禁用 Forum，避免依赖真实 Forum ID
   setEnv("FORUM_BUMP_MODE", "disabled");
+  clearAiEnv();
+}
+
+function clearAiEnv() {
+  for (const key of [
+    "AI_PROTOCOL", "AI_BASE_URL", "AI_CHAT_COMPLETIONS_URL", "AI_API_KEY", "AI_MODEL",
+    "AI_TIMEOUT_MS", "AI_AUTH_HEADER", "AI_AUTH_SCHEME", "AI_BACKEND_LABEL",
+    "AI_EXTRA_HEADERS_JSON", "AI_EXTRA_BODY_JSON",
+    "DEEPSEEK_API_KEY", "DEEPSEEK_BASE_URL", "DEEPSEEK_MODEL", "DEEPSEEK_TIMEOUT_MS",
+  ]) setEnv(key, null);
 }
 
 // ============================
@@ -93,6 +103,74 @@ function setRequired() {
     assertEqual(err.exitCode, 78, "missing config exit 78");
     passed++; console.log("  PASS: 缺失必填配置 ConfigError exit 78");
   }
+}
+
+// ============================
+// 通用 AI Provider 配置
+// ============================
+{ restoreEnv(); setRequired();
+  setEnv("AI_PROTOCOL", "openai_compatible");
+  setEnv("AI_BASE_URL", "https://proxy.example/v1/");
+  setEnv("AI_API_KEY", "test-key");
+  setEnv("AI_MODEL", "vendor/model");
+  setEnv("AI_TIMEOUT_MS", "12345");
+  setEnv("AI_BACKEND_LABEL", "Proxy");
+  const c = loadConfig();
+  assertEqual(c.aiConfigSource, "ai", "完整 AI_* 正常加载");
+  assertEqual(c.aiChatCompletionsUrl, "https://proxy.example/v1/chat/completions", "Base URL 正确拼接");
+  assertEqual(c.aiModel, "vendor/model", "AI_MODEL 正常加载");
+  assertEqual(c.aiTimeoutMs, 12345, "AI_TIMEOUT_MS 正常加载");
+}
+
+{ restoreEnv(); setRequired();
+  setEnv("AI_BASE_URL", "https://proxy.example/v1");
+  setEnv("AI_CHAT_COMPLETIONS_URL", "https://override.example/custom/chat");
+  setEnv("AI_MODEL", "m");
+  const c = loadConfig();
+  assertEqual(c.aiChatCompletionsUrl, "https://override.example/custom/chat", "完整 Endpoint 覆盖 Base URL");
+}
+
+{ restoreEnv(); setRequired(); setEnv("AI_MODEL", "m");
+  try { loadConfig(); assert(false, "部分 AI_* 应拒绝启动"); }
+  catch (err) { assert(err instanceof ConfigError && err.code === "incomplete_ai_config", "部分 AI_* 拒绝启动"); }
+}
+
+{ restoreEnv(); setRequired();
+  setEnv("AI_BASE_URL", "https://proxy.example/v1"); setEnv("AI_MODEL", "m");
+  setEnv("DEEPSEEK_API_KEY", "old-key");
+  try { loadConfig(); assert(false, "两套 AI 配置混用应拒绝启动"); }
+  catch (err) { assert(err instanceof ConfigError && err.code === "mixed_ai_config", "不允许两套配置混用"); }
+}
+
+{ restoreEnv(); setRequired();
+  setEnv("DEEPSEEK_API_KEY", "old-key"); setEnv("DEEPSEEK_BASE_URL", "https://legacy.example/"); setEnv("DEEPSEEK_MODEL", "legacy-model");
+  const c = loadConfig();
+  assertEqual(c.aiConfigSource, "legacy_deepseek", "旧 DEEPSEEK_* 正常兼容");
+  assertEqual(c.aiChatCompletionsUrl, "https://legacy.example/chat/completions", "旧 Base URL 走通用 Endpoint");
+}
+
+{ restoreEnv(); setRequired();
+  setEnv("AI_BASE_URL", "https://proxy.example/v1"); setEnv("AI_MODEL", "m");
+  setEnv("AI_AUTH_HEADER", "X-API-Key"); setEnv("AI_AUTH_SCHEME", "Token");
+  setEnv("AI_EXTRA_HEADERS_JSON", '{"X-Trace":"test"}'); setEnv("AI_EXTRA_BODY_JSON", '{"top_p":0.8}');
+  const c = loadConfig();
+  assertEqual(c.aiAuthHeader, "X-API-Key", "自定义鉴权 Header");
+  assertEqual(c.aiAuthScheme, "Token", "自定义鉴权 Scheme");
+  assert(JSON.stringify(c.aiExtraHeaders) === JSON.stringify({ "X-Trace": "test" }), "Extra Headers 正常注入");
+  assert(JSON.stringify(c.aiExtraBody) === JSON.stringify({ top_p: 0.8 }), "Extra Body 正常注入");
+}
+
+for (const [key, value, code] of [
+  ["AI_EXTRA_HEADERS_JSON", "{", "invalid_ai_extra_json"],
+  ["AI_EXTRA_HEADERS_JSON", '["bad"]', "invalid_ai_extra_json"],
+  ["AI_EXTRA_HEADERS_JSON", '{"X-Number":1}', "invalid_ai_extra_headers"],
+  ["AI_EXTRA_BODY_JSON", "{", "invalid_ai_extra_json"],
+  ["AI_EXTRA_BODY_JSON", '{"model":"override"}', "protected_ai_extra_body"],
+  ["AI_EXTRA_HEADERS_JSON", '{"Authorization":"override"}', "protected_ai_extra_header"],
+]) {
+  restoreEnv(); setRequired(); setEnv("AI_BASE_URL", "https://proxy.example/v1"); setEnv("AI_MODEL", "m"); setEnv(key, value);
+  try { loadConfig(); assert(false, `${key} 非法值应拒绝`); }
+  catch (err) { assert(err instanceof ConfigError && err.code === code, `${key} 非法值拒绝`); }
 }
 
 restoreEnv();

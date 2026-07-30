@@ -15,7 +15,7 @@
  * - 消息发送
  * - Discord API 调用
  *
- * 不直接依赖 deepseek.js，必须通过 src/ai/index.js 调用 AI。
+ * 不直接依赖具体 Provider，必须通过 src/ai/index.js 调用 AI。
  */
 
 import { readFileSync } from "fs";
@@ -166,10 +166,7 @@ export function createCopyGenerator(config, aiOverride) {
       { role: "system", content: systemPrompt },
       { role: "user", content: userMessage },
     ];
-    const options = {
-      thinking: { type: "disabled" },
-      maxTokens: 128,
-    };
+    const options = { maxTokens: 128 };
 
     // ---- 3. 调用 AI ----
     const rawText = await ai.generateText(messages, options);

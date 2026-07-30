@@ -2,13 +2,10 @@
  * ai/ 模块统一入口（Phase 4）。
  *
  * 为业务模块提供稳定的通用 AI 文本生成接口。
- * 业务代码不应直接依赖 deepseek.js 或 createDeepSeekProvider。
- *
- * 当前仅内部调用 DeepSeek Provider。
- * 不实现多 Provider 路由、fallback 或复杂工厂。
+ * 业务代码不应直接依赖具体 Provider 实现。
  */
 
-import { createDeepSeekProvider } from "./deepseek.js";
+import { createOpenAICompatibleProvider } from "./openaiCompatible.js";
 
 /**
  * 创建 AI Provider。
@@ -17,7 +14,7 @@ import { createDeepSeekProvider } from "./deepseek.js";
  * @returns {{ generateText: Function }}
  */
 export function createAiProvider(config) {
-  const provider = createDeepSeekProvider(config);
+  const provider = createOpenAICompatibleProvider(config);
 
   /**
    * 生成文本。
@@ -25,7 +22,6 @@ export function createAiProvider(config) {
    * @param {Array<{ role: string, content: string }>} messages
    * @param {object} [options]
    * @param {number} [options.maxTokens]
-   * @param {{ type: "enabled"|"disabled" }} [options.thinking]
    * @returns {Promise<string>} 标准化最终文本
    * @throws {Error} 调用失败时抛出错误，错误含 code 属性标识类型
    */

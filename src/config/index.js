@@ -3,6 +3,7 @@ import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 import { ConfigError } from "./configError.js";
 import { loadForumBumpConfig } from "./forumBumpConfig.js";
+import { logger } from "../utils/logger.js";
 
 export { ConfigError } from "./configError.js";
 export { loadForumBumpConfig, FORUM_BUMP_DEFAULTS, FORUM_BUMP_MODES } from "./forumBumpConfig.js";
@@ -19,6 +20,29 @@ const REQUIRED_CONFIG = [
 ];
 
 const VALID_NODE_ENVS = new Set(["development", "test", "production"]);
+const AI_PROTOCOL = "openai_compatible";
+const AI_ENV_KEYS = [
+  "AI_PROTOCOL",
+  "AI_BASE_URL",
+  "AI_CHAT_COMPLETIONS_URL",
+  "AI_API_KEY",
+  "AI_MODEL",
+  "AI_TIMEOUT_MS",
+  "AI_AUTH_HEADER",
+  "AI_AUTH_SCHEME",
+  "AI_BACKEND_LABEL",
+  "AI_EXTRA_HEADERS_JSON",
+  "AI_EXTRA_BODY_JSON",
+];
+const LEGACY_AI_ENV_KEYS = [
+  "DEEPSEEK_API_KEY",
+  "DEEPSEEK_BASE_URL",
+  "DEEPSEEK_MODEL",
+  "DEEPSEEK_TIMEOUT_MS",
+];
+const PROTECTED_EXTRA_HEADERS = new Set(["content-type", "host", "content-length"]);
+const PROTECTED_EXTRA_BODY_FIELDS = new Set(["model", "messages", "stream"]);
+let legacyAiDeprecationLogged = false;
 
 export function loadConfig() {
   // ---- NODE_ENV ----
@@ -49,14 +73,8 @@ export function loadConfig() {
     discordGuildId: process.env.DISCORD_GUILD_ID,
     discordThanksChannelId: process.env.DISCORD_THANKS_CHANNEL_ID,
 
-    // DeepSeek
-    deepseekApiKey: process.env.DEEPSEEK_API_KEY,
-    deepseekBaseUrl: process.env.DEEPSEEK_BASE_URL || "https://api.deepseek.com",
-    deepseekModel: process.env.DEEPSEEK_MODEL || "deepseek-v4-flash",
-    deepseekTimeoutMs: validatePositiveInt(
-      process.env.DEEPSEEK_TIMEOUT_MS,
-      30000
-    ),
+    // AI Provider（新 AI_* 配置优先；旧 DEEPSEEK_* 仅作兼容读取）
+    ...loadAiProviderConfig(process.env),
 
     // 应用行为
     testMode: stringToBool(process.env.TEST_MODE, false),
@@ -97,6 +115,161 @@ export function loadConfig() {
   }
 
   return config;
+}
+
+function loadAiProviderConfig(env) {
+  const hasNewAiConfig = AI_ENV_KEYS.some((key) => Object.hasOwn(env, key));
+  const hasLegacyAiConfig = LEGACY_AI_ENV_KEYS.some((key) => Object.hasOwn(env, key));
+
+  if (hasNewAiConfig && hasLegacyAiConfig) {
+    throw new ConfigError(
+      "AI_* 与 DEEPSEEK_* 配置不得混用。请完整迁移到 AI_*，或仅保留旧 DEEPSEEK_* 配置。",
+      "mixed_ai_config",
+      78,
+    );
+  }
+
+  if (hasNewAiConfig) return loadNewAiProviderConfig(env);
+  return loadLegacyAiProviderConfig(env, hasLegacyAiConfig);
+}
+
+function loadNewAiProviderConfig(env) {
+  const protocol = normalizedEnv(env, "AI_PROTOCOL") || AI_PROTOCOL;
+  if (protocol !== AI_PROTOCOL) {
+    throw new ConfigError(
+      `不支持的 AI_PROTOCOL "${protocol}"。当前仅支持 ${AI_PROTOCOL}。`,
+      "unsupported_ai_protocol",
+      78,
+    );
+  }
+
+  const baseUrl = normalizedEnv(env, "AI_BASE_URL");
+  const explicitEndpoint = normalizedEnv(env, "AI_CHAT_COMPLETIONS_URL");
+  const model = normalizedEnv(env, "AI_MODEL");
+  if (!model || (!baseUrl && !explicitEndpoint)) {
+    throw new ConfigError(
+      "AI_* 配置不完整：必须设置 AI_MODEL，并设置 AI_BASE_URL 或 AI_CHAT_COMPLETIONS_URL。",
+      "incomplete_ai_config",
+      78,
+    );
+  }
+
+  const authHeader = normalizedEnv(env, "AI_AUTH_HEADER") || "Authorization";
+  assertSafeAuthHeader(authHeader);
+  const extraHeaders = parseExtraHeaders(env.AI_EXTRA_HEADERS_JSON, authHeader);
+  const extraBody = parseExtraBody(env.AI_EXTRA_BODY_JSON);
+
+  return {
+    aiProtocol: protocol,
+    aiBaseUrl: baseUrl,
+    aiChatCompletionsUrl: explicitEndpoint || buildChatCompletionsUrl(baseUrl),
+    aiApiKey: normalizedEnv(env, "AI_API_KEY"),
+    aiRequireApiKey: false,
+    aiModel: model,
+    aiTimeoutMs: validatePositiveInt(env.AI_TIMEOUT_MS, 30000),
+    aiAuthHeader: authHeader,
+    aiAuthScheme: normalizedEnv(env, "AI_AUTH_SCHEME") ?? "Bearer",
+    aiBackendLabel: normalizedEnv(env, "AI_BACKEND_LABEL") || "OpenAI Compatible",
+    aiExtraHeaders: extraHeaders,
+    aiExtraBody: extraBody,
+    aiConfigSource: "ai",
+  };
+}
+
+function loadLegacyAiProviderConfig(env, hasLegacyAiConfig) {
+  if (hasLegacyAiConfig && !legacyAiDeprecationLogged) {
+    legacyAiDeprecationLogged = true;
+    logger.warn("DEEPSEEK_* 配置已弃用；请迁移到通用 AI_* 配置。", {
+      backendLabel: "DeepSeek (legacy configuration)",
+    });
+  }
+
+  return {
+    aiProtocol: AI_PROTOCOL,
+    aiBaseUrl: normalizedEnv(env, "DEEPSEEK_BASE_URL") || "https://api.deepseek.com",
+    aiChatCompletionsUrl: buildChatCompletionsUrl(
+      normalizedEnv(env, "DEEPSEEK_BASE_URL") || "https://api.deepseek.com",
+    ),
+    aiApiKey: normalizedEnv(env, "DEEPSEEK_API_KEY"),
+    aiRequireApiKey: true,
+    aiModel: normalizedEnv(env, "DEEPSEEK_MODEL") || "deepseek-v4-flash",
+    aiTimeoutMs: validatePositiveInt(env.DEEPSEEK_TIMEOUT_MS, 30000),
+    aiAuthHeader: "Authorization",
+    aiAuthScheme: "Bearer",
+    aiBackendLabel: "DeepSeek (legacy configuration)",
+    aiExtraHeaders: {},
+    aiExtraBody: {},
+    aiConfigSource: "legacy_deepseek",
+  };
+}
+
+export function buildChatCompletionsUrl(baseUrl) {
+  return `${baseUrl.replace(/\/+$/, "")}/chat/completions`;
+}
+
+function normalizedEnv(env, key) {
+  const value = env[key];
+  return value === undefined || value === null ? undefined : String(value).trim();
+}
+
+function parseJsonObject(value, key) {
+  if (value === undefined || value === null || String(value).trim() === "") return {};
+  let parsed;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new ConfigError(`${key} 必须是合法 JSON 对象。`, "invalid_ai_extra_json", 78);
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new ConfigError(`${key} 必须是 JSON 对象。`, "invalid_ai_extra_json", 78);
+  }
+  return parsed;
+}
+
+function assertSafeAuthHeader(authHeader) {
+  if (PROTECTED_EXTRA_HEADERS.has(authHeader.toLowerCase())) {
+    throw new ConfigError(
+      "AI_AUTH_HEADER 不得使用 Content-Type、Host 或 Content-Length。",
+      "invalid_ai_auth_header",
+      78,
+    );
+  }
+}
+
+function parseExtraHeaders(value, authHeader) {
+  const parsed = parseJsonObject(value, "AI_EXTRA_HEADERS_JSON");
+  for (const [key, headerValue] of Object.entries(parsed)) {
+    const lowerKey = key.toLowerCase();
+    if (typeof headerValue !== "string") {
+      throw new ConfigError(
+        "AI_EXTRA_HEADERS_JSON 的所有值必须为字符串。",
+        "invalid_ai_extra_headers",
+        78,
+      );
+    }
+    if (PROTECTED_EXTRA_HEADERS.has(lowerKey) || lowerKey === authHeader.toLowerCase()) {
+      throw new ConfigError(
+        "AI_EXTRA_HEADERS_JSON 不得覆盖 Content-Type、Host、Content-Length 或当前鉴权 Header。",
+        "protected_ai_extra_header",
+        78,
+      );
+    }
+  }
+  return parsed;
+}
+
+function parseExtraBody(value) {
+  const parsed = parseJsonObject(value, "AI_EXTRA_BODY_JSON");
+  for (const key of Object.keys(parsed)) {
+    if (PROTECTED_EXTRA_BODY_FIELDS.has(key)) {
+      throw new ConfigError(
+        "AI_EXTRA_BODY_JSON 不得覆盖 model、messages 或 stream。",
+        "protected_ai_extra_body",
+        78,
+      );
+    }
+  }
+  return parsed;
 }
 
 function stringToBool(value, defaultValue) {

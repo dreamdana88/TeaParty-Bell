@@ -20,6 +20,7 @@ const SENSITIVE_KEYS = new Set([
   "api_key",
   "discordBotToken",
   "deepseekApiKey",
+  "aiApiKey",
   "authorization",
   "password",
   "secret",

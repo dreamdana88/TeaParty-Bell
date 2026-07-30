@@ -13,7 +13,7 @@ Discord 社区 BOT，为茶话会社区提供 Boost 助力自动感谢等服务�
 
 - Node.js ≥ 18
 - discord.js v14
-- DeepSeek API（AI 文案生成）
+- OpenAI-compatible Chat Completions API（AI 文案生成）
 
 ## 快速开始
 
@@ -51,7 +51,7 @@ npm run dev      # 开发模式（文件变更自动重启）
 src/
 ├── core/          # BOT 启动、生命周期、事件调度
 ├── discord/       # Discord 连接、事件监听、消息发送
-├── ai/            # DeepSeek 等 AI 能力（后续 Phase）
+├── ai/            # 通用 OpenAI-compatible AI 能力（后续 Phase）
 ├── features/      # 具体业务功能（后续 Phase）
 ├── storage/       # 本地持久化（后续 Phase）
 ├── resources/     # 表情、Reaction 等资源管理（后续 Phase）
