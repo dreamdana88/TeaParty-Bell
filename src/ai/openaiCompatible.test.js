@@ -96,6 +96,83 @@ const standard = (content) => ({ choices: [{ message: { content } }] });
   await rejects(() => provider.chat([]), "timeout", "超时");
 }
 
+function makeControlledTimeout() {
+  let timerCallback;
+  let clearCount = 0;
+  return {
+    setTimeoutImpl(callback) {
+      timerCallback = callback;
+      return { timer: "fake" };
+    },
+    clearTimeoutImpl() {
+      clearCount++;
+    },
+    get clearCount() {
+      return clearCount;
+    },
+    fire() {
+      timerCallback();
+    },
+  };
+}
+
+// fetch 阶段未返回时，AbortController 必须结束完整请求并清理计时器。
+{
+  const timer = makeControlledTimeout();
+  const provider = createOpenAICompatibleProvider({ ...baseConfig, aiTimeoutMs: 1 }, {
+    ...timer,
+    fetchImpl: (_url, init) => new Promise((_resolve, reject) => {
+      init.signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+      queueMicrotask(() => timer.fire());
+    }),
+  });
+  const error = await rejects(() => provider.chat([]), "timeout", "fetch 一直不返回时超时");
+  assert(!error.message.includes("secret-test-key") && !error.message.includes("Bearer"), "timeout 错误不泄露 Key");
+  assert(timer.clearCount === 1, "fetch 超时后清理 timer");
+}
+
+// 已收到响应头但正文未完成时，timer 仍必须生效。
+{
+  const timer = makeControlledTimeout();
+  const provider = createOpenAICompatibleProvider({ ...baseConfig, aiTimeoutMs: 1 }, {
+    ...timer,
+    fetchImpl: async (_url, init) => ({
+      ok: true,
+      status: 200,
+      json: () => new Promise((_resolve, reject) => {
+        init.signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+        queueMicrotask(() => timer.fire());
+      }),
+    }),
+  });
+  await rejects(() => provider.chat([]), "timeout", "正文解析未完成时超时");
+  assert(timer.clearCount === 1, "正文超时后清理 timer");
+}
+
+// 正文及时完成应正常返回，并且成功路径同样清理 timer。
+{
+  let clearCount = 0;
+  const provider = createOpenAICompatibleProvider(baseConfig, {
+    setTimeoutImpl: () => ({ timer: "success" }),
+    clearTimeoutImpl: () => { clearCount++; },
+    fetchImpl: async () => ({ ok: true, status: 200, json: async () => standard("body complete") }),
+  });
+  assert(await provider.chat([]) === "body complete", "正文在 timeout 前完成时正常返回");
+  assert(clearCount === 1, "成功后清理 timer");
+}
+
+// 非 AbortError 的 JSON 解析失败保持 invalid_response，且没有悬挂 timer。
+{
+  let clearCount = 0;
+  const provider = createOpenAICompatibleProvider(baseConfig, {
+    setTimeoutImpl: () => ({ timer: "syntax-error" }),
+    clearTimeoutImpl: () => { clearCount++; },
+    fetchImpl: async () => ({ ok: true, status: 200, json: async () => { throw new SyntaxError("invalid JSON"); } }),
+  });
+  await rejects(() => provider.chat([]), "invalid_response", "正文解析普通 SyntaxError");
+  assert(clearCount === 1, "解析失败后清理 timer");
+}
+
 {
   const provider = createOpenAICompatibleProvider(baseConfig, { fetchImpl: async () => new Response("not json", { status: 200 }) });
   await rejects(() => provider.chat([]), "invalid_response", "非法 JSON");
