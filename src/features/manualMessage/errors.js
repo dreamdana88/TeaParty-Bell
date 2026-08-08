@@ -22,8 +22,6 @@ const SAFE_MESSAGES = Object.freeze({
   BOT_MISSING_PERMISSION: "小G宝缺少在目标频道发言所需的权限。",
   EMPTY_CONTENT: "发言内容不能为空。",
   CONTENT_TOO_LONG: "发言内容超过 2000 字符。",
-  FORBIDDEN_MENTION: "发言内容不能包含 @everyone、@here 或角色 Mention。",
-  TOO_MANY_USER_MENTIONS: "一次发言最多允许 10 个不同的用户 Mention。",
   THREAD_LOCKED: "目标 Thread 已锁定，无法发言。",
   SEND_FAILED: "小G宝发送消息失败。",
   REPLY_FAILED: "小G宝回复消息失败。",

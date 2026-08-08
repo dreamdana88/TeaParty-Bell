@@ -56,6 +56,7 @@ function makeChannel({
   sentMessage = { id: "sent-1" },
   send = async () => sentMessage,
   messages = { fetch: async () => ({ id: "target-1", guildId, channelId: id, reply: async () => ({ id: "reply-1" }) }) },
+  guild = null,
 } = {}) {
   return {
     id,
@@ -65,6 +66,16 @@ function makeChannel({
     permissionsFor: () => permissions,
     send,
     messages,
+    guild,
+  };
+}
+
+function makeGuild(rolesById) {
+  return {
+    id: TARGET_GUILD,
+    roles: {
+      fetch: async (id) => rolesById.get(id) ?? null,
+    },
   };
 }
 
@@ -270,9 +281,38 @@ for (const [error, expected, label] of [
   const result = await service.send(request({ content: "请联系 <@123> <@123>" }));
   assertEqual(result.messageId, "sent-mention", "User Mention 发送成功");
   assertEqual(JSON.stringify(payload.allowedMentions), JSON.stringify({
-    parse: [], users: ["123"], roles: [], repliedUser: false,
-  }), "send allowedMentions 正确");
+    parse: ["users", "roles", "everyone"], repliedUser: false,
+  }), "send allowedMentions 允许正常 Mention");
   assert(!("token" in auditCalls[0]), "审计不含 token 字段");
+}
+{
+  let payload;
+  const channel = makeChannel({
+    guild: makeGuild(new Map([["111", { id: "111", guildId: TARGET_GUILD }]])),
+    send: async (value) => { payload = value; return { id: "sent-role" }; },
+  });
+  const { service } = makeHarness(channel);
+  await service.send(request({ content: "<@&111> 今晚有活动" }));
+  assertEqual(payload.content, "<@&111> 今晚有活动", "有效 Role Mention 原样进入 send payload");
+  assertEqual(JSON.stringify(payload.allowedMentions.parse), JSON.stringify(["users", "roles", "everyone"]), "Role Mention 使用新 parse 策略");
+}
+{
+  let payload;
+  const channel = makeChannel({ send: async (value) => { payload = value; return { id: "sent-everyone" }; } });
+  const { service } = makeHarness(channel);
+  await service.send(request({ content: "@everyone @here <@123>" }));
+  assertEqual(payload.content, "@everyone @here <@123>", "@everyone、@here 与 User Mention 原样发送");
+  assertEqual(JSON.stringify(payload.allowedMentions.parse), JSON.stringify(["users", "roles", "everyone"]), "@everyone、@here 允许 Discord 解析");
+}
+{
+  let sendCount = 0;
+  const channel = makeChannel({
+    guild: makeGuild(new Map([["111", { id: "111", guildId: TARGET_GUILD }]])),
+    send: async () => { sendCount++; return { id: "must-not-send" }; },
+  });
+  const { service } = makeHarness(channel);
+  await expectCode(service.send(request({ content: "<@&111> <@&999>" })), "ROLE_NOT_FOUND", "多个 Role 中一个无效时整条拒绝");
+  assertEqual(sendCount, 0, "无效 Role 时不得调用最终 message.send");
 }
 {
   const auditCalls = [];
@@ -306,6 +346,28 @@ for (const [type, label] of [
   assertEqual(result.messageId, "reply-1", `${label}回复成功`);
   assertEqual(payload.allowedMentions.repliedUser, false, `${label} repliedUser=false`);
   assertEqual(auditCalls[0].targetMessageId, "target-1", `${label}审计目标消息`);
+}
+
+{
+  let payload;
+  const channel = makeChannel({
+    guild: makeGuild(new Map([["111", { id: "111", guildId: TARGET_GUILD }]])),
+    messages: {
+      fetch: async () => ({
+        id: "target-1", guildId: TARGET_GUILD, channelId: "channel-1",
+        reply: async (value) => { payload = value; return { id: "reply-role" }; },
+      }),
+    },
+  });
+  const { service } = makeHarness(channel);
+  const result = await service.reply(request({
+    source: "discord_context_menu",
+    targetMessageId: "target-1",
+    content: "<@&111> 请看这里",
+  }));
+  assertEqual(result.messageId, "reply-role", "小G宝回复保持原有目标消息语义");
+  assertEqual(payload.content, "<@&111> 请看这里", "小G宝回复使用 Role Mention 内容");
+  assertEqual(JSON.stringify(payload.allowedMentions.parse), JSON.stringify(["users", "roles", "everyone"]), "小G宝回复使用新 Mention 策略");
 }
 
 // Reply：目标不存在、目标 Guild/Channel 不匹配、缺少 ReadMessageHistory

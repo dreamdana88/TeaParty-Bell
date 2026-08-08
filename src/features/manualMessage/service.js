@@ -19,6 +19,7 @@ import {
   countContentCharacters,
   validateManualContent,
 } from "./contentPolicy.js";
+import { validateManualMentions } from "./manualMentionPolicy.js";
 import { createManualMessageAudit } from "./audit.js";
 
 const ALLOWED_CHANNEL_TYPES = new Set([
@@ -208,7 +209,9 @@ export function createManualMessageService({
     const channel = await fetchChannel(channelId);
     validateChannel(channel, guildId);
     validatePermissions(channel, action);
-    return { contentPolicy, channel };
+    const guild = channel.guild ?? client.guilds?.cache?.get?.(guildId) ?? null;
+    const mentionPolicy = await validateManualMentions(contentPolicy.content, { guild, guildId });
+    return { contentPolicy, mentionPolicy, channel };
   }
 
   async function run(action, params, operation) {
@@ -255,12 +258,12 @@ export function createManualMessageService({
 
   async function send(params = {}) {
     return run("send", params, async () => {
-      const { contentPolicy, channel } = await prepare({ action: "send", ...params });
+      const { contentPolicy, mentionPolicy, channel } = await prepare({ action: "send", ...params });
       let sentMessage;
       try {
         sentMessage = await channel.send({
           content: contentPolicy.content,
-          allowedMentions: contentPolicy.allowedMentions,
+          allowedMentions: mentionPolicy.allowedMentions,
         });
       } catch (error) {
         logDiscordError(logger, "send failed", error);
@@ -277,7 +280,7 @@ export function createManualMessageService({
 
   async function reply(params = {}) {
     return run("reply", params, async () => {
-      const { contentPolicy, channel } = await prepare({ action: "reply", ...params });
+      const { contentPolicy, mentionPolicy, channel } = await prepare({ action: "reply", ...params });
       if (!params.targetMessageId || !channel.messages?.fetch) {
         throw createManualMessageError("TARGET_MESSAGE_NOT_FOUND");
       }
@@ -314,7 +317,7 @@ export function createManualMessageService({
       try {
         sentMessage = await targetMessage.reply({
           content: contentPolicy.content,
-          allowedMentions: contentPolicy.allowedMentions,
+          allowedMentions: mentionPolicy.allowedMentions,
         });
       } catch (error) {
         logDiscordError(logger, "reply failed", error);
