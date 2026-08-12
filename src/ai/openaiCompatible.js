@@ -305,7 +305,11 @@ async function safeReadUpstreamError(response) {
     if (message) result.message = truncate(message, UPSTREAM_ERROR_MAX_LEN);
 
     return Object.keys(result).length > 0 ? result : null;
-  } catch {
+  } catch (error) {
+    // timeout 覆盖完整生命周期（含错误正文读取）；AbortError 必须继续向外抛
+    if (error?.name === "AbortError") {
+      throw error;
+    }
     return null;
   }
 }

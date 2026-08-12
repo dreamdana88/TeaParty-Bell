@@ -367,6 +367,37 @@ function makeControlledTimeout() {
   assert(timer.clearCount === 1, "正文超时后清理 timer");
 }
 
+// 非 2xx 响应头已返回，但错误正文读取卡住时，AbortError 不得被吞成 http_error。
+{
+  const timer = makeControlledTimeout();
+  const provider = createOpenAICompatibleProvider({ ...baseConfig, aiTimeoutMs: 1 }, {
+    ...timer,
+    fetchImpl: async (_url, init) => ({
+      ok: false,
+      status: 422,
+      json: () => new Promise((_resolve, reject) => {
+        init.signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+        queueMicrotask(() => timer.fire());
+      }),
+    }),
+  });
+  const error = await rejects(
+    () => provider.chat([]),
+    "timeout",
+    "非 2xx 错误正文读取超时仍为 timeout",
+  );
+  assert(error instanceof AiProviderError, "非 2xx 正文超时仍为 AiProviderError");
+  assert(error.code === "timeout", "不得降级为 http_error / server_error");
+  assert(error.message.includes("超时"), "错误消息含 timeout 语义");
+  assert(timer.clearCount === 1, "非 2xx 错误正文超时后清理 timer");
+  assert(
+    !error.message.includes("secret-test-key") &&
+      !error.message.includes("Authorization") &&
+      !error.message.includes("Bearer"),
+    "非 2xx 错误正文超时不泄露 Key",
+  );
+}
+
 // 正文及时完成应正常返回，并且成功路径同样清理 timer。
 {
   let clearCount = 0;
