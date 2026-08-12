@@ -141,8 +141,15 @@ console.log("\n=== 测试 21：capturing mock — AI 不接触用户数据 ===\n
   assertIncludes(uc, "星露谷", "含 interest");
   // 格式验证
   assert(!uc.includes("sk-test"), "不含 API Key");
-  assertEqual(opts.maxTokens, 128, "maxTokens=128");
-  assert(opts.thinking === undefined, "不传供应商专属 thinking 参数");
+  // 不再传 options（或至少不限制 maxTokens）；输出预算交给通用 Provider
+  assert(
+    opts === undefined || opts.maxTokens === undefined,
+    "Boost 不再传 maxTokens",
+  );
+  assert(
+    opts === undefined || opts.thinking === undefined,
+    "不传供应商专属 thinking 参数",
+  );
 }
 
 console.log("\n=== 测试 22：默认无参数正常生成 ===\n");

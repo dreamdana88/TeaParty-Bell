@@ -21,8 +21,10 @@ export function createAiProvider(config) {
    *
    * @param {Array<{ role: string, content: string }>} messages
    * @param {object} [options]
-   * @param {number} [options.maxTokens]
-   * @returns {Promise<string>} 标准化最终文本
+   * @param {number} [options.maxTokens] - 仅在显式传入时发送 max_tokens
+   * @param {string} [options.reasoningEffort] - 覆盖默认 reasoning_effort（默认 high）
+   * @param {number} [options.temperature] - 仅在显式传入时发送 temperature
+   * @returns {Promise<string>} 标准化最终文本（仅 content，不含 reasoning）
    * @throws {Error} 调用失败时抛出错误，错误含 code 属性标识类型
    */
   async function generateText(messages, options) {

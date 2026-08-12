@@ -25,7 +25,10 @@ const provider = createDeepSeekProvider({
 
 assert(await provider.chat([]) === "legacy ok", "旧模块转发到通用 Provider");
 assert(captured.url === "https://legacy.example/chat/completions", "旧 Base URL 正确拼接");
-assert(JSON.parse(captured.init.body).thinking === undefined, "旧兼容路径不发送供应商专属字段");
+const legacyBody = JSON.parse(captured.init.body);
+assert(legacyBody.thinking === undefined, "旧兼容路径不发送供应商专属字段");
+assert(legacyBody.reasoning_effort === "high", "Legacy DeepSeek 走统一 Provider 默认 reasoning_effort=high");
+assert(legacyBody.max_tokens === undefined, "Legacy DeepSeek 默认不发送 max_tokens");
 assert(typeof DeepSeekError === "function", "旧错误类型导出仍可解析");
 
 const withoutLegacyKey = createDeepSeekProvider({ deepseekBaseUrl: "https://legacy.example" }, {

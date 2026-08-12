@@ -166,10 +166,9 @@ export function createCopyGenerator(config, aiOverride) {
       { role: "system", content: systemPrompt },
       { role: "user", content: userMessage },
     ];
-    const options = { maxTokens: 128 };
 
-    // ---- 3. 调用 AI ----
-    const rawText = await ai.generateText(messages, options);
+    // ---- 3. 调用 AI（不限制 max_tokens；输出预算交给通用 Provider / 上游模型）----
+    const rawText = await ai.generateText(messages);
 
     // ---- 4. 校验输出 ----
     const trimmed = rawText.trim();

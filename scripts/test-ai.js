@@ -25,17 +25,12 @@ console.log(`Timeout: ${config.aiTimeoutMs}ms`);
 console.log("Sending test request...\n");
 
 try {
-  const result = await ai.generateText(
-    [
-      {
-        role: "user",
-        content: "请只回复：TeaParty-Bell AI connected",
-      },
-    ],
+  const result = await ai.generateText([
     {
-      maxTokens: 50,
-    }
-  );
+      role: "user",
+      content: "请只回复：TeaParty-Bell AI connected",
+    },
+  ]);
 
   console.log("✅ AI Provider 连接成功！");
   console.log(`📝 返回内容：${result}`);
