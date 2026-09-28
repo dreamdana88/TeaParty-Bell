@@ -34,3 +34,13 @@ data/runtime/forum-bump/state.json.tmp-*
 
 # Emoji backup (local asset export — do NOT commit)
 data/exported-emojis/
+
+# Plans, audits, and agent notes. Not used to run the bot.
+AGENTS.md
+CLAUDE.md
+BOT_CONSTRUCTION_PLAN*.md
+docs/
+*汇总.md
+*.xlsx
+*.code-workspace
+.env.backup*
