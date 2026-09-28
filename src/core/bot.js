@@ -22,6 +22,7 @@ import { createManualInteractionRouter } from "../features/manualMessage/interac
 import { createForumBumpRuntime } from "../features/forumBump/runtime.js";
 import { FORUM_BUMP_INCIDENT_KEYS } from "../features/forumBump/runtimeAlerts.js";
 import { createForumBumpAdminRouter } from "../features/forumBump/admin/adminRouter.js";
+import { createCocRuntime } from "../features/coc/runtime.js";
 import {
   createInstanceLock,
   InstanceLockError,
@@ -90,6 +91,7 @@ export async function start(options = {}) {
     createManualInteractionRouterFn = createManualInteractionRouter,
     createForumBumpRuntimeFn = createForumBumpRuntime,
     createForumBumpAdminRouterFn = createForumBumpAdminRouter,
+    createCocRuntimeFn = createCocRuntime,
     createInstanceLockFn = createInstanceLock,
     logger = defaultLogger,
     exitFn = (code) => process.exit(code),
@@ -284,6 +286,7 @@ export async function start(options = {}) {
   let shuttingDown = false;
   let forumBumpRuntime = null;
   let forumBumpAdminRouter = null;
+  let cocRuntime = null;
 
   async function shutdown(signal, exitCode = EXIT_OK) {
     if (shuttingDown) return;
@@ -294,6 +297,11 @@ export async function start(options = {}) {
       // ignore
     }
     // 先停 Admin Router（停止接收新操作），再停 Forum Runtime，再 destroy Discord
+    try {
+      if (cocRuntime) cocRuntime.stop();
+    } catch (err) {
+      try { logger.error("CoC Runtime 停止异常", { message: err.message }); } catch { /* */ }
+    }
     try {
       if (forumBumpAdminRouter) forumBumpAdminRouter.destroy();
     } catch (err) {
@@ -437,6 +445,24 @@ export async function start(options = {}) {
   processLike.on?.("unhandledRejection", (reason) => {
     logger.error("未处理的 Promise 拒绝", { message: reason?.message ?? String(reason) });
   });
+
+  try {
+    cocRuntime = createCocRuntimeFn({
+      client,
+      config,
+      logger,
+      alertNotifier: notifier,
+      projectRoot,
+    });
+    const cocStart = await cocRuntime.start();
+    if (cocStart?.enabled === false && config.coc?.disabledReason) {
+      logger.warn?.("[Bot] CoC 未启用", { reason: config.coc.disabledReason });
+    }
+  } catch (error) {
+    try { cocRuntime?.stop(); } catch { /* ignore */ }
+    cocRuntime = null;
+    safeStartupLog(logger, "CoC Runtime 启动失败，其他功能继续", error);
+  }
 
   logger.info("TeaParty-Bell 启动完成 / operational");
   return {

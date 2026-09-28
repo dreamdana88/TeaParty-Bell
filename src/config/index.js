@@ -3,6 +3,7 @@ import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 import { ConfigError } from "./configError.js";
 import { loadForumBumpConfig } from "./forumBumpConfig.js";
+import { loadCocConfig } from "./cocConfig.js";
 import { logger } from "../utils/logger.js";
 
 export { ConfigError } from "./configError.js";
@@ -102,6 +103,7 @@ export function loadConfig() {
 
   // Forum Bump（disabled 时不要求 Forum ID；dry_run/execute 严格校验）
   config.forumBump = loadForumBumpConfig(process.env, { projectRoot });
+  config.coc = loadCocConfig(process.env, { projectRoot });
 
   // TEST_MODE 与 Forum Execute 互斥：不得静默降级为 dry_run
   if (config.testMode === true && config.forumBump.mode === "execute") {

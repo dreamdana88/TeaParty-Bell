@@ -44,12 +44,12 @@ console.log("\n=== Manual Guild Command Registration ===\n");
   assertEqual(calls.length, 1, "REST.put 只调用一次");
   assert(calls[0].route.includes(`/applications/${APPLICATION_ID}/guilds/${GUILD_ID}/commands`), "使用 Guild Commands 路由");
   assert(!calls[0].route.includes(`/applications/${APPLICATION_ID}/commands`), "不使用全局命令路由");
-  assertEqual(calls[0].options.body.length, 3, "注册 body 含三个管理员命令");
+  assertEqual(calls[0].options.body.length, allAdminCommandDefinitions.length, "注册 body 含全部 Guild 命令");
   assertEqual(JSON.stringify(calls[0].options.body), JSON.stringify(allAdminCommandDefinitions), "body 来源为统一 allAdminCommandDefinitions");
-  assertEqual(result.count, 3, "返回注册数量 3");
+  assertEqual(result.count, allAdminCommandDefinitions.length, "返回注册数量与清单一致");
   assertEqual(
     JSON.stringify(result.names),
-    JSON.stringify(["小G宝回复", "小g宝发言", "顶帖"]),
+    JSON.stringify(["小G宝回复", "小g宝发言", "顶帖", "coc", "r"]),
     "返回命令名称摘要",
   );
 }

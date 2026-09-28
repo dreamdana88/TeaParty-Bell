@@ -75,7 +75,7 @@ console.log("\n=== forumBump adminPanel (D-6B) ===\n");
   assertEqual(forumBumpAdminCommandDefinitions.length, 1, "forum 定义 1 条");
 
   const all = allAdminCommandDefinitions;
-  assertEqual(all.length, 3, "全部管理员命令 3 个");
+  assertEqual(all.length, 5, "Guild 命令含管理员命令和 CoC 命令");
   const names = all.map((c) => c.name);
   assert(names.includes(MANUAL_REPLY_COMMAND_NAME), "保留 小G宝回复");
   assert(names.includes(SLASH_SEND_COMMAND_NAME), "保留 小g宝发言");

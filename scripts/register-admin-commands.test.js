@@ -91,7 +91,7 @@ for (const argv of [[], ["--confirm-guild", "wrong-guild"]]) {
   assertEqual(restToken, CONFIG.discordBotToken, "真实模式使用配置 Bot Token 创建 REST");
   assertEqual(registrationOptions.applicationId, CONFIG.discordApplicationId, "注册使用配置 Application ID");
   assertEqual(registrationOptions.guildId, CONFIG.discordGuildId, "注册使用配置 Guild ID");
-  assertEqual(registrationOptions.commandDefinitions.length, 3, "注册使用全部三个管理员命令");
+  assertEqual(registrationOptions.commandDefinitions.length, 5, "注册使用全部 Guild 命令");
   assert(
     registrationOptions.commandDefinitions.some((c) => c.name === "顶帖"),
     "注册体含顶帖命令",

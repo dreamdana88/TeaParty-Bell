@@ -36,6 +36,18 @@ AGENTS.md 优先
 
 旧 `BOT_CONSTRUCTION_PLAN.md` 不再作为未来功能范围与阶段顺序的唯一依据。
 
+CoC 7e 跑团模块的产品范围、阶段顺序和施工边界以 `BOT_CONSTRUCTION_PLAN3.md` 为准。
+
+本文件继续管辖：
+
+- 自动感谢的生产维护
+- Gateway 健康监控与启动权限自检
+- Hermes / Telegram 私下告警
+- 管理员套皮回复与直接发言
+- 论坛顶帖
+
+CoC 计划不得改写上述已上线功能的行为。
+
 ## 官方文档优先来源
 
 涉及 Discord 和 DeepSeek 接口时，优先查询以下官方文档：
@@ -1609,7 +1621,8 @@ AGENTS.md
 BOT_CONSTRUCTION_PLAN2.md
 
 旧 BOT_CONSTRUCTION_PLAN.md 只作为历史参考。
-未来功能范围、阶段顺序和架构边界以 BOT_CONSTRUCTION_PLAN2.md 为准。
+自动感谢、生产加固、管理员发言和论坛顶帖的范围与阶段顺序以 BOT_CONSTRUCTION_PLAN2.md 为准。
+CoC 7e 跑团模块另见 BOT_CONSTRUCTION_PLAN3.md。本文件不覆盖该模块的阶段顺序。
 
 执行当前 Stage 前：
 
