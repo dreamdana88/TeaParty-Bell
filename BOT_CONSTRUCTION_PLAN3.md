@@ -738,24 +738,28 @@ Discord 按钮和收藏夹都进这里。URL 里没有 User ID，也没有每次
 ```text
 固定页面
 ↓
-Discord OAuth（identify）
+Discord OAuth Authorization Code
+scope：identify + guilds.members.read
 ↓
-真实 User ID
+用当前用户自己的 Access Token 读取 User ID
+以及该用户在 DISCORD_GUILD_ID 的 Guild Member
 ↓
-Bot 核对茶话会成员，以及 COC_ACCESS_ROLE_ID 茶会贵宾
+Member 存在，且 roles 包含 COC_ACCESS_ROLE_ID（茶会贵宾）
 ↓
-web_sessions
+服务端 web session
 ↓
 HttpOnly + Secure + SameSite=Lax 的随机 Cookie
 ```
 
-Session 约 90 天。贵宾资格约 30 天复查一次，仍符合就无感继续。写角色卡时再核对 Session 用户就是 `owner_user_id`。
+这是 OAuth scope，不是小G宝的 Guild Members Gateway Intent。不共享 TeaParty-Bell 的 Bot Token，也不为这个功能打开该 Intent。
 
-禁止用户手填 Discord ID 或用户名来登录。禁止把 Bot Token 放进 URL。OAuth 的 `state` 只活几分钟，用来防止回调伪造，不拿来当车卡链接。
+Session 约 90 天。贵宾资格约 30 天。不长期保存 Discord access token 或 refresh token，所以资格到期后要重新授权，不做静默重检。写角色卡时，所有者只从 Session 推导，不接受前端传入的 User ID。
 
-Phase 2 开工前复核：按已知 User ID 取单个成员是否需要 Guild Members Intent。若不需要，就不要开。若需要，改用用户侧的成员读取范围，仍然不开这个 Gateway Intent。
+禁止用户手填 Discord ID 或用户名来登录。禁止把 Bot Token 放进 URL。OAuth 的 `state` 必须校验，只活在这一次授权里，不拿来当车卡链接。
 
-细节以 `docs/coc-phase0-audit.md` 第 6 节为准。
+Guild、贵宾身份组、Client、回调地址、Session Secret、数据库路径和内部接口密钥都来自环境变量。当前生产茶话会的 Guild ID 可以记在文档备注里，运行逻辑不写死。
+
+施工细节以 `docs/coc-b-line.md` Phase B3 为准。审计报告第 6 节里「用 Bot 查成员、静默复查」的方案已被该节替换。
 
 ## 6.6 导入与导出
 
@@ -1704,7 +1708,7 @@ Phase 7  团录导出
 Phase 8  Dev Guild 完整冒烟
 ```
 
-角色卡、车卡网站、Discord OAuth 和角色库已经拆到 B 线，施工文件是 `docs/coc-b-line.md`。本文件第 2、3 阶段不再在 TeaParty-Bell 里做。A 线继续负责开团、房间、身份、昵称、骰子和团录。两条线互不阻塞，整合放到 B 线的 Phase B8。
+角色卡、车卡网站、Discord OAuth 和角色库已经拆到 B 线，施工文件是 `docs/coc-b-line.md`。本文件第 2、3 阶段不再在 TeaParty-Bell 里做。A 线继续负责开团、房间、身份、昵称、骰子和团录。玩家身份写 PL，不再使用 KL。两条线互不阻塞，整合放到 B 线的 Phase B8。B7 内部 API 是唯一正式集成边界，TeaParty-Bell 不打开 B 线的 SQLite。
 
 ## Phase 0：只读审计
 
@@ -1796,9 +1800,11 @@ Bot 重启后
 库损坏时只关闭 CoC
 ```
 
-封箱前测试至少覆盖：空库启动、迁移、损坏文件 fail closed、不自动建空库冒充、在线备份、重启恢复、角色卡不写死亡和本局 HP。
+封箱前测试至少覆盖：空库启动、从 v1 开始的 migration、损坏文件 fail closed、不自动建空库冒充、在线备份、重启恢复、角色卡不写死亡，也不把本局 HP / SAN / MP / Luck 消耗写回长期卡。卡面上的幸运初始值仍然保存。
 
 ## Phase 2：固定网站与 Discord OAuth
+
+本阶段已迁到 `docs/coc-b-line.md` 的 Phase B3。下面只保留产品意图。成员校验、OAuth scope、会话和资格复查以那份文件为准，不要按 Bot Token 或 Guild Members Gateway Intent 施工。
 
 只做最小闭环：
 
@@ -1820,7 +1826,7 @@ Discord OAuth
 Discord 查询同一条数据
 ```
 
-这一阶段不做完整车卡 UI。开工前复核单个成员查询要不要 Guild Members Intent。
+这一阶段不做完整车卡 UI。成员校验使用用户自己的 `identify` + `guilds.members.read`，不打开 Guild Members Gateway Intent。
 
 验收：
 
@@ -1832,7 +1838,7 @@ Discord 查询同一条数据
 用户 A 不能读改用户 B
 篡改 Cookie 无效
 长期 Session 可恢复
-资格复查到期后会再查 Role
+资格到期后重新走 Discord 授权，不静默用 Bot 查 Role
 ```
 
 验收通过后再进入 Phase 3。
@@ -2308,26 +2314,11 @@ docs/coc-phase0-audit.md
 docs/tl-coc-card-xlsx-audit.md
 ```
 
-Excel 拆解报告保持事实审计，不因 Phase 0.5 改公式和 A/B/C。完整版产品语义以审计报告 Phase 0.5 段落和本文件为准。
+Excel 拆解报告保持事实审计，不因 Phase 0.5 改公式和 A/B/C。角色卡字段和公式仍以审计报告为准。登录、门禁和资格复查以 `docs/coc-b-line.md` Phase B3 为准。
 
-A 线眼下的施工边界是 `docs/coc-mvp-0.1.md`。角色卡网站交给另一个会话，边界是 `docs/coc-b-line.md`。A 线不要做 SQLite 角色库、车卡页面和 OAuth。B 线不要改跑团 MVP。
+A 线眼下的施工边界是 `docs/coc-mvp-0.1.md`。角色卡网站的下一步是 Phase B0，边界是 `docs/coc-b-line.md`。A 线不要做 SQLite 角色库、车卡页面和 OAuth。B 线不要改跑团 MVP。
 
-审计完成后提交第 13 节列出的报告，至少包含：
-
-```text
-1. 当前仓库架构地图
-2. Excel 数据结构与公式地图
-3. Character Schema 草案
-4. SQLite Schema 草案
-5. Web 身份认证方案
-6. Discord Session 生命周期方案
-7. Message Content Feature Gate 方案
-8. 分阶段施工建议
-9. 风险点
-10. 不应修改的现有模块
-```
-
-报告确认后，才进入 Phase 1。
+Phase 0 报告已经写入。不要在 TeaParty-Bell 里再开一轮 Phase 1 角色库。B 线从 Phase B0 开工，做完验收后停。
 
 ---
 
@@ -2346,7 +2337,7 @@ BOT_CONSTRUCTION_PLAN3.md
 BOT_CONSTRUCTION_PLAN.md 只作为历史参考。
 已上线的自动感谢、生产加固、管理员发言、论坛顶帖以 BOT_CONSTRUCTION_PLAN2.md 为准。
 CoC 完整版的功能范围、阶段顺序和架构边界以 BOT_CONSTRUCTION_PLAN3.md 为准。
-当前要施工的最小开团版本以 docs/coc-mvp-0.1.md 为准。完整版 Phase 1 先不要做。
+当前 TeaParty-Bell 内不要再开角色库 Phase 1。角色卡网站按 docs/coc-b-line.md 从 Phase B0 做，并且不要改跑团 MVP。
 
 执行当前 Phase 前：
 
