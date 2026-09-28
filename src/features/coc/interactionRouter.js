@@ -16,7 +16,7 @@ import {
   recruitPanel,
   startedPanel,
 } from "./panel.js";
-import { COC_COMMAND_NAME, COC_OPEN_SUBCOMMAND, ROLL_COMMAND_NAME } from "./commands.js";
+import { COC_COMMAND_NAME, COC_OPEN_SUBCOMMAND, COC_PANEL_SUBCOMMAND, ROLL_COMMAND_NAME } from "./commands.js";
 
 const CLOSED = "CoC 跑团暂时没有开启。";
 
@@ -76,9 +76,19 @@ export function createCocInteractionRouter({
   let started = false;
 
   function closedMessage() {
-    return service.availability() === "broken"
-      ? "CoC 场次记录暂时不可用。"
-      : CLOSED;
+    return service.statusMessage?.() ?? CLOSED;
+  }
+
+  async function repostPanel(interaction) {
+    const preview = service.previewRepost(interaction.channelId, interaction.user.id);
+    if (!preview.ok) {
+      await replyEphemeral(interaction, preview.message);
+      return;
+    }
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const messageId = await discord.sendMessage(preview.session.runChannelId, controlPanel(preview.session));
+    await service.setControlMessage(preview.session.sessionId, messageId);
+    await interaction.editReply({ content: "控制面板已重新发送。", flags: MessageFlags.Ephemeral });
   }
 
   async function editRecruit(session, payload) {
@@ -269,7 +279,12 @@ export function createCocInteractionRouter({
   async function onInteraction(interaction) {
     try {
       if (interaction.isChatInputCommand?.() && interaction.commandName === COC_COMMAND_NAME) {
-        if (interaction.options.getSubcommand(false) !== COC_OPEN_SUBCOMMAND) return;
+        const subcommand = interaction.options.getSubcommand(false);
+        if (subcommand === COC_PANEL_SUBCOMMAND) {
+          await repostPanel(interaction);
+          return;
+        }
+        if (subcommand !== COC_OPEN_SUBCOMMAND) return;
         if (service.availability() !== "ready") {
           await replyEphemeral(interaction, closedMessage());
           return;

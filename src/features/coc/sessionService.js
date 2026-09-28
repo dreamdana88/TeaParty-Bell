@@ -8,9 +8,11 @@ import {
   activeSessionInChannel,
   createRecruitingSession,
   findOccupyingSession,
+  isPrunableSession,
   lockStarting,
   markCancelled,
   markEnded,
+  markEnding,
   normalizeTitle,
   participantIds,
   replaceSession,
@@ -27,6 +29,11 @@ import {
 
 function unavailable(message = "CoC 跑团暂时没有开启。") {
   return { ok: false, message };
+}
+
+function channelMissing(error) {
+  const code = error?.code ?? error?.discordCode;
+  return code === 10003;
 }
 
 /**
@@ -54,6 +61,11 @@ export function createCocSessionService({
 
   function availability() {
     return mode;
+  }
+
+  function statusMessage() {
+    if (mode === "broken") return "CoC 场次记录暂时不可用。";
+    return config?.disabledReason || "CoC 跑团暂时没有开启。";
   }
 
   function markBroken() {
@@ -220,10 +232,15 @@ export function createCocSessionService({
         logger.warn?.("CoC 回滚昵称失败", { message: error?.message, userId: member.userId });
       }
     }
-    if (channelId) {
-      try { await discord.deleteChannel(channelId); } catch (error) {
-        logger.warn?.("CoC 回滚频道失败", { message: error?.message, channelId });
-      }
+    const channelRemoved = await deleteRunChannel(channelId);
+    if (!channelRemoved) {
+      await store.update((state) => {
+        const current = state.sessions.find((item) => item.sessionId === session.sessionId);
+        if (!current || current.state !== SESSION_STATES.starting) return { state, result: null };
+        const next = { ...current, runChannelId: channelId, rolesGranted: rolesGranted || current.rolesGranted };
+        return { state: { ...state, sessions: replaceSession(state.sessions, next) }, result: next };
+      });
+      return;
     }
     await store.update((state) => {
       const current = state.sessions.find((item) => item.sessionId === session.sessionId);
@@ -236,8 +253,46 @@ export function createCocSessionService({
     const roleIds = [config.kpRoleId, config.klRoleId, config.obRoleId];
     for (const userId of participantIds(session)) {
       for (const roleId of roleIds) {
-        await discord.removeRole(session.guildId, userId, roleId);
+        try {
+          await discord.removeRole(session.guildId, userId, roleId);
+        } catch (error) {
+          logger.warn?.("CoC 卸下身份组失败", {
+            message: error?.message,
+            sessionId: session.sessionId,
+            userId,
+          });
+        }
       }
+    }
+  }
+
+  async function restoreNicknames(session) {
+    for (const member of session.kl) {
+      if (!member.appliedNickname) continue;
+      try {
+        const currentNickname = await discord.fetchNickname(session.guildId, member.userId);
+        const plan = planNicknameRestore({
+          originalNickname: member.originalNickname,
+          appliedNickname: member.appliedNickname,
+          currentNickname,
+        });
+        if (plan.action === "clear") await discord.setNickname(session.guildId, member.userId, null);
+        if (plan.action === "set") await discord.setNickname(session.guildId, member.userId, plan.nickname);
+      } catch (error) {
+        logger.warn?.("CoC 恢复昵称失败", { message: error?.message, userId: member.userId });
+      }
+    }
+  }
+
+  async function deleteRunChannel(channelId) {
+    if (!channelId) return true;
+    try {
+      await discord.deleteChannel(channelId);
+      return true;
+    } catch (error) {
+      if (channelMissing(error)) return true;
+      logger.warn?.("CoC 删除频道失败", { message: error?.message, channelId });
+      return false;
     }
   }
 
@@ -308,20 +363,48 @@ export function createCocSessionService({
       return { ok: false, message: "身份颜色没有发齐，已经收回这次建房。招募还在。" };
     }
 
-    const kl = [];
+    const rolesSaved = await store.update((state) => {
+      const current = state.sessions.find((item) => item.sessionId === sessionId);
+      if (!current || current.state !== SESSION_STATES.starting) {
+        return { errorCode: "REJECTED", message: "这场招募的状态已经变了。" };
+      }
+      const next = { ...current, rolesGranted: true, runChannelId: channel.id };
+      return { state: { ...state, sessions: replaceSession(state.sessions, next) }, result: next };
+    });
+    if (!rolesSaved.ok) {
+      await rollbackStart(savedChannel.result, { channelId: channel.id, rolesGranted: true });
+      return { ok: false, message: rolesSaved.message };
+    }
+
+    let latestKl = session.kl;
     for (const member of session.kl) {
+      let recorded = { ...member, originalNickname: null, appliedNickname: null };
       try {
         const originalNickname = await discord.fetchNickname(session.guildId, member.userId);
         await discord.setNickname(session.guildId, member.userId, member.characterName);
-        kl.push({
-          ...member,
-          originalNickname,
-          appliedNickname: member.characterName,
-        });
+        recorded = { ...member, originalNickname, appliedNickname: member.characterName };
       } catch (error) {
         logger.warn?.("CoC 修改昵称失败", { message: error?.message, userId: member.userId });
-        kl.push({ ...member, originalNickname: null, appliedNickname: null });
       }
+      const nickSaved = await store.update((state) => {
+        const current = state.sessions.find((item) => item.sessionId === sessionId);
+        if (!current || current.state !== SESSION_STATES.starting) {
+          return { errorCode: "REJECTED", message: "这场招募的状态已经变了。" };
+        }
+        const next = {
+          ...current,
+          kl: current.kl.map((item) => (item.userId === member.userId ? recorded : item)),
+        };
+        return { state: { ...state, sessions: replaceSession(state.sessions, next) }, result: next.kl };
+      });
+      if (!nickSaved.ok) {
+        await rollbackStart(
+          { ...session, kl: latestKl.map((item) => (item.userId === member.userId ? recorded : item)) },
+          { channelId: channel.id, rolesGranted: true, nicknames: [recorded] },
+        );
+        return { ok: false, message: nickSaved.message };
+      }
+      latestKl = nickSaved.result;
     }
 
     const activated = await store.update((state) => {
@@ -332,20 +415,62 @@ export function createCocSessionService({
       const next = {
         ...current,
         state: SESSION_STATES.active,
-        kl,
         startedAt: clock.now(),
         runChannelId: channel.id,
+        rolesGranted: true,
       };
       return { state: { ...state, sessions: replaceSession(state.sessions, next) }, result: next };
     });
     if (!activated.ok) {
       await rollbackStart(
-        { ...session, kl },
-        { channelId: channel.id, rolesGranted: true, nicknames: kl },
+        { ...session, kl: latestKl },
+        { channelId: channel.id, rolesGranted: true, nicknames: latestKl },
       );
       return { ok: false, message: activated.message };
     }
     return { ok: true, session: activated.result };
+  }
+
+  async function cleanupRoom(session) {
+    await restoreNicknames(session);
+    await removeRoles(session);
+    if (!session.runChannelId) return;
+    try {
+      await discord.lockChannel(session.runChannelId, participantIds(session));
+    } catch (error) {
+      logger.warn?.("CoC 锁定频道失败", { message: error?.message, sessionId: session.sessionId });
+    }
+  }
+
+  async function markSessionEnding(sessionId, actorId) {
+    return store.update((state) => {
+      const current = state.sessions.find((item) => item.sessionId === sessionId);
+      if (!current) return { errorCode: "MISSING", message: "这场跑团已经不在了。" };
+      if (actorId && current.kpUserId !== actorId) {
+        return { errorCode: "REJECTED", message: "只有 KP 可以结束本局。" };
+      }
+      if (current.state === SESSION_STATES.ending) {
+        return { state, result: current };
+      }
+      if (current.state !== SESSION_STATES.active) {
+        return { errorCode: "REJECTED", message: "这场跑团现在不能结束。" };
+      }
+      const next = markEnding(current, clock.now());
+      return { state: { ...state, sessions: replaceSession(state.sessions, next) }, result: next };
+    });
+  }
+
+  async function markSessionEnded(sessionId) {
+    return store.update((state) => {
+      const current = state.sessions.find((item) => item.sessionId === sessionId);
+      if (!current) return { errorCode: "MISSING", message: "这场跑团已经不在了。" };
+      if (current.state === SESSION_STATES.ended) return { state, result: current };
+      if (current.state !== SESSION_STATES.ending) {
+        return { errorCode: "REJECTED", message: "这场跑团现在不能结束。" };
+      }
+      const next = markEnded(current, clock.now());
+      return { state: { ...state, sessions: replaceSession(state.sessions, next) }, result: next };
+    });
   }
 
   async function finish(sessionId, actorId) {
@@ -354,46 +479,73 @@ export function createCocSessionService({
     if (!session) return { ok: false, message: "这场跑团已经不在了。" };
     const gate = requestEnd(session, actorId);
     if (!gate.ok) return gate;
-
-    for (const member of session.kl) {
-      if (!member.appliedNickname) continue;
-      try {
-        const currentNickname = await discord.fetchNickname(session.guildId, member.userId);
-        const plan = planNicknameRestore({
-          originalNickname: member.originalNickname,
-          appliedNickname: member.appliedNickname,
-          currentNickname,
-        });
-        if (plan.action === "clear") await discord.setNickname(session.guildId, member.userId, null);
-        if (plan.action === "set") await discord.setNickname(session.guildId, member.userId, plan.nickname);
-      } catch (error) {
-        logger.warn?.("CoC 恢复昵称失败", { message: error?.message, userId: member.userId });
-      }
-    }
-    try {
-      await removeRoles(session);
-    } catch (error) {
-      logger.warn?.("CoC 卸下身份组失败", { message: error?.message, sessionId });
-    }
-    try {
-      await discord.lockChannel(session.runChannelId, participantIds(session));
-    } catch (error) {
-      logger.warn?.("CoC 锁定频道失败", { message: error?.message, sessionId });
-    }
-
-    const ended = await store.update((state) => {
-      const current = state.sessions.find((item) => item.sessionId === sessionId);
-      if (!current || current.state !== SESSION_STATES.active) {
-        return { errorCode: "REJECTED", message: "这场跑团现在不能结束。" };
-      }
-      if (current.kpUserId !== actorId) {
-        return { errorCode: "REJECTED", message: "只有 KP 可以结束本局。" };
-      }
-      const next = markEnded(current, clock.now());
-      return { state: { ...state, sessions: replaceSession(state.sessions, next) }, result: next };
-    });
+    const ending = await markSessionEnding(sessionId, actorId);
+    if (!ending.ok) return { ok: false, message: ending.message };
+    await cleanupRoom(ending.result);
+    const ended = await markSessionEnded(sessionId);
     if (!ended.ok) return { ok: false, message: ended.message };
     return { ok: true, session: ended.result };
+  }
+
+  async function continueEnding(sessionId) {
+    const session = find(sessionId);
+    if (!session || session.state !== SESSION_STATES.ending) return { ok: true, skipped: true };
+    await cleanupRoom(session);
+    return markSessionEnded(sessionId).then((ended) => (
+      ended.ok ? { ok: true, session: ended.result } : { ok: false, message: ended.message }
+    ));
+  }
+
+  async function reconcileStarting(session) {
+    const channelId = session.runChannelId;
+    if (channelId || session.rolesGranted) await removeRoles(session);
+    await restoreNicknames(session);
+    const channelRemoved = await deleteRunChannel(channelId);
+    if (!channelRemoved) {
+      logger.warn?.("CoC 未完成的开团还留着频道，下次启动会再清理。", { sessionId: session.sessionId });
+      return { ok: false, stuck: true };
+    }
+    const saved = await store.update((state) => {
+      const current = state.sessions.find((item) => item.sessionId === session.sessionId);
+      if (!current || current.state !== SESSION_STATES.starting) return { state, result: current ?? null };
+      const next = revertStarting({ ...current, runChannelId: channelId });
+      return { state: { ...state, sessions: replaceSession(state.sessions, next) }, result: next };
+    });
+    return saved.ok ? { ok: true, session: saved.result } : { ok: false, message: saved.message };
+  }
+
+  async function pruneSettled() {
+    await store.update((state) => {
+      const now = clock.now();
+      return {
+        state: {
+          ...state,
+          sessions: state.sessions.filter((session) => !isPrunableSession(session, now)),
+        },
+        result: null,
+      };
+    });
+  }
+
+  async function recoverInterrupted() {
+    const ended = [];
+    for (const session of sessions().filter((item) => item.state === SESSION_STATES.starting)) {
+      await reconcileStarting(session);
+    }
+    for (const session of sessions().filter((item) => item.state === SESSION_STATES.ending)) {
+      const result = await continueEnding(session.sessionId);
+      if (result.ok && result.session?.state === SESSION_STATES.ended) ended.push(result.session);
+    }
+    await pruneSettled();
+    return { ended };
+  }
+
+  function previewRepost(channelId, actorId) {
+    if (mode !== "ready") return unavailable(mode === "broken" ? "CoC 场次记录暂时不可用。" : undefined);
+    const session = activeSessionInChannel(sessions(), channelId);
+    if (!session) return { ok: false, message: "请到这场跑团自己的频道里重新发送面板。" };
+    if (session.kpUserId !== actorId) return { ok: false, message: "只有 KP 可以重新发送控制面板。" };
+    return { ok: true, session };
   }
 
   async function deleteIfDue(sessionId) {
@@ -442,6 +594,7 @@ export function createCocSessionService({
 
   return {
     availability,
+    statusMessage,
     markBroken,
     markReady,
     setBotUserId,
@@ -458,6 +611,8 @@ export function createCocSessionService({
     cancelRecruit,
     confirmStart,
     finish,
+    recoverInterrupted,
+    previewRepost,
     deleteIfDue,
     roll,
     dueSessions,

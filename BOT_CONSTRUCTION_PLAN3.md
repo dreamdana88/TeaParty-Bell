@@ -1704,7 +1704,7 @@ Phase 7  团录导出
 Phase 8  Dev Guild 完整冒烟
 ```
 
-不得跳相。Phase 7 可以在等待 Discord 审核期间准备解析器和测试夹具，但真实历史读取必须等 Intent 可用，并且不得因此挡住 Phase 0 到 Phase 6。
+角色卡、车卡网站、Discord OAuth 和角色库已经拆到 B 线，施工文件是 `docs/coc-b-line.md`。本文件第 2、3 阶段不再在 TeaParty-Bell 里做。A 线继续负责开团、房间、身份、昵称、骰子和团录。两条线互不阻塞，整合放到 B 线的 Phase B8。
 
 ## Phase 0：只读审计
 
@@ -2310,7 +2310,7 @@ docs/tl-coc-card-xlsx-audit.md
 
 Excel 拆解报告保持事实审计，不因 Phase 0.5 改公式和 A/B/C。完整版产品语义以审计报告 Phase 0.5 段落和本文件为准。
 
-眼下先做明天能开一桌的最小版本，施工边界是 `docs/coc-mvp-0.1.md`。这一版用临时 JSON，不做 SQLite、角色卡、Web 和团录。完整版 Phase 1 等 MVP 0.1 封箱后再开始。
+A 线眼下的施工边界是 `docs/coc-mvp-0.1.md`。角色卡网站交给另一个会话，边界是 `docs/coc-b-line.md`。A 线不要做 SQLite 角色库、车卡页面和 OAuth。B 线不要改跑团 MVP。
 
 审计完成后提交第 13 节列出的报告，至少包含：
 

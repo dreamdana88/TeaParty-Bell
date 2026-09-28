@@ -2,11 +2,13 @@ export const SESSION_STATES = Object.freeze({
   recruiting: "RECRUITING",
   starting: "STARTING",
   active: "ACTIVE",
+  ending: "ENDING",
   ended: "ENDED",
   cancelled: "CANCELLED",
 });
 
 export const DELETE_AFTER_MS = 48 * 60 * 60 * 1000;
+export const SETTLED_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 export const MAX_CHARACTER_NAME = 32;
 export const MAX_TITLE = 80;
 export const ALREADY_IN_SESSION_MESSAGE = "你当前已经参加了一场 CoC 跑团，请先结束或退出上一场。";
@@ -15,6 +17,7 @@ const OCCUPYING = new Set([
   SESSION_STATES.recruiting,
   SESSION_STATES.starting,
   SESSION_STATES.active,
+  SESSION_STATES.ending,
 ]);
 
 export function involvesUser(session, userId) {
@@ -74,6 +77,7 @@ export function createRecruitingSession({
     recruitMessageId,
     runChannelId: null,
     controlMessageId: null,
+    rolesGranted: false,
     kpUserId,
     title,
     kl: [],
@@ -181,6 +185,12 @@ export function revertStarting(session) {
     state: SESSION_STATES.recruiting,
     runChannelId: null,
     controlMessageId: null,
+    rolesGranted: false,
+    kl: session.kl.map((member) => ({
+      ...member,
+      originalNickname: null,
+      appliedNickname: null,
+    })),
   };
 }
 
@@ -216,13 +226,30 @@ export function requestEnd(session, actorId) {
   return { ok: true };
 }
 
+export function markEnding(session, now) {
+  if (session.state !== SESSION_STATES.active && session.state !== SESSION_STATES.ending) return null;
+  return {
+    ...session,
+    state: SESSION_STATES.ending,
+    endedAt: session.endedAt ?? now,
+    deleteAt: session.deleteAt ?? now + DELETE_AFTER_MS,
+  };
+}
+
 export function markEnded(session, now) {
   return {
     ...session,
     state: SESSION_STATES.ended,
-    endedAt: now,
-    deleteAt: now + DELETE_AFTER_MS,
+    endedAt: session.endedAt ?? now,
+    deleteAt: session.deleteAt ?? now + DELETE_AFTER_MS,
   };
+}
+
+export function isPrunableSession(session, now) {
+  const settledAt = session.endedAt ?? session.createdAt ?? 0;
+  if (now - settledAt < SETTLED_RETENTION_MS) return false;
+  if (session.state === SESSION_STATES.cancelled) return true;
+  return session.state === SESSION_STATES.ended && session.channelDeleted === true;
 }
 
 export function activeSessionInChannel(sessions, channelId) {

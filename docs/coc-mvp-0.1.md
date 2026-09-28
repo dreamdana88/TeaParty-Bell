@@ -82,6 +82,8 @@ COC_OB_ROLE_ID=
 
 `COC_ENABLED` 不是 true，或上面任一 ID 缺失：关掉 CoC，记 warning，可走现有 Alert Outbox。感谢、顶帖、套皮发言照常启动。
 
+`TEST_MODE=true` 时也不执行建频道、改昵称、发身份组、锁频道和删频道。真实冒烟使用 Dev Bot、Dev Guild，并且 `TEST_MODE=false`。
+
 下面这些失败也不许让进程退出：
 
 ```text
@@ -317,7 +319,7 @@ data/runtime/coc-mvp-sessions.json
 
 ```text
 session_id
-state                 RECRUITING / STARTING / ACTIVE / ENDED / CANCELLED
+state                 RECRUITING / STARTING / ACTIVE / ENDING / ENDED / CANCELLED
 guild_id
 recruit_channel_id
 recruit_message_id
@@ -337,10 +339,16 @@ delete_at
 
 ```text
 RECRUITING    继续认领原面板上的按钮
+STARTING      上次开团没写完。卸掉已发身份组，恢复已记下的昵称，删掉已记下的频道，回到招募
 ACTIVE        认领结束按钮；不重复改昵称、不重复发身份组
+ENDING        继续收尾，完成后进入 ENDED
 ENDED         delete_at 已到则删频道，未到则按剩余时间再排一次
 CANCELLED     不再接受按钮
 ```
+
+取消超过 7 天，以及频道已经删掉超过 7 天的结束记录，启动时从文件里拿掉。正在招募、正在开团和还没到删除时间的团留下来。
+
+控制面板没发出去，或被人删了，KP 在跑团频道执行 `/coc 面板`，小G宝再发一张。
 
 删除计时来自 `delete_at`，不靠一个只活在内存里的 48 小时定时器。测试注入时钟，不真的等 48 小时。
 

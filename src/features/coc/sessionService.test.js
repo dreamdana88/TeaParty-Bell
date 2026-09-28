@@ -3,7 +3,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { createCocSessionService } from "./sessionService.js";
 import { createCocSessionStore } from "./sessionStore.js";
-import { DELETE_AFTER_MS } from "./sessionRules.js";
+import { DELETE_AFTER_MS, SETTLED_RETENTION_MS } from "./sessionRules.js";
 
 let passed = 0;
 let failed = 0;
@@ -32,7 +32,12 @@ function fakeDiscord(overrides = {}) {
       calls.push(["add", userId, roleId]);
       if (overrides.failRole) throw new Error("role failed");
     },
-    async removeRole(_guildId, userId, roleId) { calls.push(["remove", userId, roleId]); },
+    async removeRole(_guildId, userId, roleId) {
+      calls.push(["remove", userId, roleId]);
+      if (overrides.failFirstRemove && calls.filter((call) => call[0] === "remove").length === 1) {
+        throw new Error("first role remove failed");
+      }
+    },
     async fetchNickname(_guildId, userId) {
       return nicks.has(userId) ? nicks.get(userId) : null;
     },
@@ -41,7 +46,9 @@ function fakeDiscord(overrides = {}) {
       if (overrides.failNick) throw new Error("nick failed");
       nicks.set(userId, nickname);
     },
-    async lockChannel(id) { calls.push(["lock", id]); },
+    async lockChannel(id) {
+      calls.push(["lock", id, overrides.observeState?.() ?? null]);
+    },
     async sendMessage() { return "control-1"; },
     async editMessage() { calls.push(["edit"]); },
   };
@@ -164,6 +171,103 @@ function harness(discordOverrides = {}) {
   assert(loaded.ok === false, "损坏的场次文件 fail closed");
   const update = await store.update((state) => ({ state }));
   assert(update.ok === false, "损坏后不写成空名单");
+}
+
+{
+  const box = {};
+  const { service, discord, store } = harness({
+    observeState: () => box.store?.snapshot()?.sessions?.[0]?.state ?? null,
+  });
+  box.store = store;
+  await store.load();
+  await service.openRecruit({
+    guildId: "guild", channelId: "public", kpUserId: "kp", title: "收尾", messageId: "panel",
+  });
+  await service.joinKl("session-1", "kl", "奈洛莉");
+  await service.confirmStart("session-1", "kp");
+  await service.finish("session-1", "kp");
+  const lock = discord.calls.find((call) => call[0] === "lock");
+  assertEqual(lock?.[2], "ENDING", "清理房间前已经写成 ENDING");
+}
+
+{
+  const { service, discord, store } = harness({ nicks: { kl: "奈洛莉" } });
+  await store.load();
+  await store.update((state) => ({
+    state: {
+      ...state,
+      sessions: [{
+        sessionId: "stuck",
+        state: "STARTING",
+        guildId: "guild",
+        recruitChannelId: "public",
+        recruitMessageId: "panel",
+        runChannelId: "orphan-room",
+        controlMessageId: null,
+        rolesGranted: true,
+        kpUserId: "kp",
+        title: "中断",
+        kl: [{ userId: "kl", characterName: "奈洛莉", originalNickname: "Dream", appliedNickname: "奈洛莉" }],
+        ob: [],
+        createdAt: 1,
+        startedAt: null,
+        endedAt: null,
+        deleteAt: null,
+        channelDeleted: false,
+      }],
+    },
+    result: null,
+  }));
+  await service.recoverInterrupted();
+  assertEqual(service.find("stuck").state, "RECRUITING", "重启后未完成的开团回到招募");
+  assert(discord.calls.some((call) => call[0] === "delete" && call[1] === "orphan-room"), "重启后删掉半成品频道");
+  assert(discord.calls.some((call) => call[0] === "nick" && call[2] === "Dream"), "重启后恢复已改过的昵称");
+  assert(discord.calls.some((call) => call[0] === "remove"), "重启后卸下已发的身份组");
+}
+
+{
+  const { service, discord, store, setNow } = harness();
+  await store.load();
+  setNow(SETTLED_RETENTION_MS + 5_000);
+  await store.update((state) => ({
+    state: {
+      ...state,
+      sessions: [{
+        sessionId: "old",
+        state: "CANCELLED",
+        guildId: "guild",
+        recruitChannelId: "public",
+        recruitMessageId: null,
+        runChannelId: null,
+        controlMessageId: null,
+        kpUserId: "kp",
+        title: "旧招募",
+        kl: [],
+        ob: [],
+        createdAt: 1,
+        startedAt: null,
+        endedAt: 1,
+        deleteAt: null,
+        channelDeleted: false,
+      }],
+    },
+    result: null,
+  }));
+  await service.recoverInterrupted();
+  assert(service.find("old") == null, "过期的取消记录会被清掉");
+  assertEqual(discord.calls.length, 0, "清理历史记录不碰 Discord");
+}
+
+{
+  const { service, discord, store } = harness({ failFirstRemove: true });
+  await store.load();
+  await service.openRecruit({
+    guildId: "guild", channelId: "public", kpUserId: "kp", title: "逐个卸", messageId: "panel",
+  });
+  await service.joinKl("session-1", "kl", "奈洛莉");
+  await service.confirmStart("session-1", "kp");
+  await service.finish("session-1", "kp");
+  assert(discord.calls.filter((call) => call[0] === "remove").length > 1, "一个身份组卸失败后继续卸其他人");
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

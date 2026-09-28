@@ -20,7 +20,12 @@ export function createCocRuntime({
   timers = { setTimeout, clearTimeout },
 } = {}) {
   const coc = config?.coc;
-  const enabled = coc?.enabled === true;
+  const testMode = config?.testMode === true;
+  const configured = coc?.enabled === true;
+  const enabled = configured && !testMode;
+  const disabledReason = configured && testMode
+    ? "测试模式不会创建跑团频道、修改昵称或删除频道。"
+    : "CoC 跑团暂时没有开启。";
   const resolvedStore = store ?? (enabled
     ? createCocSessionStore({ filePath: coc.statePath })
     : null);
@@ -36,7 +41,7 @@ export function createCocRuntime({
       klRoleId: coc.klRoleId,
       obRoleId: coc.obRoleId,
       botUserId: null,
-    } : { enabled: false },
+    } : { enabled: false, disabledReason },
     clock,
     logger,
   });
@@ -81,7 +86,12 @@ export function createCocRuntime({
 
   async function start() {
     router?.start();
-    if (!enabled) return { enabled: false };
+    if (!enabled) {
+      if (configured && testMode) {
+        await warn("TEST_MODE=true，CoC 不执行真实 Discord 操作。真实冒烟请使用 Dev Bot、Dev Guild，并把 TEST_MODE 设为 false。");
+      }
+      return { enabled: false, blockedByTestMode: configured && testMode };
+    }
     serviceConfigBot();
     const loaded = await resolvedStore.load();
     if (!loaded.ok) {
@@ -90,6 +100,8 @@ export function createCocRuntime({
       return { enabled: false, broken: true };
     }
     service.markReady();
+    const recovered = await service.recoverInterrupted();
+    for (const session of recovered.ended) arm(session);
     for (const session of service.dueSessions()) arm(session);
     return { enabled: true };
   }
