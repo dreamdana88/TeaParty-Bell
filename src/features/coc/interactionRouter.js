@@ -142,7 +142,7 @@ export function createCocInteractionRouter({
       logger.warn?.("CoC 搜索成员失败", { message: error?.message, status });
       await interaction.editReply({
         content: status === 403
-          ? "按名字搜索全服成员被 Discord 拒绝了。请在开发者后台为小G宝打开 Server Members Intent，或先粘贴对方的用户 ID。"
+          ? "成员搜索被 Discord 拒绝了。请稍后重试，或直接粘贴对方的 Discord 用户 ID。"
           : "没有搜到这个人。请换一个更短的开头，或粘贴 Discord 用户 ID。",
       });
       return;
@@ -279,6 +279,16 @@ export function createCocInteractionRouter({
         ...ephemeral(preview.text),
         components: [confirmRow("stop", sessionId, "确认取消", "返回")],
       });
+      return;
+    }
+    if (action === "back-go-ob" || action === "back-go-kick") {
+      const preview = service.previewMembers(sessionId, userId);
+      if (!preview.ok) {
+        await interaction.update({ content: "这场跑团当前无法继续管理成员。", components: [] });
+        return;
+      }
+      const panel = memberAdminPanel(preview.session);
+      await interaction.update({ content: panel.content, components: panel.components });
       return;
     }
     if (action === "back-go" || action === "back-stop" || action === "back-finish") {
@@ -502,26 +512,6 @@ export function createCocInteractionRouter({
           }
           await syncPanels(changed.session);
           await interaction.editReply({ content: parsed.action === "modal-add-pl" ? "已添加为 PL。" : "已转为 PL。" });
-        }
-        return;
-      }
-      if (interaction.isUserSelectMenu?.()) {
-        const parsed = parseCustomId(interaction.customId);
-        if (!parsed?.sessionId) return;
-        const targetUserId = interaction.values?.[0];
-        if (parsed.action === "pick-add-pl") {
-          await interaction.showModal(targetNameModal("modal-add-pl", parsed.sessionId, targetUserId));
-          return;
-        }
-        if (parsed.action === "pick-add-ob") {
-          await interaction.deferUpdate();
-          const added = await service.addOb(parsed.sessionId, interaction.user.id, targetUserId);
-          if (!added.ok) {
-            await interaction.editReply({ content: added.message, components: [] });
-            return;
-          }
-          await syncPanels(added.session);
-          await interaction.editReply({ content: "已添加为 OB。", components: [] });
         }
         return;
       }

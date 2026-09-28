@@ -31,9 +31,13 @@ function fakeDiscord(overrides = {}) {
     async addRole(_guildId, userId, roleId) {
       calls.push(["add", userId, roleId]);
       if (overrides.failRole) throw new Error("role failed");
+      if (overrides.failAddRole === roleId && calls.filter((call) => call[0] === "add" && call[2] === roleId).length > (overrides.failAddRoleAfter ?? 0)) {
+        throw new Error("later add failed");
+      }
     },
     async removeRole(_guildId, userId, roleId) {
       calls.push(["remove", userId, roleId]);
+      if (overrides.failRemoveRole === roleId) throw new Error("remove failed");
       if (overrides.failFirstRemove && calls.filter((call) => call[0] === "remove").length === 1) {
         throw new Error("first role remove failed");
       }
@@ -44,6 +48,10 @@ function fakeDiscord(overrides = {}) {
     async setNickname(_guildId, userId, nickname) {
       calls.push(["nick", userId, nickname]);
       if (overrides.failNick) throw new Error("nick failed");
+      if (nickname == null && overrides.replaceClearedNick) {
+        nicks.set(userId, overrides.replaceClearedNick);
+        return;
+      }
       nicks.set(userId, nickname);
     },
     async fetchGuildMember(_guildId, userId) {
@@ -350,7 +358,20 @@ async function activeTable(overrides) {
   discord.calls.length = 0;
   const reserved = await store.update((state) => {
     const current = state.sessions.find((item) => item.sessionId === "session-1");
-    const next = { ...current, pendingMemberOp: { id: "op", type: "add-pl", targetUserId: "late", accessGranted: true } };
+    const next = {
+      ...current,
+      pendingMemberOp: {
+        id: "op",
+        type: "add-pl",
+        targetUserId: "late",
+        beforeRole: null,
+        afterRole: "pl",
+        beforeChannelAccess: false,
+        afterChannelAccess: true,
+        nicknameBefore: "Dream",
+        nicknameAfter: "奈洛莉",
+      },
+    };
     return { state: { ...state, sessions: state.sessions.map((item) => item.sessionId === "session-1" ? next : item) }, result: next };
   });
   assert(reserved.ok, "写入未完成的成员操作");
@@ -358,6 +379,33 @@ async function activeTable(overrides) {
   assert(service.find("session-1").pendingMemberOp == null, "重启后清掉未完成的成员操作");
   assert(discord.calls.some((call) => call[0] === "revoke" && call[2] === "late"), "重启后收回未入账的频道权限");
   assert((await service.addOb("session-1", "kp", "late")).ok === true, "回滚后可以重新添加");
+}
+
+{
+  const { service, discord } = await activeTable({ failAddRole: "role-ob", failAddRoleAfter: 1 });
+  const converted = await service.convertPlToOb("session-1", "kp", "pl");
+  assert(converted.ok === false, "OB 身份组加不上时不提交转换");
+  assert(service.find("session-1").pl.some((member) => member.userId === "pl"), "失败后仍是 PL");
+  const nickCalls = discord.calls.filter((call) => call[0] === "nick" && call[1] === "pl");
+  assertEqual(nickCalls.at(-1)?.[2], "奈洛莉", "角色操作失败后把昵称改回角色名");
+}
+
+{
+  const { service, discord } = await activeTable({ failRemoveRole: "role-pl" });
+  const removed = await service.removeMember("session-1", "kp", "pl");
+  assert(removed.ok === false, "卸不下 PL 身份组时不移出");
+  assert(service.find("session-1").pl.some((member) => member.userId === "pl"), "移出失败后仍是 PL");
+  assert(!discord.calls.some((call) => call[0] === "revoke" && call[2] === "pl"), "身份组失败时不撤频道权限");
+  const nickCalls = discord.calls.filter((call) => call[0] === "nick" && call[1] === "pl");
+  assertEqual(nickCalls.at(-1)?.[2], "奈洛莉", "移出失败后把昵称改回角色名");
+}
+
+{
+  const { service, discord } = await activeTable({ replaceClearedNick: "XXX", failAddRole: "role-ob", failAddRoleAfter: 1 });
+  await service.convertPlToOb("session-1", "kp", "pl");
+  const nickCalls = discord.calls.filter((call) => call[0] === "nick" && call[1] === "pl");
+  assert(!nickCalls.some((call) => call[2] === "奈洛莉" && nickCalls.indexOf(call) > 0), "人工改过的昵称不会被改回去");
+  assertEqual(nickCalls.at(-1)?.[2], null, "只执行过小G宝自己的那次恢复");
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

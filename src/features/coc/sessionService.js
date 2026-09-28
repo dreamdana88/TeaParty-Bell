@@ -534,15 +534,6 @@ export function createCocSessionService({
     });
   }
 
-  async function patchPending(sessionId, patch) {
-    return store.update((state) => {
-      const current = state.sessions.find((item) => item.sessionId === sessionId);
-      if (!current?.pendingMemberOp) return { errorCode: "MISSING", message: "没有进行中的成员变更。" };
-      const next = { ...current, pendingMemberOp: { ...current.pendingMemberOp, ...patch } };
-      return { state: { ...state, sessions: replaceSession(state.sessions, next) }, result: next };
-    });
-  }
-
   async function clearPending(sessionId) {
     await store.update((state) => {
       const current = state.sessions.find((item) => item.sessionId === sessionId);
@@ -554,52 +545,55 @@ export function createCocSessionService({
     });
   }
 
+  async function ensureCocRole(guildId, userId, target) {
+    if (target !== "pl") await discord.removeRole(guildId, userId, config.plRoleId);
+    if (target !== "ob") await discord.removeRole(guildId, userId, config.obRoleId);
+    if (target === "pl") await discord.addRole(guildId, userId, config.plRoleId);
+    if (target === "ob") await discord.addRole(guildId, userId, config.obRoleId);
+  }
+
+  async function ensureChannelAccess(channelId, userId, allowed) {
+    if (!channelId) return;
+    if (allowed) await discord.grantChannelAccess(channelId, userId);
+    else await discord.revokeChannelAccess(channelId, userId);
+  }
+
+  async function moveNickname(guildId, userId, fromNick, toNick) {
+    const currentNickname = await discord.fetchNickname(guildId, userId);
+    if ((currentNickname ?? null) !== (fromNick ?? null)) return false;
+    if ((toNick ?? null) === (fromNick ?? null)) return true;
+    await discord.setNickname(guildId, userId, toNick ?? null);
+    return true;
+  }
+
   async function rollbackPending(sessionId) {
     const session = find(sessionId);
     const op = session?.pendingMemberOp;
     if (!session || !op) return;
-    if (op.appliedNickname) {
+    try {
+      await ensureCocRole(session.guildId, op.targetUserId, op.beforeRole ?? null);
+    } catch (error) {
+      logger.warn?.("CoC 回滚身份组失败", { message: error?.message, userId: op.targetUserId });
+    }
+    if (session.runChannelId && op.beforeChannelAccess === false) {
       try {
-        const currentNickname = await discord.fetchNickname(session.guildId, op.targetUserId);
-        const plan = planNicknameRestore({
-          originalNickname: op.originalNickname,
-          appliedNickname: op.appliedNickname,
-          currentNickname,
-        });
-        if (plan.action === "clear") await discord.setNickname(session.guildId, op.targetUserId, null);
-        if (plan.action === "set") await discord.setNickname(session.guildId, op.targetUserId, plan.nickname);
+        await discord.revokeChannelAccess(session.runChannelId, op.targetUserId);
       } catch (error) {
-        logger.warn?.("CoC 回滚成员昵称失败", { message: error?.message, userId: op.targetUserId });
-      }
-    }
-    if (op.roleGranted === "pl") {
-      try { await discord.removeRole(session.guildId, op.targetUserId, config.plRoleId); } catch (error) {
-        logger.warn?.("CoC 回滚 PL 身份组失败", { message: error?.message });
-      }
-    }
-    if (op.roleGranted === "ob") {
-      try { await discord.removeRole(session.guildId, op.targetUserId, config.obRoleId); } catch (error) {
-        logger.warn?.("CoC 回滚 OB 身份组失败", { message: error?.message });
-      }
-    }
-    if (op.removedRole === "pl") {
-      try { await discord.addRole(session.guildId, op.targetUserId, config.plRoleId); } catch (error) {
-        logger.warn?.("CoC 补回 PL 身份组失败", { message: error?.message });
-      }
-    }
-    if (op.removedRole === "ob") {
-      try { await discord.addRole(session.guildId, op.targetUserId, config.obRoleId); } catch (error) {
-        logger.warn?.("CoC 补回 OB 身份组失败", { message: error?.message });
-      }
-    }
-    if (op.accessGranted && session.runChannelId) {
-      try { await discord.revokeChannelAccess(session.runChannelId, op.targetUserId); } catch (error) {
         logger.warn?.("CoC 收回频道权限失败", { message: error?.message });
       }
     }
-    if (op.accessRevoked && session.runChannelId) {
-      try { await discord.grantChannelAccess(session.runChannelId, op.targetUserId); } catch (error) {
+    if (session.runChannelId && op.beforeChannelAccess === true) {
+      try {
+        await discord.grantChannelAccess(session.runChannelId, op.targetUserId);
+      } catch (error) {
         logger.warn?.("CoC 补回频道权限失败", { message: error?.message });
+      }
+    }
+    if (op.nicknameAfter !== undefined) {
+      try {
+        await moveNickname(session.guildId, op.targetUserId, op.nicknameAfter, op.nicknameBefore ?? null);
+      } catch (error) {
+        logger.warn?.("CoC 回滚成员昵称失败", { message: error?.message, userId: op.targetUserId });
       }
     }
     await clearPending(sessionId);
@@ -627,18 +621,41 @@ export function createCocSessionService({
     });
   }
 
-  async function rememberNick(sessionId, userId, characterName) {
-    let originalNickname = null;
-    let appliedNickname = null;
+  async function applyPlannedNickname(session, op) {
+    if (op.nicknameAfter === undefined) return { originalNickname: null, appliedNickname: null, changed: false };
     try {
-      originalNickname = await discord.fetchNickname(find(sessionId).guildId, userId);
-      await discord.setNickname(find(sessionId).guildId, userId, characterName);
-      appliedNickname = characterName;
+      const changed = await moveNickname(session.guildId, op.targetUserId, op.nicknameBefore ?? null, op.nicknameAfter ?? null);
+      if (!changed) return { originalNickname: op.nicknameBefore ?? null, appliedNickname: null, changed: false };
+      return {
+        originalNickname: op.nicknameBefore ?? null,
+        appliedNickname: op.nicknameAfter ?? null,
+        changed: true,
+      };
     } catch (error) {
-      logger.warn?.("CoC 修改昵称失败", { message: error?.message, userId });
+      logger.warn?.("CoC 修改昵称失败", { message: error?.message, userId: op.targetUserId });
+      return { originalNickname: op.nicknameBefore ?? null, appliedNickname: null, changed: false };
     }
-    await patchPending(sessionId, { originalNickname, appliedNickname });
-    return { originalNickname, appliedNickname };
+  }
+
+  async function runMemberChange(sessionId, actorId, extraGate, op, apply) {
+    const reserved = await reserveMemberOp(sessionId, actorId, extraGate, op);
+    if (!reserved.ok) return { ok: false, message: reserved.message };
+    const session = reserved.result;
+    const pending = session.pendingMemberOp;
+    try {
+      const nick = await applyPlannedNickname(session, pending);
+      await ensureCocRole(session.guildId, pending.targetUserId, pending.afterRole ?? null);
+      if (pending.afterChannelAccess !== pending.beforeChannelAccess) {
+        await ensureChannelAccess(session.runChannelId, pending.targetUserId, pending.afterChannelAccess);
+      }
+      const saved = await commitMember(sessionId, (current) => apply(current, nick));
+      if (!saved.ok) throw new Error(saved.message);
+      return { ok: true, session: saved.result };
+    } catch (error) {
+      logger.warn?.("CoC 成员变更失败", { message: error?.message, sessionId, type: pending.type });
+      await rollbackPending(sessionId);
+      return { ok: false, message: "这次成员变更没有完成，已收回。" };
+    }
   }
 
   async function addPl(sessionId, actorId, targetUserId, characterName) {
@@ -650,36 +667,28 @@ export function createCocSessionService({
     }
     const name = normalizeCharacterName(characterName);
     if (!name) return { ok: false, message: "角色名不能为空，且不能超过 32 个字。" };
-    const reserved = await reserveMemberOp(
+    return runMemberChange(
       sessionId,
       actorId,
       (all, session) => gateNewMember(all, session, targetUserId, info.bot),
-      { id: createId(), type: "add-pl", targetUserId, characterName: name },
-    );
-    if (!reserved.ok) return { ok: false, message: reserved.message };
-    const session = reserved.result;
-    try {
-      await discord.grantChannelAccess(session.runChannelId, targetUserId);
-      await patchPending(sessionId, { accessGranted: true });
-      try { await discord.removeRole(session.guildId, targetUserId, config.obRoleId); } catch (error) {
-        logger.warn?.("CoC 清理残留 OB 身份组失败", { message: error?.message });
-      }
-      await discord.addRole(session.guildId, targetUserId, config.plRoleId);
-      await patchPending(sessionId, { roleGranted: "pl" });
-      const nick = await rememberNick(sessionId, targetUserId, name);
-      const saved = await commitMember(sessionId, (current) => applyAddPl(current, {
+      {
+        id: createId(),
+        type: "add-pl",
+        targetUserId,
+        beforeRole: null,
+        afterRole: "pl",
+        beforeChannelAccess: false,
+        afterChannelAccess: true,
+        nicknameBefore: info.nickname ?? null,
+        nicknameAfter: name,
+      },
+      (current, nick) => applyAddPl(current, {
         userId: targetUserId,
         characterName: name,
         originalNickname: nick.originalNickname,
-        appliedNickname: nick.appliedNickname,
-      }));
-      if (!saved.ok) throw new Error(saved.message);
-      return { ok: true, session: saved.result };
-    } catch (error) {
-      logger.warn?.("CoC 添加 PL 失败", { message: error?.message, sessionId });
-      await rollbackPending(sessionId);
-      return { ok: false, message: "添加 PL 没有完成，已收回这次变更。" };
-    }
+        appliedNickname: nick.changed ? name : null,
+      }),
+    );
   }
 
   async function addOb(sessionId, actorId, targetUserId) {
@@ -689,36 +698,33 @@ export function createCocSessionService({
     } catch {
       return { ok: false, message: "该成员不在这个服务器里。" };
     }
-    const reserved = await reserveMemberOp(
+    return runMemberChange(
       sessionId,
       actorId,
       (all, session) => gateNewMember(all, session, targetUserId, info.bot),
-      { id: createId(), type: "add-ob", targetUserId, characterName: null },
+      {
+        id: createId(),
+        type: "add-ob",
+        targetUserId,
+        beforeRole: null,
+        afterRole: "ob",
+        beforeChannelAccess: false,
+        afterChannelAccess: true,
+      },
+      (current) => applyAddOb(current, targetUserId),
     );
-    if (!reserved.ok) return { ok: false, message: reserved.message };
-    const session = reserved.result;
-    try {
-      await discord.grantChannelAccess(session.runChannelId, targetUserId);
-      await patchPending(sessionId, { accessGranted: true });
-      try { await discord.removeRole(session.guildId, targetUserId, config.plRoleId); } catch (error) {
-        logger.warn?.("CoC 清理残留 PL 身份组失败", { message: error?.message });
-      }
-      await discord.addRole(session.guildId, targetUserId, config.obRoleId);
-      await patchPending(sessionId, { roleGranted: "ob" });
-      const saved = await commitMember(sessionId, (current) => applyAddOb(current, targetUserId));
-      if (!saved.ok) throw new Error(saved.message);
-      return { ok: true, session: saved.result };
-    } catch (error) {
-      logger.warn?.("CoC 添加 OB 失败", { message: error?.message, sessionId });
-      await rollbackPending(sessionId);
-      return { ok: false, message: "添加 OB 没有完成，已收回这次变更。" };
-    }
   }
 
   async function convertObToPl(sessionId, actorId, targetUserId, characterName) {
     const name = normalizeCharacterName(characterName);
     if (!name) return { ok: false, message: "角色名不能为空，且不能超过 32 个字。" };
-    const reserved = await reserveMemberOp(
+    let nicknameBefore = null;
+    try {
+      nicknameBefore = await discord.fetchNickname(find(sessionId)?.guildId, targetUserId);
+    } catch {
+      nicknameBefore = null;
+    }
+    return runMemberChange(
       sessionId,
       actorId,
       (_all, session) => (
@@ -726,37 +732,32 @@ export function createCocSessionService({
           ? { ok: true }
           : { ok: false, message: "只能把本局 OB 转成 PL。" }
       ),
-      { id: createId(), type: "ob-to-pl", targetUserId, characterName: name },
-    );
-    if (!reserved.ok) return { ok: false, message: reserved.message };
-    const session = reserved.result;
-    try {
-      try {
-        await discord.removeRole(session.guildId, targetUserId, config.obRoleId);
-        await patchPending(sessionId, { removedRole: "ob" });
-      } catch (error) {
-        logger.warn?.("CoC 卸下 OB 身份组失败", { message: error?.message });
-      }
-      await discord.addRole(session.guildId, targetUserId, config.plRoleId);
-      await patchPending(sessionId, { roleGranted: "pl" });
-      const nick = await rememberNick(sessionId, targetUserId, name);
-      const saved = await commitMember(sessionId, (current) => applyAddPl(current, {
+      {
+        id: createId(),
+        type: "ob-to-pl",
+        targetUserId,
+        beforeRole: "ob",
+        afterRole: "pl",
+        beforeChannelAccess: true,
+        afterChannelAccess: true,
+        nicknameBefore,
+        nicknameAfter: name,
+      },
+      (current, nick) => applyAddPl(current, {
         userId: targetUserId,
         characterName: name,
         originalNickname: nick.originalNickname,
-        appliedNickname: nick.appliedNickname,
-      }));
-      if (!saved.ok) throw new Error(saved.message);
-      return { ok: true, session: saved.result };
-    } catch (error) {
-      logger.warn?.("CoC OB 转 PL 失败", { message: error?.message, sessionId });
-      await rollbackPending(sessionId);
-      return { ok: false, message: "转换身份没有完成，已收回这次变更。" };
-    }
+        appliedNickname: nick.changed ? name : null,
+      }),
+    );
   }
 
   async function convertPlToOb(sessionId, actorId, targetUserId) {
-    const reserved = await reserveMemberOp(
+    const current = find(sessionId);
+    const pl = current?.pl.find((member) => member.userId === targetUserId);
+    const nicknameBefore = pl?.appliedNickname ?? null;
+    const nicknameAfter = pl?.appliedNickname ? (pl.originalNickname ?? null) : undefined;
+    return runMemberChange(
       sessionId,
       actorId,
       (_all, session) => (
@@ -764,93 +765,47 @@ export function createCocSessionService({
           ? { ok: true }
           : { ok: false, message: "只能把本局 PL 转成 OB。" }
       ),
-      { id: createId(), type: "pl-to-ob", targetUserId, characterName: null },
+      {
+        id: createId(),
+        type: "pl-to-ob",
+        targetUserId,
+        beforeRole: "pl",
+        afterRole: "ob",
+        beforeChannelAccess: true,
+        afterChannelAccess: true,
+        ...(nicknameAfter !== undefined ? { nicknameBefore, nicknameAfter } : {}),
+      },
+      (current) => applyAddOb(current, targetUserId),
     );
-    if (!reserved.ok) return { ok: false, message: reserved.message };
-    const session = reserved.result;
-    const pl = session.pl.find((member) => member.userId === targetUserId);
-    try {
-      if (pl?.appliedNickname) {
-        const currentNickname = await discord.fetchNickname(session.guildId, targetUserId);
-        const plan = planNicknameRestore({
-          originalNickname: pl.originalNickname,
-          appliedNickname: pl.appliedNickname,
-          currentNickname,
-        });
-        if (plan.action === "clear") await discord.setNickname(session.guildId, targetUserId, null);
-        if (plan.action === "set") await discord.setNickname(session.guildId, targetUserId, plan.nickname);
-        if (plan.action !== "skip") {
-          await patchPending(sessionId, {
-            appliedNickname: pl.appliedNickname,
-            originalNickname: currentNickname,
-          });
-        }
-      }
-      try {
-        await discord.removeRole(session.guildId, targetUserId, config.plRoleId);
-        await patchPending(sessionId, { removedRole: "pl" });
-      } catch (error) {
-        logger.warn?.("CoC 卸下 PL 身份组失败", { message: error?.message });
-      }
-      await discord.addRole(session.guildId, targetUserId, config.obRoleId);
-      await patchPending(sessionId, { roleGranted: "ob" });
-      const saved = await commitMember(sessionId, (current) => applyAddOb(current, targetUserId));
-      if (!saved.ok) throw new Error(saved.message);
-      return { ok: true, session: saved.result };
-    } catch (error) {
-      logger.warn?.("CoC PL 转 OB 失败", { message: error?.message, sessionId });
-      await rollbackPending(sessionId);
-      return { ok: false, message: "转换身份没有完成，已收回这次变更。" };
-    }
   }
 
   async function removeMember(sessionId, actorId, targetUserId) {
-    const reserved = await reserveMemberOp(
+    const current = find(sessionId);
+    const role = current ? memberRole(current, targetUserId) : null;
+    const pl = current?.pl.find((member) => member.userId === targetUserId);
+    const nicknameBefore = role === "PL" ? (pl?.appliedNickname ?? null) : undefined;
+    const nicknameAfter = role === "PL" && pl?.appliedNickname ? (pl.originalNickname ?? null) : undefined;
+    return runMemberChange(
       sessionId,
       actorId,
       (_all, session) => {
-        const role = memberRole(session, targetUserId);
-        if (role === "KP") return { ok: false, message: "不能把 KP 移出本局。" };
-        if (role !== "PL" && role !== "OB") return { ok: false, message: "该成员不在本局中。" };
-        return { ok: true, role };
+        const found = memberRole(session, targetUserId);
+        if (found === "KP") return { ok: false, message: "不能把 KP 移出本局。" };
+        if (found !== "PL" && found !== "OB") return { ok: false, message: "该成员不在本局中。" };
+        return { ok: true };
       },
-      { id: createId(), type: "remove", targetUserId, characterName: null },
+      {
+        id: createId(),
+        type: role === "PL" ? "remove-pl" : "remove-ob",
+        targetUserId,
+        beforeRole: role === "PL" ? "pl" : "ob",
+        afterRole: null,
+        beforeChannelAccess: true,
+        afterChannelAccess: false,
+        ...(nicknameAfter !== undefined ? { nicknameBefore, nicknameAfter } : {}),
+      },
+      (session) => applyRemoveMember(session, targetUserId),
     );
-    if (!reserved.ok) return { ok: false, message: reserved.message };
-    const session = reserved.result;
-    const role = memberRole(session, targetUserId);
-    const pl = session.pl.find((member) => member.userId === targetUserId);
-    try {
-      if (role === "PL" && pl?.appliedNickname) {
-        const currentNickname = await discord.fetchNickname(session.guildId, targetUserId);
-        const plan = planNicknameRestore({
-          originalNickname: pl.originalNickname,
-          appliedNickname: pl.appliedNickname,
-          currentNickname,
-        });
-        if (plan.action === "clear") await discord.setNickname(session.guildId, targetUserId, null);
-        if (plan.action === "set") await discord.setNickname(session.guildId, targetUserId, plan.nickname);
-        if (plan.action !== "skip") {
-          await patchPending(sessionId, { appliedNickname: pl.appliedNickname, originalNickname: currentNickname });
-        }
-      }
-      const roleId = role === "PL" ? config.plRoleId : config.obRoleId;
-      try {
-        await discord.removeRole(session.guildId, targetUserId, roleId);
-        await patchPending(sessionId, { removedRole: role === "PL" ? "pl" : "ob" });
-      } catch (error) {
-        logger.warn?.("CoC 移出时卸身份组失败", { message: error?.message });
-      }
-      await discord.revokeChannelAccess(session.runChannelId, targetUserId);
-      await patchPending(sessionId, { accessRevoked: true });
-      const saved = await commitMember(sessionId, (current) => applyRemoveMember(current, targetUserId));
-      if (!saved.ok) throw new Error(saved.message);
-      return { ok: true, session: saved.result };
-    } catch (error) {
-      logger.warn?.("CoC 移出成员失败", { message: error?.message, sessionId });
-      await rollbackPending(sessionId);
-      return { ok: false, message: "移出本局没有完成，已收回这次变更。" };
-    }
   }
 
   async function recoverInterrupted() {
