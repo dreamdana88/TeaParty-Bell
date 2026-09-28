@@ -64,7 +64,7 @@ export function createCocSessionStore({
       && typeof session.sessionId === "string"
       && typeof session.state === "string"
       && typeof session.kpUserId === "string"
-      && Array.isArray(session.kl)
+      && (Array.isArray(session.pl) || Array.isArray(session.kl))
       && Array.isArray(session.ob)
     ));
   }
@@ -82,7 +82,15 @@ export function createCocSessionStore({
     try {
       const parsed = JSON.parse(text);
       if (!validate(parsed)) return { ok: false, errorCode: "STATE_INVALID" };
-      return { ok: true, state: parsed, missing: false };
+      let migrated = false;
+      const sessions = parsed.sessions.map((session) => {
+        if (!Array.isArray(session.pl) && Array.isArray(session.kl)) migrated = true;
+        const pl = Array.isArray(session.pl) ? session.pl : session.kl;
+        const next = { ...session, pl, pendingMemberOp: session.pendingMemberOp ?? null };
+        delete next.kl;
+        return next;
+      });
+      return { ok: true, state: { ...parsed, sessions }, missing: false, migrated };
     } catch {
       return { ok: false, errorCode: "STATE_INVALID" };
     }
@@ -119,6 +127,13 @@ export function createCocSessionStore({
         broken = true;
         memory = null;
         return loaded;
+      }
+      if (loaded.migrated) {
+        try {
+          atomicWrite(loaded.state);
+        } catch {
+          return { ok: false, errorCode: "STATE_WRITE_FAILED" };
+        }
       }
       broken = false;
       memory = loaded.state;

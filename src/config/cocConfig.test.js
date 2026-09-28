@@ -21,7 +21,7 @@ const root = "D:/tmp/teaparty";
     COC_ENABLED: "true",
     COC_CATEGORY_ID: "1447978053665030280",
     COC_KP_ROLE_ID: "1447978053665030281",
-    COC_KL_ROLE_ID: "1447978053665030282",
+    COC_PL_ROLE_ID: "1447978053665030282",
     COC_OB_ROLE_ID: "1447978053665030283",
   }, { projectRoot: root });
   assert(config.enabled === true, "四个雪花都在时开启");

@@ -1,5 +1,15 @@
 import { ChannelType } from "discord.js";
 
+function summarizeMember(member) {
+  return {
+    userId: member.id,
+    bot: Boolean(member.user?.bot),
+    nickname: member.nickname ?? null,
+    username: member.user?.username ?? "",
+    globalName: member.user?.globalName ?? null,
+  };
+}
+
 function ignoreMissing(error) {
   const code = error?.code ?? error?.discordCode;
   return code === 10003 || code === 10007 || code === 10011 || code === 10013;
@@ -59,12 +69,49 @@ export function createCocDiscordGateway(client) {
 
     async removeRole(guildId, userId, roleId) {
       try {
-        const member = await memberOf(guildId, userId);
-        if (!member.roles.cache.has(roleId)) return;
-        await member.roles.remove(roleId);
+        const guild = await guildOf(guildId);
+        await guild.members.removeRole({
+          user: userId,
+          role: roleId,
+          reason: "CoC 跑团结束，卸下展示身份",
+        });
       } catch (error) {
         if (!ignoreMissing(error)) throw error;
       }
+    },
+
+    async searchMembers(guildId, query) {
+      const guild = await guildOf(guildId);
+      if (/^\d{17,20}$/.test(query)) {
+        const member = await guild.members.fetch({ user: query, force: true });
+        return [summarizeMember(member)];
+      }
+      const found = await guild.members.search({ query, limit: 25, cache: false });
+      return [...found.values()].map(summarizeMember);
+    },
+
+    async fetchGuildMember(guildId, userId) {
+      const guild = await guildOf(guildId);
+      const member = await guild.members.fetch({ user: userId, force: true });
+      return {
+        userId: member.id,
+        bot: Boolean(member.user?.bot),
+        nickname: member.nickname ?? null,
+      };
+    },
+
+    async grantChannelAccess(channelId, userId) {
+      const channel = await client.channels.fetch(channelId);
+      await channel.permissionOverwrites.edit(userId, {
+        ViewChannel: true,
+        SendMessages: true,
+        ReadMessageHistory: true,
+      });
+    },
+
+    async revokeChannelAccess(channelId, userId) {
+      const channel = await client.channels.fetch(channelId);
+      await channel.permissionOverwrites.delete(userId);
     },
 
     async fetchNickname(guildId, userId) {

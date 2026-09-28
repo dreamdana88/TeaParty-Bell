@@ -30,7 +30,7 @@ A 线继续负责，B 线不要改这些：
 
 ```text
 TeaParty-Bell 跑团 MVP
-开团、KL / OB 报名
+开团、PL / OB 报名
 临时频道、身份组、临时昵称
 房间寿命和结束
 骰子
@@ -208,7 +208,7 @@ GET /internal/characters/:characterId
 两边各自稳定后再做。第一批只接：
 
 ```text
-KL 报名
+PL 报名
 ↓
 从角色卡中心拿到自己的卡
 ↓

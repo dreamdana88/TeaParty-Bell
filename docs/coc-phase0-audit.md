@@ -77,7 +77,7 @@ GuildMessages
 没有 Message Content 时，普通成员消息的正文为空。消息对象仍有作者、频道和时间。Bot 自己发出的消息可以读到正文。所以：
 
 ```text
-KP/KL 是否说过话     现在就能判断
+KP/PL 是否说过话     现在就能判断
 团录里的玩家正文     必须等 Intent 审核通过
 ```
 
@@ -264,8 +264,8 @@ sessions
 session_members
   session_id
   user_id
-  role                 KP / KL / OB
-  character_id         可空；KL 选定后才有
+  role                 KP / PL / OB
+  character_id         可空；PL 选定后才有
   joined_at
 
 session_role_events
@@ -302,7 +302,7 @@ coc_display_state
   original_nickname       可为 NULL，表示她原本没有服务器昵称
   applied_nickname
   nickname_changed_by_coc
-  display_role            KP / KL / OB / 空
+  display_role            KP / PL / OB / 空
   display_session_id
   updated_at
 
@@ -348,7 +348,7 @@ WAL 模式，迁移用 `schema_migrations.version`。角色卡上的 `schema_ver
 
 ```text
 长期角色卡：奈洛莉 HP 11 / SAN 50 / MP 10 / Luck 60
-↓ KL 确认加入本局
+↓ PL 确认加入本局
 写入 session_character_state，当前值等于当时的满值
 ↓ 对局中只有 KP 改本局状态
 HP 7 / SAN 43 / MP 8 / Luck 55
@@ -379,8 +379,8 @@ luck_start
 KP 管理本局 HP、SAN、MP、Luck 和伤势、疯狂标记。入口是控制面板上的 `[调查员状态]`，不新增 `/hp`、`/san` 这类命令。
 
 ```text
-KP：下拉选择本团 KL，可看可改
-KL：只能看自己的只读面板
+KP：下拉选择本团 PL，可看可改
+PL：只能看自己的只读面板
 OB：没有这个面板，也看不到别人的数值
 ```
 
@@ -455,21 +455,21 @@ Discord 侧能查到刚写下的同一条数据
 
 ## 7. Session 生命周期
 
-开团在配置的分类下建文字频道。身份以 `session_members` 为准。频道权限覆盖只是表现。全服只有三个事先建好的颜色组：`CoC · KP`、`CoC · KL`、`CoC · OB`。不按桌创建 Role。跑团期间，茶话会其他频道也会看到角色昵称和这个颜色。Role 只负责颜色和气氛，不是权限真相。
+开团在配置的分类下建文字频道。身份以 `session_members` 为准。频道权限覆盖只是表现。全服只有三个事先建好的颜色组：`CoC · KP`、`CoC · PL`、`CoC · OB`。不按桌创建 Role。跑团期间，茶话会其他频道也会看到角色昵称和这个颜色。Role 只负责颜色和气氛，不是权限真相。
 
 ```text
 寿命 15 天，KP 可续 15 天
-KP 与 KL 的消息刷新 last_activity_at
+KP 与 PL 的消息刷新 last_activity_at
 OB 的消息不刷新
-连续 7 天没有 KP/KL 消息，或租期到了：进入结束流程
+连续 7 天没有 KP/PL 消息，或租期到了：进入结束流程
 正常结束要二次确认
 团录没交到人手里，不删频道
 删除、改权限、私信都先有 fake
 ```
 
-没有 Message Content 时，「有效发言」就是 KP 或 KL 发出的消息事件。不根据正文猜测这句话算不算跑团。
+没有 Message Content 时，「有效发言」就是 KP 或 PL 发出的消息事件。不根据正文猜测这句话算不算跑团。
 
-KL 确认角色卡时，先写 `session_character_state`，再改展示。改名失败不取消选卡，也不取消本局状态。
+PL 确认角色卡时，先写 `session_character_state`，再改展示。改名失败不取消选卡，也不取消本局状态。
 
 ### 7.1 昵称和颜色一律重算
 
@@ -486,7 +486,7 @@ Bot 重启恢复
 ```text
 查出她全部 active Session
 ↓ 还有
-按主活动团决定展示；分不出主活动团时用 KP > KL > OB
+按主活动团决定展示；分不出主活动团时用 KP > PL > OB
 主活动团 = 她最近一次 CoC 交互所在的、仍在进行的 Session
 昵称用该展示所对应的本局 character_name 快照
 颜色只挂一个 CoC Role，另外两个卸掉
@@ -499,7 +499,7 @@ original_nickname 为 NULL 时，清除服务器昵称
 
 ### 7.2 重启后补活动时间
 
-Gateway 离线时收不到 `messageCreate`。恢复每个 active Session 时，读该频道最近若干条历史，只看 `author_id`、`created_at`、`message_id`。若其中最新的 KP 或 KL 消息晚于库里的 `last_activity_at`，就改成那个时间。不读正文，所以不依赖 Message Content。然后再算 7 天和 15 天。避免 Bot 掉线期间还在说话的团被当成弃团。
+Gateway 离线时收不到 `messageCreate`。恢复每个 active Session 时，读该频道最近若干条历史，只看 `author_id`、`created_at`、`message_id`。若其中最新的 KP 或 PL 消息晚于库里的 `last_activity_at`，就改成那个时间。不读正文，所以不依赖 Message Content。然后再算 7 天和 15 天。避免 Bot 掉线期间还在说话的团被当成弃团。
 
 ---
 
@@ -547,7 +547,7 @@ ccn1 心理学
 ccn2 心理学
 ```
 
-`cc` 是目标值或技能名的普通检定。`cc1` / `cc2` 是 1 个或 2 个奖励骰。`ccn1` / `ccn2` 是惩罚骰。一条指令里不同时带奖励和惩罚。技能名是指令其余部分，用来在本局角色上找技能。KL 还没绑定角色卡时，`cc 心理学` 拒绝并说明原因，不猜一个目标值。
+`cc` 是目标值或技能名的普通检定。`cc1` / `cc2` 是 1 个或 2 个奖励骰。`ccn1` / `ccn2` 是惩罚骰。一条指令里不同时带奖励和惩罚。技能名是指令其余部分，用来在本局角色上找技能。PL 还没绑定角色卡时，`cc 心理学` 拒绝并说明原因，不猜一个目标值。
 
 展示例：
 
@@ -592,7 +592,7 @@ Phase 4  独立骰子和三层适配。文本监听等 Intent。
          奖惩骰先有测试向量。
 Phase 5  /coc 加入同一次命令 PUT。第三个 Interaction 监听。
          选卡时写本局状态。recomputeCocDisplayState。
-         KP 状态面板，KL 只读自己的。15 天、7 天、可注入时钟。
+         KP 状态面板，PL 只读自己的。15 天、7 天、可注入时钟。
          重启时用历史消息的作者和时间修正 last_activity_at。
 Phase 6  二次确认。结束时重算展示并清本局状态。
          团录关闭的正式服不自动删频道。

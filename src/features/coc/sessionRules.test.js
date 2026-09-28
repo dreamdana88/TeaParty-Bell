@@ -6,7 +6,7 @@ import {
   cancelSignup,
   createRecruitingSession,
   requestStart,
-  signupKl,
+  signupPl,
   signupOb,
 } from "./sessionRules.js";
 
@@ -28,14 +28,14 @@ const base = createRecruitingSession({
 });
 
 {
-  const joined = signupKl([base], base, "kl1", "奈洛莉");
-  assert(joined.ok && joined.session.kl[0].characterName === "奈洛莉", "KL 报名记下角色名");
+  const joined = signupPl([base], base, "kl1", "奈洛莉");
+  assert(joined.ok && joined.session.pl[0].characterName === "奈洛莉", "KL 报名记下角色名");
   const switched = signupOb([joined.session], joined.session, "kl1");
-  assert(switched.ok && switched.session.kl.length === 0 && switched.session.ob.length === 1, "KL 可以换成 OB");
-  const back = signupKl([switched.session], switched.session, "kl1", "江某");
-  assert(back.ok && back.session.ob.length === 0 && back.session.kl[0].characterName === "江某", "OB 可以换成 KL");
+  assert(switched.ok && switched.session.pl.length === 0 && switched.session.ob.length === 1, "KL 可以换成 OB");
+  const back = signupPl([switched.session], switched.session, "kl1", "江某");
+  assert(back.ok && back.session.ob.length === 0 && back.session.pl[0].characterName === "江某", "OB 可以换成 KL");
 }
-assert(signupKl([base], base, "kp", "奈洛莉").ok === false, "KP 不能报名 KL");
+assert(signupPl([base], base, "kp", "奈洛莉").ok === false, "KP 不能报名 KL");
 assert(requestStart(base, "other").ok === false, "普通用户不能开始");
 assert(requestStart(base, "kp").message.includes("至少需要一名调查员"), "没有 KL 不能开始");
 assert(cancelSignup(base, "kp").ok === false, "KP 不能取消自己的报名身份");
@@ -62,8 +62,8 @@ assert(planNicknameRestore({
 }).action === "skip", "没改成功就不恢复");
 
 {
-  const names = planChannelNames("常暗之厢", ["🎲・常暗之厢"]);
-  assert(names[0] === "🎲・常暗之厢-2", "重名加序号");
+  const names = planChannelNames("常暗之厢", ["🎲COC・常暗之厢"]);
+  assert(names[0] === "🎲COC・常暗之厢-2", "重名加序号");
 }
 {
   const overwrites = buildRoomOverwrites({ guildId: "g", botUserId: "bot", userIds: ["kp", "kl"] });

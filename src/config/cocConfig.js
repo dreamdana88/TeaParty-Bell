@@ -23,7 +23,7 @@ export function loadCocConfig(env, { projectRoot }) {
   const ids = {
     categoryId: env.COC_CATEGORY_ID?.trim() ?? "",
     kpRoleId: env.COC_KP_ROLE_ID?.trim() ?? "",
-    klRoleId: env.COC_KL_ROLE_ID?.trim() ?? "",
+    plRoleId: env.COC_PL_ROLE_ID?.trim() || env.COC_KL_ROLE_ID?.trim() || "",
     obRoleId: env.COC_OB_ROLE_ID?.trim() ?? "",
   };
   if (!flag.enabled) {

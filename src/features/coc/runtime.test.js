@@ -22,7 +22,7 @@ function assert(condition, label) {
         statePath: "unused",
         categoryId: "1447978053665030280",
         kpRoleId: "1447978053665030281",
-        klRoleId: "1447978053665030282",
+        plRoleId: "1447978053665030282",
         obRoleId: "1447978053665030283",
       },
     },

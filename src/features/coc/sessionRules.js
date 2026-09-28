@@ -22,7 +22,7 @@ const OCCUPYING = new Set([
 
 export function involvesUser(session, userId) {
   return session.kpUserId === userId
-    || session.kl.some((member) => member.userId === userId)
+    || session.pl.some((member) => member.userId === userId)
     || session.ob.some((member) => member.userId === userId);
 }
 
@@ -80,7 +80,8 @@ export function createRecruitingSession({
     rolesGranted: false,
     kpUserId,
     title,
-    kl: [],
+    pl: [],
+    pendingMemberOp: null,
     ob: [],
     createdAt: now,
     startedAt: null,
@@ -90,7 +91,7 @@ export function createRecruitingSession({
   };
 }
 
-export function signupKl(sessions, session, userId, characterName) {
+export function signupPl(sessions, session, userId, characterName) {
   if (session.state !== SESSION_STATES.recruiting) {
     return { ok: false, message: "这场招募已经不能报名了。" };
   }
@@ -104,12 +105,12 @@ export function signupKl(sessions, session, userId, characterName) {
   if (!name) {
     return { ok: false, message: "角色名不能为空，且不能超过 32 个字。" };
   }
-  const previous = session.kl.find((member) => member.userId === userId);
+  const previous = session.pl.find((member) => member.userId === userId);
   const next = {
     ...session,
     ob: withoutUser(session.ob, userId),
-    kl: [
-      ...withoutUser(session.kl, userId),
+    pl: [
+      ...withoutUser(session.pl, userId),
       {
         userId,
         characterName: name,
@@ -133,7 +134,7 @@ export function signupOb(sessions, session, userId) {
   }
   const next = {
     ...session,
-    kl: withoutUser(session.kl, userId),
+    pl: withoutUser(session.pl, userId),
     ob: session.ob.some((member) => member.userId === userId)
       ? session.ob
       : [...session.ob, { userId }],
@@ -152,7 +153,7 @@ export function cancelSignup(session, userId) {
     ok: true,
     session: {
       ...session,
-      kl: withoutUser(session.kl, userId),
+      pl: withoutUser(session.pl, userId),
       ob: withoutUser(session.ob, userId),
     },
   };
@@ -165,7 +166,7 @@ export function requestStart(session, actorId) {
   if (session.state !== SESSION_STATES.recruiting) {
     return { ok: false, message: "这场招募已经开始或已经结束。" };
   }
-  if (session.kl.length < 1) {
+  if (session.pl.length < 1) {
     return { ok: false, message: "至少需要一名调查员才能开团。" };
   }
   return { ok: true };
@@ -186,7 +187,7 @@ export function revertStarting(session) {
     runChannelId: null,
     controlMessageId: null,
     rolesGranted: false,
-    kl: session.kl.map((member) => ({
+    pl: session.pl.map((member) => ({
       ...member,
       originalNickname: null,
       appliedNickname: null,
@@ -213,7 +214,7 @@ export function markCancelled(session, now) {
 }
 
 export function participantIds(session) {
-  return [session.kpUserId, ...session.kl.map((member) => member.userId), ...session.ob.map((member) => member.userId)];
+  return [session.kpUserId, ...session.pl.map((member) => member.userId), ...session.ob.map((member) => member.userId)];
 }
 
 export function requestEnd(session, actorId) {
@@ -259,7 +260,75 @@ export function activeSessionInChannel(sessions, channelId) {
 }
 
 export function speakerName(session, userId, displayName) {
-  const kl = session?.kl.find((member) => member.userId === userId);
-  if (kl?.characterName) return kl.characterName;
+  const pl = session?.pl.find((member) => member.userId === userId);
+  if (pl?.characterName) return pl.characterName;
   return displayName || "调查员";
+}
+
+export const BUSY_MEMBER_MESSAGE = "小G宝正在处理上一项成员变更，请稍后再试。";
+
+export function memberRole(session, userId) {
+  if (session.kpUserId === userId) return "KP";
+  if (session.pl.some((member) => member.userId === userId)) return "PL";
+  if (session.ob.some((member) => member.userId === userId)) return "OB";
+  return null;
+}
+
+export function gateMemberAdmin(session, actorId) {
+  if (!session) return { ok: false, message: "这场跑团已经不在了。" };
+  if (actorId !== session.kpUserId) return { ok: false, message: "只有本局 KP 可以管理成员。" };
+  if (session.state !== SESSION_STATES.active) return { ok: false, message: "只有进行中的跑团可以管理成员。" };
+  if (session.pendingMemberOp) return { ok: false, message: BUSY_MEMBER_MESSAGE };
+  return { ok: true };
+}
+
+export function gateNewMember(sessions, session, targetUserId, isBot) {
+  if (isBot) return { ok: false, message: "不能把机器人加进跑团。" };
+  if (!targetUserId || targetUserId === session.kpUserId) {
+    return { ok: false, message: "不能把 KP 再加成 PL 或 OB。" };
+  }
+  if (memberRole(session, targetUserId)) {
+    return { ok: false, message: "该成员已经在本局中，请使用「转换身份」。" };
+  }
+  if (findOccupyingSession(sessions, targetUserId, session.sessionId)) {
+    return { ok: false, message: "该成员当前已经参加另一场 CoC 跑团。" };
+  }
+  return { ok: true };
+}
+
+export function applyAddPl(session, member) {
+  return {
+    ...session,
+    ob: withoutUser(session.ob, member.userId),
+    pl: [...withoutUser(session.pl, member.userId), member],
+    pendingMemberOp: null,
+  };
+}
+
+export function applyAddOb(session, userId) {
+  return {
+    ...session,
+    pl: withoutUser(session.pl, userId),
+    ob: session.ob.some((member) => member.userId === userId)
+      ? session.ob
+      : [...session.ob, { userId }],
+    pendingMemberOp: null,
+  };
+}
+
+export function applyObToPl(session, member) {
+  return applyAddPl(session, member);
+}
+
+export function applyPlToOb(session, userId) {
+  return applyAddOb(session, userId);
+}
+
+export function applyRemoveMember(session, userId) {
+  return {
+    ...session,
+    pl: withoutUser(session.pl, userId),
+    ob: withoutUser(session.ob, userId),
+    pendingMemberOp: null,
+  };
 }

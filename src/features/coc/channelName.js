@@ -25,7 +25,7 @@ function uniqueName(base, existingNames) {
  */
 export function planChannelNames(title, existingNames = []) {
   const cleaned = cleanTitle(title).slice(0, 80);
-  const preferred = uniqueName(`🎲・${cleaned}`, existingNames);
+  const preferred = uniqueName(`🎲COC・${cleaned}`, existingNames);
   const slug = cleaned
     .toLowerCase()
     .replace(/\s+/g, "-")

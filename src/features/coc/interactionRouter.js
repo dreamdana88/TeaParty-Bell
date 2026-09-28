@@ -1,5 +1,7 @@
 import {
   ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
   Events,
   MessageFlags,
   ModalBuilder,
@@ -12,10 +14,15 @@ import {
   confirmRow,
   controlPanel,
   endedNotice,
+  memberAdminPanel,
+  memberPickPanel,
+  memberSearchModal,
+  memberSearchResults,
   parseCustomId,
   recruitPanel,
   startedPanel,
 } from "./panel.js";
+import { classifyMemberQuery, memberOptionLabel } from "./memberQuery.js";
 import { COC_COMMAND_NAME, COC_OPEN_SUBCOMMAND, COC_PANEL_SUBCOMMAND, ROLL_COMMAND_NAME } from "./commands.js";
 
 const CLOSED = "CoC 跑团暂时没有开启。";
@@ -58,6 +65,13 @@ function nameModal(sessionId) {
     .addComponents(textRow("character", "本局角色名", 32));
 }
 
+function targetNameModal(action, sessionId, userId) {
+  return new ModalBuilder()
+    .setCustomId(buildCustomId(action, sessionId, userId))
+    .setTitle("本局角色名")
+    .addComponents(textRow("character", "本局角色名", 32));
+}
+
 function displayNameOf(interaction) {
   return interaction.member?.displayName
     ?? interaction.member?.nickname
@@ -89,6 +103,83 @@ export function createCocInteractionRouter({
     const messageId = await discord.sendMessage(preview.session.runChannelId, controlPanel(preview.session));
     await service.setControlMessage(preview.session.sessionId, messageId);
     await interaction.editReply({ content: "控制面板已重新发送。", flags: MessageFlags.Ephemeral });
+  }
+
+  async function syncPanels(session) {
+    try {
+      if (session?.controlMessageId && session.runChannelId) {
+        await discord.editMessage(session.runChannelId, session.controlMessageId, controlPanel(session));
+      }
+    } catch (error) {
+      logger.warn?.("CoC 控制面板更新失败", { message: error?.message, sessionId: session?.sessionId });
+    }
+    try {
+      if (session?.recruitMessageId && session.recruitChannelId) {
+        await discord.editMessage(session.recruitChannelId, session.recruitMessageId, startedPanel(session));
+      }
+    } catch (error) {
+      logger.warn?.("CoC 招募面板人数更新失败", { message: error?.message, sessionId: session?.sessionId });
+    }
+  }
+
+  async function showMemberSearch(interaction, parsed) {
+    const classified = classifyMemberQuery(interaction.fields.getTextInputValue("query"));
+    if (!classified.ok) {
+      await replyEphemeral(interaction, classified.message);
+      return;
+    }
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const session = service.find(parsed.sessionId);
+    if (!session) {
+      await interaction.editReply({ content: "这场跑团已经不在了。" });
+      return;
+    }
+    let members;
+    try {
+      members = await discord.searchMembers(session.guildId, classified.query);
+    } catch (error) {
+      const status = error?.status ?? error?.httpStatus;
+      logger.warn?.("CoC 搜索成员失败", { message: error?.message, status });
+      await interaction.editReply({
+        content: status === 403
+          ? "按名字搜索全服成员被 Discord 拒绝了。请在开发者后台为小G宝打开 Server Members Intent，或先粘贴对方的用户 ID。"
+          : "没有搜到这个人。请换一个更短的开头，或粘贴 Discord 用户 ID。",
+      });
+      return;
+    }
+    if (members.length === 0) {
+      await interaction.editReply({
+        content: `没有找到以「${classified.query}」开头的成员。搜索看的是用户名和服务器昵称的开头，也可以直接粘贴用户 ID。`,
+      });
+      return;
+    }
+    const labeled = members.map((member) => ({ ...member, label: memberOptionLabel(member) }));
+    if (labeled.length === 1 && classified.kind === "id") {
+      if (parsed.action === "modal-find-pl") {
+        await interaction.editReply({
+          content: `找到 ${labeled[0].label}。请填写本局角色名。`,
+          components: [
+            new ActionRowBuilder().addComponents(
+              new ButtonBuilder()
+                .setCustomId(buildCustomId("ask-name", parsed.sessionId, labeled[0].userId))
+                .setLabel("填写角色名")
+                .setStyle(ButtonStyle.Primary),
+            ),
+          ],
+        });
+        return;
+      }
+      const added = await service.addOb(parsed.sessionId, interaction.user.id, labeled[0].userId);
+      if (!added.ok) {
+        await interaction.editReply({ content: added.message });
+        return;
+      }
+      await syncPanels(added.session);
+      await interaction.editReply({ content: "已添加为 OB。" });
+      return;
+    }
+    const pickAction = parsed.action === "modal-find-pl" ? "pick-found-pl" : "pick-found-ob";
+    await interaction.editReply(memberSearchResults(parsed.sessionId, pickAction, labeled));
   }
 
   async function editRecruit(session, payload) {
@@ -138,7 +229,7 @@ export function createCocInteractionRouter({
     await interaction.update(recruitPanel(session));
   }
 
-  async function handleAction(interaction, action, sessionId) {
+  async function handleAction(interaction, action, sessionId, targetUserId) {
     if (service.availability() !== "ready") {
       await replyEphemeral(interaction, closedMessage());
       return;
@@ -238,6 +329,73 @@ export function createCocInteractionRouter({
       await interaction.editReply(ephemeral("招募已取消。"));
       return;
     }
+    if (action === "ask-name") {
+      await interaction.showModal(targetNameModal("modal-add-pl", sessionId, targetUserId));
+      return;
+    }
+    if (action === "members") {
+      const preview = service.previewMembers(sessionId, userId);
+      if (!preview.ok) {
+        await replyEphemeral(interaction, preview.message);
+        return;
+      }
+      await interaction.reply({ ...memberAdminPanel(preview.session), flags: MessageFlags.Ephemeral });
+      return;
+    }
+    if (action === "madd-pl") {
+      await interaction.showModal(memberSearchModal(sessionId, "modal-find-pl"));
+      return;
+    }
+    if (action === "madd-ob") {
+      await interaction.showModal(memberSearchModal(sessionId, "modal-find-ob"));
+      return;
+    }
+    if (action === "convert") {
+      const preview = service.previewMembers(sessionId, userId);
+      if (!preview.ok) {
+        await replyEphemeral(interaction, preview.message);
+        return;
+      }
+      await interaction.reply({
+        ...memberPickPanel(preview.session, "pick-convert", "选择要转换身份的本局成员"),
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+    if (action === "kick") {
+      const preview = service.previewMembers(sessionId, userId);
+      if (!preview.ok) {
+        await replyEphemeral(interaction, preview.message);
+        return;
+      }
+      await interaction.reply({
+        ...memberPickPanel(preview.session, "pick-kick", "选择要移出本局的 PL 或 OB"),
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+    if (action === "go-ob") {
+      await interaction.deferUpdate();
+      const converted = await service.convertPlToOb(sessionId, userId, targetUserId);
+      if (!converted.ok) {
+        await interaction.editReply({ content: converted.message, components: [] });
+        return;
+      }
+      await syncPanels(converted.session);
+      await interaction.editReply({ content: "已转为 OB。", components: [] });
+      return;
+    }
+    if (action === "go-kick") {
+      await interaction.deferUpdate();
+      const removed = await service.removeMember(sessionId, userId, targetUserId);
+      if (!removed.ok) {
+        await interaction.editReply({ content: removed.message, components: [] });
+        return;
+      }
+      await syncPanels(removed.session);
+      await interaction.editReply({ content: "已移出本局。", components: [] });
+      return;
+    }
     if (action === "end") {
       const preview = service.previewEnd(sessionId, userId);
       if (!preview.ok) {
@@ -315,7 +473,7 @@ export function createCocInteractionRouter({
           return;
         }
         if (parsed.action === "modal-kl") {
-          const joined = await service.joinKl(
+          const joined = await service.joinPl(
             parsed.sessionId,
             interaction.user.id,
             interaction.fields.getTextInputValue("character"),
@@ -326,13 +484,92 @@ export function createCocInteractionRouter({
           }
           await interaction.deferUpdate();
           await interaction.editReply(recruitPanel(joined.session));
+          return;
+        }
+        if (parsed.action === "modal-find-pl" || parsed.action === "modal-find-ob") {
+          await showMemberSearch(interaction, parsed);
+          return;
+        }
+        if (parsed.action === "modal-add-pl" || parsed.action === "modal-ob-pl") {
+          await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+          const name = interaction.fields.getTextInputValue("character");
+          const changed = parsed.action === "modal-add-pl"
+            ? await service.addPl(parsed.sessionId, interaction.user.id, parsed.userId, name)
+            : await service.convertObToPl(parsed.sessionId, interaction.user.id, parsed.userId, name);
+          if (!changed.ok) {
+            await interaction.editReply({ content: changed.message });
+            return;
+          }
+          await syncPanels(changed.session);
+          await interaction.editReply({ content: parsed.action === "modal-add-pl" ? "已添加为 PL。" : "已转为 PL。" });
+        }
+        return;
+      }
+      if (interaction.isUserSelectMenu?.()) {
+        const parsed = parseCustomId(interaction.customId);
+        if (!parsed?.sessionId) return;
+        const targetUserId = interaction.values?.[0];
+        if (parsed.action === "pick-add-pl") {
+          await interaction.showModal(targetNameModal("modal-add-pl", parsed.sessionId, targetUserId));
+          return;
+        }
+        if (parsed.action === "pick-add-ob") {
+          await interaction.deferUpdate();
+          const added = await service.addOb(parsed.sessionId, interaction.user.id, targetUserId);
+          if (!added.ok) {
+            await interaction.editReply({ content: added.message, components: [] });
+            return;
+          }
+          await syncPanels(added.session);
+          await interaction.editReply({ content: "已添加为 OB。", components: [] });
+        }
+        return;
+      }
+      if (interaction.isStringSelectMenu?.()) {
+        const parsed = parseCustomId(interaction.customId);
+        if (!parsed?.sessionId) return;
+        const selected = String(interaction.values?.[0] ?? "");
+        if (parsed.action === "pick-found-pl" || parsed.action === "pick-found-ob") {
+          if (!selected) return;
+          if (parsed.action === "pick-found-pl") {
+            await interaction.showModal(targetNameModal("modal-add-pl", parsed.sessionId, selected));
+            return;
+          }
+          await interaction.deferUpdate();
+          const added = await service.addOb(parsed.sessionId, interaction.user.id, selected);
+          if (!added.ok) {
+            await interaction.editReply({ content: added.message, components: [] });
+            return;
+          }
+          await syncPanels(added.session);
+          await interaction.editReply({ content: "已添加为 OB。", components: [] });
+          return;
+        }
+        const [role, targetUserId] = selected.split(":");
+        if (!targetUserId) return;
+        if (parsed.action === "pick-convert" && role === "ob") {
+          await interaction.showModal(targetNameModal("modal-ob-pl", parsed.sessionId, targetUserId));
+          return;
+        }
+        if (parsed.action === "pick-convert" && role === "pl") {
+          await interaction.update({
+            content: "确定把这名 PL 转为 OB？符合条件时会恢复原来的昵称。",
+            components: [confirmRow("go-ob", parsed.sessionId, "确认转为 OB", "返回", targetUserId)],
+          });
+          return;
+        }
+        if (parsed.action === "pick-kick") {
+          await interaction.update({
+            content: "确定把这名成员移出本局？移出后将看不到这个频道。",
+            components: [confirmRow("go-kick", parsed.sessionId, "确认移出", "返回", targetUserId)],
+          });
         }
         return;
       }
       if (interaction.isButton?.()) {
         const parsed = parseCustomId(interaction.customId);
         if (!parsed?.sessionId) return;
-        await handleAction(interaction, parsed.action, parsed.sessionId);
+        await handleAction(interaction, parsed.action, parsed.sessionId, parsed.userId);
       }
     } catch (error) {
       logger.error?.("CoC 交互失败", { message: error?.message });

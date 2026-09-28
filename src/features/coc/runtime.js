@@ -38,7 +38,7 @@ export function createCocRuntime({
       guildId: config.discordGuildId,
       categoryId: coc.categoryId,
       kpRoleId: coc.kpRoleId,
-      klRoleId: coc.klRoleId,
+      plRoleId: coc.plRoleId,
       obRoleId: coc.obRoleId,
       botUserId: null,
     } : { enabled: false, disabledReason },
