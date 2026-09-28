@@ -2,7 +2,6 @@
 
 > 独立网站。用户用 Discord 登录，自己车卡，长期保存。  
 > 建立日期：2026-09-28  
-> 修订：2026-09-28。PL、OAuth 独立门禁、会话安全、长期卡与本局状态、Migration、配置化。  
 > A 线跑团房间仍在 TeaParty-Bell，施工文件是 `docs/coc-mvp-0.1.md`。
 
 把这句话交给负责 B 线的会话：
@@ -55,11 +54,7 @@ TeaParty-Bell/docs/coc-phase0-audit.md
 
 工作簿在 `D:\git项目\TeaParty-Bell\TL COC CARD.xlsx`。它是参考，不是数据库。
 
-`BOT_CONSTRUCTION_PLAN3.md` 里关于一次性车卡网址的旧方案已经作废。角色卡字段和公式仍以审计报告为准。登录、门禁和资格复查以本文件 Phase B3 为准，不再采用审计报告里「用 Bot 查成员、静默复查」的旧方案。
-
-玩家身份沿用 A 线已经改完的说法：PL。B 线文档、接口、页面和测试从第一天起不使用 KL。
-
-**B7 内部 API 是 B 线唯一正式集成边界。TeaParty-Bell 永远不直接打开 B 线 SQLite。**
+`BOT_CONSTRUCTION_PLAN3.md` 里关于一次性车卡网址的旧方案已经作废。以本文件和审计报告的 Phase 0.5 为准。
 
 ---
 
@@ -67,9 +62,13 @@ TeaParty-Bell/docs/coc-phase0-audit.md
 
 角色卡属于玩家的长期资产，所有权只认 Discord User ID。不用用户名、昵称、服务器显示名。
 
-长期卡保存建卡结果。角色卡本身需要的基础值、初始值，或可由规则推导的字段，仍按 Character Schema 保存或计算。幸运是 CoC 7 的卡面字段，要留在人物卡上。理智上限、生命上限、魔法上限也一样，可以保存初始值，或由规则现算。
+长期卡不记录：
 
-长期卡不写入跑团 Session 中产生的 HP / SAN / MP / Luck 消耗、伤势、疯狂、死亡等临时变化，也不记录死在哪个模组。禁止把「这一局花掉的幸运」扣回永久卡。
+```text
+本局当前 HP / SAN / MP / Luck
+本局伤势、疯狂、死亡
+死在哪个模组
+```
 
 某一局的消耗由 A 线以后自己建本局状态。B 线只保存建卡结果。玩家中途改长期卡，不得让正在跑的那一局跟着跳。这个隔离到 Phase B8 再接，B 线先不要做本局状态。
 
@@ -105,37 +104,9 @@ rules/      CoC 7 纯计算
 tests/
 ```
 
-技术保持小。Node 即可。不用 Kubernetes、Redis、微服务、重型 ORM，也不为了好看先上大型前端框架。以后用到 SQLite 时，驱动用 `better-sqlite3`，不要用仍标记为实验特性的 `node:sqlite`。B0 先不安装这个驱动，也不建库。
+技术保持小。Node 即可。不用 Kubernetes、Redis、微服务、重型 ORM，也不为了好看先上大型前端框架。SQLite 驱动用 `better-sqlite3`。不要用仍标记为实验特性的 `node:sqlite`。
 
-B0 验收至少交付：
-
-```text
-package.json
-Node 版本约束（写在 package.json 的 engines）
-测试命令
-.env.example
-.gitignore
-README
-目录骨架
-最小测试能够运行并 PASS
-```
-
-`.env.example` 只列名字，值为空。至少包括：
-
-```text
-DISCORD_CLIENT_ID
-DISCORD_CLIENT_SECRET
-OAUTH_CALLBACK_URL
-DISCORD_GUILD_ID
-COC_ACCESS_ROLE_ID
-SESSION_SECRET
-DATABASE_PATH
-INTERNAL_API_SECRET
-```
-
-`.gitignore` 排除 `.env`。README 写明仓库如何引用现有的两份 Excel 审计，并写明上面这些值只来自环境变量。
-
-然后停。不要趁 B0 写 OAuth、SQLite、Migration 或车卡页面。空目录可以在，里面不要有登录、数据库或页面实现。最小测试只证明测试命令能跑通。
+这一阶段只搭仓库和空的测试入口，不写车卡页面。
 
 ### Phase B1：规则核心
 
@@ -157,90 +128,41 @@ ownerDiscordUserId
 
 ### Phase B2：角色库
 
-网站独占一份 SQLite，只有 B 服务可以直接打开数据库。TeaParty-Bell 不打开这个文件。
+一个 SQLite 文件由这个网站独占。TeaParty-Bell 以后也不直接打开它。
 
-SQLite migration 从 v1 就开始。哪怕首版只有 `001_init.sql`，也要有版本化 Migration。后面的 Schema 变更都走 Migration，禁止靠手改表结构。
+至少支持：创建、读取、编辑、复制、删除、列出某个 Discord 用户的全部卡。
 
-支持创建、读取、编辑、删除、复制，以及按 Discord User ID 列出该用户的全部卡。复制产生新卡，所有者仍是当前用户。删除只删自己的卡。
+复制产生新卡，所有者仍是当前用户。删除只删自己的卡。
 
-启动执行 `integrity_check`。异常就 fail closed：拒绝服务并告警，不要新建一个空库假装角色还在。使用 SQLite 在线备份，每日一份，保留最近 14 份。禁止在库开着的时候用文件复制当备份。
-
-数据库路径只读 `DATABASE_PATH`。驱动用 `better-sqlite3`。
+每天用 SQLite 在线备份，保留最近 14 份。禁止在库开着的时候用文件复制当备份。启动时做完整性检查。损坏就拒绝服务并告警，不要新建一个空库假装角色还在。
 
 ### Phase B3：登录与门禁
 
 固定地址，所有人同一个，例如 `https://域名/coc`。没有每人一个网址，URL 里没有 User ID。
 
-开工前用 Discord 官方文档再核对一次 `identify` + `guilds.members.read`。2026-09-28 对照的官方说明是：
-
 ```text
-identify
-  允许 GET /users/@me，取得真实 User ID
-
-guilds.members.read
-  允许 GET /users/@me/guilds/{guild.id}/member
-  用当前登录用户自己的 OAuth Access Token
-  读取该用户在指定 Guild 的 Guild Member
-
-Guild Member 对象的 roles
-  是 role id 数组
-```
-
-文档：<https://docs.discord.com/developers/topics/oauth2>，<https://docs.discord.com/developers/resources/user#get-current-user-guild-member>，<https://docs.discord.com/developers/resources/guild#guild-member-object>。
-
-优先由 B 线用这条用户 OAuth 路线独立完成 Guild 与贵宾身份校验。不共享 TeaParty-Bell 的 Bot Token，也不依赖 Guild Members Gateway Intent。这里说的是 OAuth scope，和小G宝的 Gateway Intent 不是一回事。不要为了这个功能打开那个 Intent，也不要把小G宝正式 Bot Token 放进 B 项目。
-
-```text
-identify
-+
-guilds.members.read
+打开网站
 ↓
-取得 Discord User ID
+Discord OAuth，只取真实 User ID
 ↓
-读取该用户在 DISCORD_GUILD_ID 的 Guild Member
+是否茶话会成员
 ↓
-确认 Member 存在
-↓
-检查 roles 是否包含 COC_ACCESS_ROLE_ID（茶会贵宾）
+是否拥有茶会贵宾身份
 ↓
 通过后写入服务端会话
 ```
 
-读不到这个 Member，就视为不是该服务器成员。`DISCORD_GUILD_ID` 和 `COC_ACCESS_ROLE_ID` 只从环境变量读。文档可以备注当前生产茶话会的 Guild ID 是 `1447978053665030280`，这是正式社区，不是 A 线正在用的测试服。运行逻辑里不要写死这个数字，也不要写死贵宾身份组 ID。
+茶话会的服务器 ID 是 `1447978053665030280`。这是正式社区，不是现在 A 线正在用的测试服。
 
-下列也全部来自 `.env` 或密钥保管，不进仓库：
+浏览器只保存随机 Session ID。Cookie 要 `HttpOnly`、`Secure`、`SameSite=Lax`。库存哈希。写任何角色卡时再核对：当前会话用户就是这张卡的主人。
 
-```text
-Discord Client ID
-Discord Client Secret
-OAuth Callback URL
-Session Secret
-数据库路径
-内部 API Secret
-```
+会话大约 90 天。茶话会和贵宾资格大约 30 天静默复查一次，仍符合就继续用。两个数字做成命名常量。
 
-安全要求是封箱条件。只做到「能登录」不算 Phase B3 完成：
+禁止用户手填 Discord ID 或用户名来登录。
 
-```text
-OAuth Authorization Code Flow
-必须校验 state
-Session ID 随机不可猜
-Cookie: HttpOnly + Secure + SameSite=Lax
-Session 服务端保存
-浏览器不保存 Discord access token
-所有角色卡 API 从 Session 推导 ownerDiscordUserId
-绝不接受前端自己传 ownerDiscordUserId 决定所有权
-```
+查成员时优先用机器人身份按单个 User ID 查询。Phase B3 开工前对照当时的 Discord 文档确认：这个单个查询是否要求打开 Guild Members Intent。如果不要求，就不要开。如果要求，改为在 OAuth 里向用户要成员读取范围。仍然不要为了这个功能打开 Gateway 的 Guild Members Intent。
 
-官方建议用 `state` 防止授权回调被伪造。`state` 只活在这一次授权里，不拿来当车卡链接。禁止 Implicit Grant。禁止用户手填 Discord ID 或用户名来登录。库存 Session 的哈希，不存裸 Session ID。
-
-会话大约 90 天，资格大约 30 天。两个数字做成命名常量。
-
-已选定：不长期保存 Discord access token，也不保存 refresh token。官方授权码换票响应里的 `expires_in` 示例是 604800 秒，access token 撑不到 30 天的静默复查。要静默复查就必须在服务端保存并刷新 OAuth 凭证。B 线只在进门时读一次成员和身份组，不需要在用户离开后继续代表用户调用 Discord。因此不做静默重检。
-
-资格到期后，下一次访问必须重新走 Discord 授权。授权成功后用这一次的 access token 完成校验，然后丢掉 access token 和 refresh token，不写入数据库，不放进 Cookie。网站会话仍可维持到大约 90 天，但资格过期后不能进门，也不能写卡。
-
-这一阶段的页面要证明：未登录进不去，外站用户进不去，茶话会成员但没有贵宾身份进不去，贵宾可以进来并看到自己的 Discord 用户 ID。篡改 Cookie 无效。关掉页面再打开，会话未过期时仍然是登录状态。上面的安全清单每条都有测试。
+这一阶段的页面只需要证明：未登录进不去，外站用户进不去，茶话会成员但没有贵宾身份进不去，贵宾可以进来并看到自己的 Discord 用户 ID。篡改 Cookie 无效。关掉页面再打开仍然是登录状态。
 
 ### Phase B4：最小车卡页
 
@@ -270,8 +192,6 @@ Session 服务端保存
 
 ### Phase B7：给小G宝的内部接口
 
-**B7 内部 API 是 B 线唯一正式集成边界。TeaParty-Bell 永远不直接打开 B 线 SQLite。**
-
 网站稳定后再加，只给小G宝用：
 
 ```text
@@ -281,27 +201,27 @@ GET /internal/characters/:characterId
 
 要能回答：这张卡是不是这个 Discord 用户的。
 
-接口只监听本机，或者校验 `INTERNAL_API_SECRET`。不要暴露到公网。密钥不进仓库。
+接口只监听本机，或者带内部密钥。不要暴露到公网。TeaParty-Bell 不读这套 SQLite。
 
 ### Phase B8：和 A 线汇合
 
-两边各自稳定后再做。第一批 Integration 只实现 PL 报名时选择自己的长期角色卡。TeaParty-Bell 通过 B7 Internal API 取得卡 ID、角色名和必要只读数据，本局建立独立 Session Snapshot。跑团产生的 HP / SAN / MP / Luck 等变化仅属于 A 线 Session，不回写长期角色卡。
+两边各自稳定后再做。第一批只接：
 
 ```text
-PL 报名选角
+PL 报名
 ↓
-通过 B7 拿到自己的卡
+从角色卡中心拿到自己的卡
 ↓
 选择本局角色
 ↓
-A 线记下卡 ID、角色名，并建立本局快照
+小G宝拿到角色名
 ↓
-小G宝把服务器昵称临时改成这个角色名
+把服务器昵称临时改成这个名字
 ```
 
-以后再接「cc 心理学」读取技能值，以及用角色卡生成这一局的 HP、SAN、MP 起点。那些本局数字仍留在 A 线。
+以后再接「cc 心理学」读取技能值，以及用角色卡生成这一局的 HP、SAN、MP 起点。那些本局数字留在 A 线，不写回长期卡。
 
-汇合时由 TeaParty-Bell 调用 B7。不要让小G宝直接改角色库，也不要把 B 线的网页塞进现在的跑团路由。
+汇合时由 TeaParty-Bell 调用 B 线接口。不要让小G宝直接改角色库，也不要把 B 线的网页塞进现在的跑团路由。
 
 ---
 
@@ -317,6 +237,4 @@ A 线记下卡 ID、角色名，并建立本局快照
 
 ## 4. 当前下一步
 
-阶段顺序保持 `B0 → B1 → B2 → B3 → B4 → B5 → B6 → B7 → B8`。先做 Schema 和规则，再做数据库，然后才做 OAuth。角色卡核心不绑 Discord。
-
-B 线从 Phase B0 开始：新建 `CoC-Character-Card` 仓库，交付上一节列出的验收文件，并让最小测试 PASS。不要改 TeaParty-Bell 的跑团代码。B0 完成后停，不进入 B1。
+B 线从 Phase B0 开始：新建 `CoC-Character-Card` 仓库和上面的目录，并写明它如何引用现有的 Excel 审计。不要改 TeaParty-Bell 的跑团代码。
