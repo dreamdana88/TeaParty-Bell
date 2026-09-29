@@ -2,6 +2,7 @@ import { mkdtempSync, readFileSync, readdirSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { formatRoll, rollDice } from "./dice/roller.js";
+import { formatTextDice } from "./textDice.js";
 import { createCocSessionService } from "./sessionService.js";
 import { createCocSessionStore } from "./sessionStore.js";
 import { DELETE_AFTER_MS, SETTLED_RETENTION_MS } from "./sessionRules.js";
@@ -460,11 +461,11 @@ async function activeTable(overrides) {
   const kpRoll = await service.rollTextDice({
     channelId: "room-1", userId: "kp", displayName: "主持人", content: "1d100",
   });
-  assertEqual(kpRoll.text, "🎲 主持人掷骰\n\n1d100 → 63", "KP 的整句 1d100 会掷，用显示名");
+  assertEqual(kpRoll.text, "<@kp> 🎲 1d100 = 63", "KP 的整句 1d100 会 @ 触发者");
   const plRoll = await service.rollTextDice({
     channelId: "room-1", userId: "pl", displayName: "Dream", content: " 1D100 ",
   });
-  assertEqual(plRoll.text, "🎲 奈洛莉掷骰\n\n1d100 → 63", "PL 的整句 1d100 会掷，用角色名");
+  assertEqual(plRoll.text, "<@pl> 🎲 1d100 = 63", "PL 的整句 1d100 会 @ 触发者");
   const obRoll = await service.rollTextDice({
     channelId: "room-1", userId: "ob", displayName: "看客", content: "1d100",
   });
@@ -584,7 +585,10 @@ async function activeTable(overrides) {
     let index = start;
     const expected = rollDice(content, () => values[index++]);
     assert(actual.ok === true && expected.ok === true, `${label} 会掷`);
-    assertEqual(actual.text, formatRoll("奈洛莉", expected), `${label} 和 /r 同一文案`);
+    assertEqual(actual.text, formatTextDice("pl", expected), `${label} 展示这次掷出的骰面`);
+    if (expected.count > 1) {
+      assert(actual.text.includes(`[${expected.rolls.join(", ")}]`), `${label} 保留每一颗骰子`);
+    }
     assertEqual(cursor, index, `${label} 用了同样多次随机`);
   }
   await expectSameAsSlash("1d4", "1d4");
@@ -619,10 +623,15 @@ async function activeTable(overrides) {
     channelId: "room-1", userId: "pl", displayName: "Dream", expression: "你好",
   });
   assert(slashBad.ok === false && slashBad.message?.includes("1d100"), "/r 非法表达式仍然回复错误");
+  const slashStart = cursor;
   const slash = await service.roll({
     channelId: "room-1", userId: "pl", displayName: "Dream", expression: "1d4",
   });
-  assert(slash.ok && slash.text.startsWith("🎲 奈洛莉掷骰"), "/r 回复格式不变");
+  let slashIndex = slashStart;
+  const slashRoll = rollDice("1d4", () => values[slashIndex++]);
+  assert(slash.ok, "/r 仍然会掷");
+  assertEqual(slash.text, formatRoll("奈洛莉", slashRoll), "/r 回复格式不变");
+  assert(!slash.text.includes("<@"), "/r 不 @ 用户");
 }
 
 {

@@ -7,6 +7,24 @@ export function isWholeMessageDice(content) {
 }
 
 /**
+ * 自然消息骰子的回复。骰面和总值直接用这一次 roll 的结果，不另掷。
+ * @param {string} userId
+ * @param {{ notation: string, count: number, rolls: number[], modifier: number, total: number }} result
+ */
+export function formatTextDice(userId, result) {
+  const mention = `<@${userId}>`;
+  if (result.count === 1 && result.modifier === 0) {
+    return `${mention} 🎲 ${result.notation} = ${result.total}`;
+  }
+  const faces = result.rolls.join(", ");
+  if (result.modifier === 0) {
+    return `${mention} 🎲 ${result.notation} → [${faces}] = ${result.total}`;
+  }
+  const sign = result.modifier > 0 ? "+" : "-";
+  return `${mention} 🎲 ${result.notation} → [${faces}] ${sign} ${Math.abs(result.modifier)} = ${result.total}`;
+}
+
+/**
  * 先看是不是进行中的跑团频道，再看正文。普通频道不读 content。
  */
 export function messageNeedsTextDice(message, channelIsActive) {
@@ -29,7 +47,11 @@ export function attachTextDiceListener({ client, service, logger = console }) {
         content: message.content,
       });
       if (!result?.ok) return;
-      await message.reply({ content: result.text, allowedMentions: { parse: [] } });
+      const userId = message.author?.id;
+      await message.reply({
+        content: result.text,
+        allowedMentions: { parse: [], users: userId ? [userId] : [], repliedUser: false },
+      });
     } catch (error) {
       logger.warn?.("CoC 文字骰子没有发出", { message: error?.message });
     }

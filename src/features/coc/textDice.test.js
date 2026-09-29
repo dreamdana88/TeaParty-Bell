@@ -1,4 +1,4 @@
-import { attachTextDiceListener, isWholeMessageDice, messageNeedsTextDice } from "./textDice.js";
+import { attachTextDiceListener, formatTextDice, isWholeMessageDice, messageNeedsTextDice } from "./textDice.js";
 
 let passed = 0;
 let failed = 0;
@@ -25,6 +25,25 @@ assert(!isWholeMessageDice("cc 70"), "技能检定不是这轮骰子");
 assert(!isWholeMessageDice("0d6"), "非法个数不掷");
 assert(!isWholeMessageDice("21d6"), "超过上限不掷");
 assert(!isWholeMessageDice(""), "空消息不掷");
+
+assertEqual(formatTextDice("user", {
+  notation: "1d100", count: 1, rolls: [79], modifier: 0, total: 79,
+}), "<@user> 🎲 1d100 = 79", "单骰 1d100");
+assertEqual(formatTextDice("user", {
+  notation: "1d4", count: 1, rolls: [3], modifier: 0, total: 3,
+}), "<@user> 🎲 1d4 = 3", "单骰 1d4");
+assertEqual(formatTextDice("user", {
+  notation: "2d6", count: 2, rolls: [1, 5], modifier: 0, total: 6,
+}), "<@user> 🎲 2d6 → [1, 5] = 6", "多骰列出每一颗");
+assertEqual(formatTextDice("user", {
+  notation: "2d6+3", count: 2, rolls: [1, 5], modifier: 3, total: 9,
+}), "<@user> 🎲 2d6+3 → [1, 5] + 3 = 9", "多骰加修正");
+assertEqual(formatTextDice("user", {
+  notation: "3d8-2", count: 3, rolls: [4, 7, 2], modifier: -2, total: 11,
+}), "<@user> 🎲 3d8-2 → [4, 7, 2] - 2 = 11", "多骰减修正");
+assertEqual(formatTextDice("user", {
+  notation: "2d6+3", count: 2, rolls: [1, 5], modifier: 3, total: 9,
+}).includes("[1, 5]"), true, "展示用传入的骰面，不另掷");
 
 {
   let reads = 0;
@@ -66,7 +85,7 @@ assert(!isWholeMessageDice(""), "空消息不掷");
       async rollTextDice(input) {
         calls.push(input.content);
         if (input.content === "1d6") return { ok: false, message: "骰子表达式无效" };
-        return { ok: true, text: "🎲 奈洛莉掷骰\n\n2d6+3\n[3, 4] + 3 = 10" };
+        return { ok: true, text: "<@pl> 🎲 2d6+3 → [3, 4] + 3 = 10" };
       },
     },
     logger: { warn() {} },
@@ -82,8 +101,10 @@ assert(!isWholeMessageDice(""), "空消息不掷");
   await handler({ ...base, content: "1d6" });
   await handler({ ...base, content: "2d6+3", member: { displayName: "奈洛莉" } });
   assertEqual(calls.length, 2, "只有整句骰子才会交给掷骰");
-  assert(replies.length === 1 && replies[0].content.includes("2d6+3"), "合法整句按 /r 文案回复");
-  assert(replies[0].allowedMentions?.parse?.length === 0, "回复不解析提及");
+  assert(replies.length === 1 && replies[0].content.startsWith("<@pl> 🎲"), "合法整句回复里 @ 触发者");
+  assertEqual(replies[0].allowedMentions?.users?.[0], "pl", "只允许 @ 触发骰子的用户");
+  assert(replies[0].allowedMentions?.parse?.length === 0, "不解析消息里的其他提及");
+  assert(replies[0].allowedMentions?.repliedUser === false, "回复引用不再额外 @ 一次");
   assert(!replies.some((payload) => String(payload.content).includes("无效")), "非法或失败都不回复报错");
   detach();
 }

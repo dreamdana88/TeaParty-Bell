@@ -2,6 +2,7 @@ import { randomBytes } from "crypto";
 import { buildRoomOverwrites } from "./channelAccess.js";
 import { planChannelNames } from "./channelName.js";
 import { formatRoll, rollDice } from "./dice/roller.js";
+import { formatTextDice } from "./textDice.js";
 import { INVALID_DICE_MESSAGE, parseDiceExpression } from "./dice/parser.js";
 import { planNicknameRestore } from "./nickname.js";
 import {
@@ -981,7 +982,7 @@ export function createCocSessionService({
     return activeSessionInChannel(sessions(), channelId) != null;
   }
 
-  async function rollTextDice({ channelId, userId, displayName, content }) {
+  async function rollTextDice({ channelId, userId, content }) {
     if (config.messageContentEnabled !== true) return { ignore: true };
     if (!hasActiveRunChannel(channelId)) return { ignore: true };
     const parsed = parseDiceExpression(content);
@@ -994,7 +995,7 @@ export function createCocSessionService({
     if (!rolled.ok) return { ignore: true };
     return {
       ok: true,
-      text: formatRoll(speakerName(session, userId, displayName), rolled),
+      text: formatTextDice(userId, rolled),
     };
   }
 
