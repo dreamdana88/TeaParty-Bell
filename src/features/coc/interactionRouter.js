@@ -434,7 +434,7 @@ export function createCocInteractionRouter({
       }
       const prompt = transcriptPrivacyPrompt(saved.optedOut, sessionId);
       await interaction.editReply({
-        content: saved.optedOut ? "已不再记录你的发言。" : "已恢复记录你的发言。",
+        content: prompt.content,
         components: prompt.components,
       });
       return;

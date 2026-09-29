@@ -1,4 +1,4 @@
-import { transcriptOptOutIds } from "./sessionRules.js";
+import { transcriptOptedOutAt, transcriptSeatAt } from "./sessionRules.js";
 
 const SHANGHAI = "Asia/Shanghai";
 const USER_MESSAGE = 0;
@@ -36,16 +36,16 @@ export function transcriptFileName(title) {
   return `${cleaned || "本局"}团录.md`;
 }
 
-function speakerFor(session, authorId) {
-  if (transcriptOptOutIds(session).includes(authorId)) return null;
-  if (authorId === session.kpUserId) return "KP";
-  const pl = session.pl.find((member) => member.userId === authorId);
-  if (pl) return pl.characterName || "PL";
-  return null;
+function speakerFor(session, authorId, timestamp) {
+  if (transcriptOptedOutAt(session, authorId, timestamp)) return null;
+  const seat = transcriptSeatAt(session, authorId, timestamp);
+  if (!seat) return null;
+  if (seat.role === "kp") return "KP";
+  return seat.name || "PL";
 }
 
 /**
- * 以结束时的 KP / PL 名单过滤。不改消息原文。
+ * 按消息发送时的 KP / PL 身份和时间段过滤。不改消息原文，也不保存原文。
  * @param {object} session
  * @param {object[]} messages
  * @param {string|null} botUserId
@@ -58,12 +58,12 @@ export function selectTranscriptMessages(session, messages, botUserId) {
     if (!message.id || seen.has(message.id)) continue;
     if (botUserId && message.authorId === botUserId) continue;
     if (message.type != null && !INCLUDED_TYPES.has(message.type)) continue;
-    const speaker = speakerFor(session, message.authorId);
+    const time = formatTranscriptClock(message.createdTimestamp);
+    if (!time) continue;
+    const speaker = speakerFor(session, message.authorId, message.createdTimestamp);
     if (!speaker) continue;
     const content = typeof message.content === "string" ? message.content.trim() : "";
     if (!content) continue;
-    const time = formatTranscriptClock(message.createdTimestamp);
-    if (!time) continue;
     seen.add(message.id);
     entries.push({
       id: message.id,

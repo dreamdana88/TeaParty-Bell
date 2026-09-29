@@ -11,6 +11,7 @@ import {
   applyAddOb,
   applyAddPl,
   applyRemoveMember,
+  beginTranscriptSeats,
   createRecruitingSession,
   gateMemberAdmin,
   gateNewMember,
@@ -33,8 +34,8 @@ import {
   signupPl,
   signupOb,
   cancelSignup,
+  isTranscriptOptedOut,
   speakerName,
-  transcriptOptOutIds,
   withTranscriptOptOut,
   SESSION_STATES,
 } from "./sessionRules.js";
@@ -422,12 +423,14 @@ export function createCocSessionService({
       if (!current || current.state !== SESSION_STATES.starting) {
         return { errorCode: "REJECTED", message: "这场招募的状态已经变了。" };
       }
+      const startedAt = clock.now();
       const next = {
         ...current,
         state: SESSION_STATES.active,
-        startedAt: clock.now(),
+        startedAt,
         runChannelId: channel.id,
         rolesGranted: true,
+        transcriptSeats: beginTranscriptSeats({ ...current, startedAt }),
       };
       return { state: { ...state, sessions: replaceSession(state.sessions, next) }, result: next };
     });
@@ -685,7 +688,7 @@ export function createCocSessionService({
     return store.update((state) => {
       const current = state.sessions.find((item) => item.sessionId === sessionId);
       if (!current?.pendingMemberOp) return { errorCode: "MISSING", message: "没有进行中的成员变更。" };
-      const next = apply(current);
+      const next = apply(current, clock.now());
       return { state: { ...state, sessions: replaceSession(state.sessions, next) }, result: next };
     });
   }
@@ -717,7 +720,7 @@ export function createCocSessionService({
       if (pending.afterChannelAccess !== pending.beforeChannelAccess) {
         await ensureChannelAccess(session.runChannelId, pending.targetUserId, pending.afterChannelAccess);
       }
-      const saved = await commitMember(sessionId, (current) => apply(current, nick));
+      const saved = await commitMember(sessionId, (current, at) => apply(current, nick, at));
       if (!saved.ok) throw new Error(saved.message);
       return { ok: true, session: saved.result };
     } catch (error) {
@@ -751,12 +754,12 @@ export function createCocSessionService({
         nicknameBefore: info.nickname ?? null,
         nicknameAfter: name,
       },
-      (current, nick) => applyAddPl(current, {
+      (current, nick, at) => applyAddPl(current, {
         userId: targetUserId,
         characterName: name,
         originalNickname: nick.originalNickname,
         appliedNickname: nick.changed ? name : null,
-      }),
+      }, at),
     );
   }
 
@@ -780,7 +783,7 @@ export function createCocSessionService({
         beforeChannelAccess: false,
         afterChannelAccess: true,
       },
-      (current) => applyAddOb(current, targetUserId),
+      (_current, _nick, at) => applyAddOb(_current, targetUserId, at),
     );
   }
 
@@ -812,12 +815,12 @@ export function createCocSessionService({
         nicknameBefore,
         nicknameAfter: name,
       },
-      (current, nick) => applyAddPl(current, {
+      (current, nick, at) => applyAddPl(current, {
         userId: targetUserId,
         characterName: name,
         originalNickname: nick.originalNickname,
         appliedNickname: nick.changed ? name : null,
-      }),
+      }, at),
     );
   }
 
@@ -844,7 +847,7 @@ export function createCocSessionService({
         afterChannelAccess: true,
         ...(nicknameAfter !== undefined ? { nicknameBefore, nicknameAfter } : {}),
       },
-      (current) => applyAddOb(current, targetUserId),
+      (_current, _nick, at) => applyAddOb(_current, targetUserId, at),
     );
   }
 
@@ -873,7 +876,7 @@ export function createCocSessionService({
         afterChannelAccess: false,
         ...(nicknameAfter !== undefined ? { nicknameBefore, nicknameAfter } : {}),
       },
-      (session) => applyRemoveMember(session, targetUserId),
+      (_session, _nick, at) => applyRemoveMember(_session, targetUserId, at),
     );
   }
 
@@ -932,7 +935,7 @@ export function createCocSessionService({
   }
 
   function transcriptControlsEnabled() {
-    return config.transcriptEnabled === true;
+    return transcriptActive();
   }
 
   function previewTranscriptPrivacy(sessionId, userId) {
@@ -940,7 +943,7 @@ export function createCocSessionService({
     if (!transcriptControlsEnabled()) return { ok: false, message: "这场跑团当前不整理团录。" };
     const gate = gateTranscriptPrivacy(find(sessionId), userId);
     if (!gate.ok) return gate;
-    return { ok: true, optedOut: transcriptOptOutIds(find(sessionId)).includes(userId) };
+    return { ok: true, optedOut: isTranscriptOptedOut(find(sessionId), userId) };
   }
 
   async function setTranscriptOptOut(sessionId, userId, optedOut) {
@@ -952,14 +955,14 @@ export function createCocSessionService({
       const current = state.sessions.find((item) => item.sessionId === sessionId);
       const again = gateTranscriptPrivacy(current, userId);
       if (!again.ok) return { errorCode: "REJECTED", message: again.message };
-      const next = withTranscriptOptOut(current, userId, optedOut === true);
+      const next = withTranscriptOptOut(current, userId, optedOut === true, clock.now());
       return { state: { ...state, sessions: replaceSession(state.sessions, next) }, result: next };
     });
     if (!saved.ok) return { ok: false, message: saved.message };
     return {
       ok: true,
       session: saved.result,
-      optedOut: transcriptOptOutIds(saved.result).includes(userId),
+      optedOut: isTranscriptOptedOut(saved.result, userId),
     };
   }
 

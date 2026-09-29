@@ -149,19 +149,19 @@ export function controlPanel(session, { transcript = false } = {}) {
 export function transcriptPrivacyPrompt(optedOut, sessionId) {
   if (optedOut) {
     return {
-      content: "你的发言现在不会进入本局团录。",
+      content: "从现在起，你的发言不会进入本局团录。恢复之后只记新的消息，退出期间的不会补上。",
       components: [
         new ActionRowBuilder().addComponents(
-          button(buildCustomId("privacy-on", sessionId), "恢复记录我的消息", ButtonStyle.Primary),
+          button(buildCustomId("privacy-on", sessionId), "恢复记录我之后的消息", ButtonStyle.Primary),
         ),
       ],
     };
   }
   return {
-    content: "你的发言现在会进入本局团录。",
+    content: "从现在起，你的发言会进入本局团录。若选择不记录，只跳过之后的新消息。",
     components: [
       new ActionRowBuilder().addComponents(
-        button(buildCustomId("privacy-off", sessionId), "不记录我的消息", ButtonStyle.Secondary),
+        button(buildCustomId("privacy-off", sessionId), "不记录我之后的消息", ButtonStyle.Secondary),
       ),
     ],
   };

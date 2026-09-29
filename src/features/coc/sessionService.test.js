@@ -485,7 +485,9 @@ async function activeTable(overrides) {
   assert(restored.ok && restored.optedOut === false, "PL 可以恢复记录");
   await service.setTranscriptOptOut("session-1", "pl2", true);
   const beforeEnd = JSON.parse(readFileSync(store.filePath, "utf8"));
-  assert(beforeEnd.sessions[0].transcriptOptOutUserIds.includes("pl2"), "场次只记下退出用户的 ID");
+  assert(beforeEnd.sessions[0].transcriptOptOutUserIds.includes("pl2"), "当前仍退出的人留在 ID 列表里");
+  const openSpan = beforeEnd.sessions[0].transcriptOptOutSpans.find((span) => span.userId === "pl2" && span.until == null);
+  assert(typeof openSpan?.from === "number", "退出记下的是用户和时间，不是消息");
   assert(!containsText(beforeEnd, spoken) && !containsText(beforeEnd, hiddenLine), "跑团期间不把正文写进场次文件");
   const done = await service.finish("session-1", "kp");
   assert(done.ok && done.session.state === "ENDED", "有团录时结束仍然完成");
@@ -515,6 +517,8 @@ async function activeTable(overrides) {
     channelId: "room-1", userId: "kp", displayName: "主持人", content: "1d100",
   });
   assert(ignored.ignore === true, "Message Content 关闭时文字骰子不运行");
+  assert(service.transcriptControlsEnabled() === false, "只有团录开关时不提供团录隐私");
+  assert((await service.previewTranscriptPrivacy("session-1", "pl")).ok === false, "缺少 Message Content 时不能设置团录隐私");
   await service.finish("session-1", "kp");
   assert(!discord.calls.some((call) => call[0] === "history"), "Message Content 关闭时不读频道历史");
   assert(!containsText(JSON.parse(readFileSync(store.filePath, "utf8")), "不该读到"), "关闭时正文也不进场次文件");
@@ -549,6 +553,67 @@ async function activeTable(overrides) {
   assert(done.session.transcriptDelivered !== true, "没发出就不记成已交付");
   assert(!containsText(JSON.parse(readFileSync(store.filePath, "utf8")), line), "发送失败不把正文写进场次文件");
   assert(!readdirSync(dir).some((name) => name.endsWith(".md")), "发送失败不留下团录文件");
+}
+
+{
+  const { service } = await activeTable({
+    config: { messageContentEnabled: true, transcriptEnabled: false },
+  });
+  assert(service.transcriptControlsEnabled() === false, "只有 Message Content 时不提供团录隐私");
+  assert((await service.setTranscriptOptOut("session-1", "pl", true)).ok === false, "团录关闭时不能设置退出");
+}
+
+{
+  const early = "调查员阶段说的话";
+  const late = "变成旁观后说的话";
+  const watched = "还在旁观时说的话";
+  const seated = "入座之后说的话";
+  const kept = "退出之前说的话";
+  const skipped = "退出期间说的话";
+  const resumed = "恢复之后说的话";
+  const t = (seconds) => Date.parse("2026-09-29T02:00:00.000Z") + seconds * 1000;
+  const { service, discord, store, setNow } = await activeTable({
+    config: { messageContentEnabled: true, transcriptEnabled: true },
+    history: {
+      messages: [
+        { id: "pl-early", authorId: "pl", content: early, createdTimestamp: t(10), type: 0 },
+        { id: "pl-late", authorId: "pl", content: late, createdTimestamp: t(30), type: 0 },
+        { id: "ob-early", authorId: "ob", content: watched, createdTimestamp: t(10), type: 0 },
+        { id: "ob-late", authorId: "ob", content: seated, createdTimestamp: t(50), type: 0 },
+        { id: "kp-kept", authorId: "kp", content: kept, createdTimestamp: t(5), type: 0 },
+        { id: "kp-skip", authorId: "kp", content: skipped, createdTimestamp: t(15), type: 0 },
+        { id: "kp-back", authorId: "kp", content: resumed, createdTimestamp: t(25), type: 0 },
+      ],
+    },
+  });
+  setNow(t(12));
+  assert((await service.setTranscriptOptOut("session-1", "kp", true)).optedOut === true, "KP 从现在起退出团录");
+  setNow(t(20));
+  assert((await service.setTranscriptOptOut("session-1", "kp", false)).optedOut === false, "KP 从现在起恢复记录");
+  const toOb = await service.convertPlToOb("session-1", "kp", "pl");
+  assert(toOb.ok, "PL 转成 OB");
+  setNow(t(40));
+  const toPl = await service.convertObToPl("session-1", "kp", "ob", "后来");
+  assert(toPl.ok, "OB 转成 PL");
+  const before = JSON.parse(readFileSync(store.filePath, "utf8"));
+  const seats = before.sessions[0].transcriptSeats;
+  assert(seats.some((seat) => seat.userId === "pl" && seat.until === t(20) && seat.name === "奈洛莉"), "PL 座位在转 OB 时结束");
+  assert(seats.some((seat) => seat.userId === "ob" && seat.name === "后来" && seat.from === t(40) && seat.until == null), "新 PL 座位从转换时开始");
+  const span = before.sessions[0].transcriptOptOutSpans.find((item) => item.userId === "kp");
+  assert(span?.from === t(12) && span?.until === t(20), "退出只覆盖中间一段时间");
+  assert(!containsText(before, early) && !containsText(before, skipped) && !containsText(before, seated), "身份和时间段里没有消息正文");
+  const done = await service.finish("session-1", "kp");
+  assert(done.ok, "按时间段过滤后仍能结束");
+  const fileCall = discord.calls.find((call) => call[0] === "send" && call[1]?.files);
+  const markdown = fileCall[1].files[0].attachment.toString("utf8");
+  assert(markdown.includes(early) && markdown.includes("[10:00] 奈洛莉："), "转 OB 前的发言按当时角色名记入");
+  assert(!markdown.includes(late), "转成 OB 之后的发言不进团录");
+  assert(!markdown.includes(watched), "还是 OB 时的发言不进团录");
+  assert(markdown.includes(seated) && markdown.includes("后来："), "成为 PL 之后的发言按新角色名记入");
+  assert(markdown.includes(kept) && markdown.includes(resumed), "退出前后的 KP 发言保留");
+  assert(!markdown.includes(skipped), "退出期间的 KP 发言不进团录");
+  const saved = JSON.parse(readFileSync(store.filePath, "utf8"));
+  assert(!containsText(saved, early) && !containsText(saved, skipped) && !containsText(saved, seated), "结束落盘仍然没有消息正文");
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
