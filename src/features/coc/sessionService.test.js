@@ -1,6 +1,7 @@
 import { mkdtempSync, readFileSync, readdirSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
+import { formatRoll, rollDice } from "./dice/roller.js";
 import { createCocSessionService } from "./sessionService.js";
 import { createCocSessionStore } from "./sessionStore.js";
 import { DELETE_AFTER_MS, SETTLED_RETENTION_MS } from "./sessionRules.js";
@@ -456,23 +457,23 @@ async function activeTable(overrides) {
   });
   const added = await service.addPl("session-1", "kp", "pl2", "江某");
   assert(added.ok, "再加一名 PL");
-  const kpRoll = await service.rollPlainD100({
+  const kpRoll = await service.rollTextDice({
     channelId: "room-1", userId: "kp", displayName: "主持人", content: "1d100",
   });
-  assertEqual(kpRoll.text, "主持人 🎲 1d100 = 63", "KP 的整句 1d100 会掷，用显示名");
-  const plRoll = await service.rollPlainD100({
+  assertEqual(kpRoll.text, "🎲 主持人掷骰\n\n1d100 → 63", "KP 的整句 1d100 会掷，用显示名");
+  const plRoll = await service.rollTextDice({
     channelId: "room-1", userId: "pl", displayName: "Dream", content: " 1D100 ",
   });
-  assertEqual(plRoll.text, "奈洛莉 🎲 1d100 = 63", "PL 的整句 1d100 会掷，用角色名");
-  const obRoll = await service.rollPlainD100({
+  assertEqual(plRoll.text, "🎲 奈洛莉掷骰\n\n1d100 → 63", "PL 的整句 1d100 会掷，用角色名");
+  const obRoll = await service.rollTextDice({
     channelId: "room-1", userId: "ob", displayName: "看客", content: "1d100",
   });
   assert(obRoll.ignore === true && obRoll.ok !== true, "OB 发送 1d100 不掷");
-  const sentence = await service.rollPlainD100({
+  const sentence = await service.rollTextDice({
     channelId: "room-1", userId: "pl", displayName: "Dream", content: "我先观察门后的情况。",
   });
   assert(sentence.ignore === true, "普通句子不掷");
-  const lobby = await service.rollPlainD100({
+  const lobby = await service.rollTextDice({
     channelId: "lobby", userId: "pl", displayName: "Dream", content: "1d100",
   });
   assert(lobby.ignore === true, "普通频道不掷");
@@ -518,7 +519,7 @@ async function activeTable(overrides) {
     config: { messageContentEnabled: false, transcriptEnabled: true },
     history: { messages: [{ id: "m", authorId: "kp", content: "不该读到", createdTimestamp: Date.now(), type: 0 }] },
   });
-  const ignored = await service.rollPlainD100({
+  const ignored = await service.rollTextDice({
     channelId: "room-1", userId: "kp", displayName: "主持人", content: "1d100",
   });
   assert(ignored.ignore === true, "Message Content 关闭时文字骰子不运行");
@@ -566,6 +567,62 @@ async function activeTable(overrides) {
   });
   assert(service.transcriptControlsEnabled() === false, "只有 Message Content 时不提供团录隐私");
   assert((await service.setTranscriptOptOut("session-1", "pl", true)).ok === false, "团录关闭时不能设置退出");
+}
+
+{
+  const values = [4, 6, 2, 63, 5, 1, 3, 8, 9, 2, 4, 5, 7];
+  let cursor = 0;
+  const { service } = await activeTable({
+    config: { messageContentEnabled: true },
+    randomInt: () => values[cursor++],
+  });
+  async function expectSameAsSlash(content, label) {
+    const start = cursor;
+    const actual = await service.rollTextDice({
+      channelId: "room-1", userId: "pl", displayName: "Dream", content,
+    });
+    let index = start;
+    const expected = rollDice(content, () => values[index++]);
+    assert(actual.ok === true && expected.ok === true, `${label} 会掷`);
+    assertEqual(actual.text, formatRoll("奈洛莉", expected), `${label} 和 /r 同一文案`);
+    assertEqual(cursor, index, `${label} 用了同样多次随机`);
+  }
+  await expectSameAsSlash("1d4", "1d4");
+  await expectSameAsSlash("1D6", "1d6 大写");
+  await expectSameAsSlash("  1d20  ", "1d20 两端空白");
+  await expectSameAsSlash("1d100", "1d100");
+  await expectSameAsSlash("2d6", "2d6");
+  await expectSameAsSlash("2d6+3", "2d6+3");
+  await expectSameAsSlash("2d6-1", "2d6-1");
+  await expectSameAsSlash("2D6+3", "2D6+3");
+  const beforeIgnore = cursor;
+  for (const content of ["cc 70", "今天运气大概1d100吧", "请帮我掷 2d6+3", "2d6+3 吧", "21d6", ""]) {
+    const ignored = await service.rollTextDice({
+      channelId: "room-1", userId: "pl", displayName: "Dream", content,
+    });
+    assert(ignored.ignore === true && ignored.ok !== true && ignored.message == null, `忽略 ${content || "空"} 且不报错`);
+  }
+  assertEqual(cursor, beforeIgnore, "非法表达式不消耗随机数");
+  const ob = await service.rollTextDice({
+    channelId: "room-1", userId: "ob", displayName: "看客", content: "2d6",
+  });
+  assert(ob.ignore === true && ob.ok !== true && ob.message == null, "OB 的整句骰子不掷也不报错");
+  const outsider = await service.rollTextDice({
+    channelId: "room-1", userId: "guest", displayName: "路人", content: "1d6",
+  });
+  assert(outsider.ignore === true, "不是 KP 或 PL 不掷");
+  const lobby = await service.rollTextDice({
+    channelId: "lobby", userId: "pl", displayName: "Dream", content: "2d6+3",
+  });
+  assert(lobby.ignore === true, "非进行中频道不掷");
+  const slashBad = await service.roll({
+    channelId: "room-1", userId: "pl", displayName: "Dream", expression: "你好",
+  });
+  assert(slashBad.ok === false && slashBad.message?.includes("1d100"), "/r 非法表达式仍然回复错误");
+  const slash = await service.roll({
+    channelId: "room-1", userId: "pl", displayName: "Dream", expression: "1d4",
+  });
+  assert(slash.ok && slash.text.startsWith("🎲 奈洛莉掷骰"), "/r 回复格式不变");
 }
 
 {

@@ -1,9 +1,9 @@
 import { Events } from "discord.js";
+import { parseDiceExpression } from "./dice/parser.js";
 
-const WHOLE_D100 = /^1d100$/i;
-
-export function isWholeMessageD100(content) {
-  return typeof content === "string" && WHOLE_D100.test(content.trim());
+/** 整句必须是 /r 已接受的骰子表达式。认不出就当普通聊天。 */
+export function isWholeMessageDice(content) {
+  return parseDiceExpression(content).ok === true;
 }
 
 /**
@@ -11,12 +11,7 @@ export function isWholeMessageD100(content) {
  */
 export function messageNeedsTextDice(message, channelIsActive) {
   if (!channelIsActive || !message || message.system || message.author?.bot || !message.guildId) return false;
-  return isWholeMessageD100(message.content);
-}
-
-export function formatTextD100(speaker, total) {
-  const name = String(speaker ?? "").trim() || "调查员";
-  return `${name} 🎲 1d100 = ${total}`;
+  return isWholeMessageDice(message.content);
 }
 
 export function attachTextDiceListener({ client, service, logger = console }) {
@@ -24,7 +19,7 @@ export function attachTextDiceListener({ client, service, logger = console }) {
     try {
       const active = service.hasActiveRunChannel?.(message?.channelId) === true;
       if (!messageNeedsTextDice(message, active)) return;
-      const result = await service.rollPlainD100({
+      const result = await service.rollTextDice({
         channelId: message.channelId,
         userId: message.author?.id,
         displayName: message.member?.displayName

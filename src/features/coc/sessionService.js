@@ -2,9 +2,8 @@ import { randomBytes } from "crypto";
 import { buildRoomOverwrites } from "./channelAccess.js";
 import { planChannelNames } from "./channelName.js";
 import { formatRoll, rollDice } from "./dice/roller.js";
-import { INVALID_DICE_MESSAGE } from "./dice/parser.js";
+import { INVALID_DICE_MESSAGE, parseDiceExpression } from "./dice/parser.js";
 import { planNicknameRestore } from "./nickname.js";
-import { formatTextD100, isWholeMessageD100 } from "./textDice.js";
 import {
   buildTranscriptFiles,
   TRANSCRIPT_FAILED_NOTICE,
@@ -982,19 +981,20 @@ export function createCocSessionService({
     return activeSessionInChannel(sessions(), channelId) != null;
   }
 
-  async function rollPlainD100({ channelId, userId, displayName, content }) {
+  async function rollTextDice({ channelId, userId, displayName, content }) {
     if (config.messageContentEnabled !== true) return { ignore: true };
     if (!hasActiveRunChannel(channelId)) return { ignore: true };
-    if (!isWholeMessageD100(content)) return { ignore: true };
+    const parsed = parseDiceExpression(content);
+    if (!parsed.ok) return { ignore: true };
     const session = activeSessionInChannel(sessions(), channelId);
     if (!session) return { ignore: true };
     const role = memberRole(session, userId);
     if (role !== "KP" && role !== "PL") return { ignore: true };
-    const rolled = rollDice("1d100", randomInt);
+    const rolled = rollDice(parsed, randomInt);
     if (!rolled.ok) return { ignore: true };
     return {
       ok: true,
-      text: formatTextD100(speakerName(session, userId, displayName), rolled.total),
+      text: formatRoll(speakerName(session, userId, displayName), rolled),
     };
   }
 
@@ -1049,7 +1049,7 @@ export function createCocSessionService({
     previewRepost,
     deleteIfDue,
     roll,
-    rollPlainD100,
+    rollTextDice,
     hasActiveRunChannel,
     transcriptControlsEnabled,
     previewTranscriptPrivacy,
