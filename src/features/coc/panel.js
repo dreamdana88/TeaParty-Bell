@@ -7,6 +7,7 @@ import {
   TextInputBuilder,
   TextInputStyle,
 } from "discord.js";
+import { obSeatLabel } from "./memberQuery.js";
 
 export const COC_CUSTOM_PREFIX = "coc:v1";
 export const PANEL_COLOR = 0x6e4b8b;
@@ -237,14 +238,14 @@ export function memberSearchResults(sessionId, action, members) {
   };
 }
 
-export function memberPickPanel(session, action, prompt) {
+export function memberPickPanel(session, action, prompt, profiles = {}) {
   const options = [
     ...session.pl.map((member) => ({
       label: `PL ${member.characterName}`.slice(0, 100),
       value: `pl:${member.userId}`,
     })),
     ...session.ob.map((member) => ({
-      label: `OB ${member.userId}`.slice(0, 100),
+      label: obSeatLabel({ userId: member.userId, ...(profiles[member.userId] ?? {}) }),
       value: `ob:${member.userId}`,
     })),
   ].slice(0, 25);

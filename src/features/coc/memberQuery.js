@@ -20,3 +20,14 @@ export function memberOptionLabel(member) {
   const handle = member.username ? ` (${member.username})` : "";
   return `${name}${handle}`.slice(0, 100);
 }
+
+/** 下拉菜单不能显示提及，OB 用服务器里看得到的名字。 */
+export function obSeatLabel(member) {
+  const name = member?.nickname || member?.globalName || member?.username || "";
+  if (!name) {
+    const tail = String(member?.userId ?? "").slice(-4);
+    return `OB 未能读取名字${tail ? ` ·${tail}` : ""}`.slice(0, 100);
+  }
+  const handle = member.username && member.username !== name ? ` (${member.username})` : "";
+  return `OB ${name}${handle}`.slice(0, 100);
+}

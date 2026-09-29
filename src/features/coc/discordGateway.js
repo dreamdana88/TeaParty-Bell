@@ -94,11 +94,7 @@ export function createCocDiscordGateway(client) {
     async fetchGuildMember(guildId, userId) {
       const guild = await guildOf(guildId);
       const member = await guild.members.fetch({ user: userId, force: true });
-      return {
-        userId: member.id,
-        bot: Boolean(member.user?.bot),
-        nickname: member.nickname ?? null,
-      };
+      return summarizeMember(member);
     },
 
     async grantChannelAccess(channelId, userId) {

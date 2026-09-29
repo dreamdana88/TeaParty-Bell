@@ -106,6 +106,19 @@ export function createCocInteractionRouter({
     await interaction.editReply({ content: "控制面板已重新发送。", flags: MessageFlags.Ephemeral });
   }
 
+  async function obProfiles(session) {
+    const profiles = {};
+    if (typeof discord.fetchGuildMember !== "function") return profiles;
+    await Promise.all((session.ob ?? []).map(async (member) => {
+      try {
+        profiles[member.userId] = await discord.fetchGuildMember(session.guildId, member.userId);
+      } catch (error) {
+        logger.warn?.("CoC 读取成员名字失败", { message: error?.message, userId: member.userId });
+      }
+    }));
+    return profiles;
+  }
+
   async function syncPanels(session) {
     try {
       if (session?.controlMessageId && session.runChannelId) {
@@ -365,28 +378,21 @@ export function createCocInteractionRouter({
       await interaction.showModal(memberSearchModal(sessionId, "modal-find-ob"));
       return;
     }
-    if (action === "convert") {
+    if (action === "convert" || action === "kick") {
       const preview = service.previewMembers(sessionId, userId);
       if (!preview.ok) {
         await replyEphemeral(interaction, preview.message);
         return;
       }
-      await interaction.reply({
-        ...memberPickPanel(preview.session, "pick-convert", "选择要转换身份的本局成员"),
-        flags: MessageFlags.Ephemeral,
-      });
-      return;
-    }
-    if (action === "kick") {
-      const preview = service.previewMembers(sessionId, userId);
-      if (!preview.ok) {
-        await replyEphemeral(interaction, preview.message);
-        return;
-      }
-      await interaction.reply({
-        ...memberPickPanel(preview.session, "pick-kick", "选择要移出本局的 PL 或 OB"),
-        flags: MessageFlags.Ephemeral,
-      });
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      const profiles = await obProfiles(preview.session);
+      const converting = action === "convert";
+      await interaction.editReply(memberPickPanel(
+        preview.session,
+        converting ? "pick-convert" : "pick-kick",
+        converting ? "选择要转换身份的本局成员" : "选择要移出本局的 PL 或 OB",
+        profiles,
+      ));
       return;
     }
     if (action === "go-ob") {

@@ -94,5 +94,52 @@ assert(source.includes("成员搜索被 Discord 拒绝了"), "403 使用中性�
   router.destroy();
 }
 
+{
+  const replies = [];
+  const client = { on(_name, fn) { this.fn = fn; }, off() {} };
+  const obId = "1404419757679050814";
+  const missingId = "1362486959028572461";
+  const router = createCocInteractionRouter({
+    client,
+    service: {
+      availability: () => "ready",
+      previewMembers: () => ({
+        ok: true,
+        session: {
+          sessionId: "s1",
+          guildId: "guild",
+          pl: [{ userId: "pl", characterName: "ho2" }],
+          ob: [{ userId: obId }, { userId: missingId }],
+        },
+      }),
+    },
+    discord: {
+      async fetchGuildMember(_guildId, userId) {
+        if (userId !== obId) throw new Error("missing");
+        return { userId, nickname: "森之黑山羊", username: "blackgoat", globalName: "Goat" };
+      },
+    },
+    logger: { warn() {}, error() {} },
+  });
+  router.start();
+  await client.fn({
+    isChatInputCommand: () => false,
+    isModalSubmit: () => false,
+    isStringSelectMenu: () => false,
+    isButton: () => true,
+    customId: "coc:v1:convert:s1",
+    user: { id: "kp" },
+    async deferReply() {},
+    async editReply(payload) { replies.push(payload); },
+  });
+  const options = replies.at(-1).components[0].toJSON().components[0].options;
+  assert(options[0].label === "PL ho2", "PL 仍用角色名");
+  assert(options[1].label === "OB 森之黑山羊 (blackgoat)", "OB 用服务器昵称");
+  assert(options[1].value === `ob:${obId}`, "OB 选项仍然指向原来的用户");
+  assert(!options[1].label.includes(obId), "认得出的 OB 不显示整段用户 ID");
+  assert(options[2].label === "OB 未能读取名字 ·2461", "离开服务器的 OB 不全文铺 ID");
+  router.destroy();
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
