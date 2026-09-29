@@ -6,7 +6,11 @@ const REPLY_MESSAGE = 19;
 const INCLUDED_TYPES = new Set([USER_MESSAGE, REPLY_MESSAGE]);
 
 export const TRANSCRIPT_FAILED_NOTICE = "本局团录没有发出。";
-export const TRANSCRIPT_HISTORY_LIMIT = 2000;
+export const TRANSCRIPT_INCOMPLETE_NOTICE = "本局团录没有完整发出。";
+export const TRANSCRIPT_TRUNCATED_NOTICE = "⚠️ 本局消息量超过团录安全上限，本次团录只包含最近 20000 条频道消息。";
+export const TRANSCRIPT_HISTORY_PAGE_SIZE = 100;
+export const TRANSCRIPT_HISTORY_HARD_LIMIT = 20000;
+export const TRANSCRIPT_PART_MESSAGE_LIMIT = 2000;
 
 /**
  * @param {number} timestamp
@@ -27,13 +31,73 @@ export function formatTranscriptClock(timestamp) {
   return `${hour}:${minute}`;
 }
 
-export function transcriptFileName(title) {
+export function transcriptFileName(title, { part = null, parts = 1 } = {}) {
   const cleaned = String(title ?? "")
     .replace(/[\\/:*?"<>|\u0000-\u001f]/g, " ")
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 40);
-  return `${cleaned || "本局"}团录.md`;
+  const base = `${cleaned || "本局"}团录`;
+  if (parts > 1 && part != null) return `${base}-${String(part).padStart(2, "0")}.md`;
+  return `${base}.md`;
+}
+
+function slimHistoryMessage(message) {
+  return {
+    id: message.id,
+    authorId: message.authorId ?? message.author?.id ?? "",
+    bot: message.bot === true || Boolean(message.author?.bot) || message.system === true,
+    content: typeof message.content === "string" ? message.content : "",
+    createdTimestamp: message.createdTimestamp,
+    type: message.type,
+  };
+}
+
+/**
+ * 从新到旧翻页。正常停在 startedAt；20000 只挡住翻页停不下来。
+ * @param {(query: { limit: number, before?: string }) => Promise<object[]>} fetchPage
+ */
+export async function collectTranscriptHistory(fetchPage, {
+  startedAt = null,
+  hardLimit = TRANSCRIPT_HISTORY_HARD_LIMIT,
+  pageSize = TRANSCRIPT_HISTORY_PAGE_SIZE,
+} = {}) {
+  const messages = [];
+  let before;
+  let truncated = false;
+  let scanned = 0;
+  while (scanned < hardLimit) {
+    const limit = Math.min(pageSize, hardLimit - scanned);
+    const batch = await fetchPage({ limit, before });
+    const rows = [...(batch ?? [])].filter((message) => message?.id);
+    rows.sort((left, right) => (
+      left.createdTimestamp - right.createdTimestamp || String(left.id).localeCompare(String(right.id))
+    ));
+    if (!rows.length) break;
+    let reachedStart = false;
+    for (const message of [...rows].reverse()) {
+      if (scanned >= hardLimit) break;
+      scanned += 1;
+      if (startedAt != null && message.createdTimestamp < startedAt) {
+        reachedStart = true;
+        break;
+      }
+      messages.push(slimHistoryMessage(message));
+    }
+    const oldest = rows[0]?.id;
+    if (!oldest || oldest === before) break;
+    before = oldest;
+    if (reachedStart) break;
+    if (rows.length < limit) break;
+    if (scanned >= hardLimit) {
+      truncated = true;
+      break;
+    }
+  }
+  messages.sort((left, right) => (
+    left.createdTimestamp - right.createdTimestamp || String(left.id).localeCompare(String(right.id))
+  ));
+  return { messages, truncated };
 }
 
 function speakerFor(session, authorId, timestamp) {
@@ -58,6 +122,7 @@ export function selectTranscriptMessages(session, messages, botUserId) {
     if (!message.id || seen.has(message.id)) continue;
     if (botUserId && message.authorId === botUserId) continue;
     if (message.type != null && !INCLUDED_TYPES.has(message.type)) continue;
+    if (session?.startedAt != null && message.createdTimestamp < session.startedAt) continue;
     const time = formatTranscriptClock(message.createdTimestamp);
     if (!time) continue;
     const speaker = speakerFor(session, message.authorId, message.createdTimestamp);
@@ -82,7 +147,7 @@ export function selectTranscriptMessages(session, messages, botUserId) {
 export function renderTranscriptMarkdown(title, entries, { truncated = false } = {}) {
   const lines = [`# 《${title}》团录`, ""];
   if (truncated) {
-    lines.push("（频道里更早的消息超过本次整理上限，没有写入这份团录。）", "");
+    lines.push(TRANSCRIPT_TRUNCATED_NOTICE, "");
   }
   if (!entries.length) {
     lines.push("（本局没有记入团录的发言。）");
@@ -94,10 +159,29 @@ export function renderTranscriptMarkdown(title, entries, { truncated = false } =
   return `${lines.join("\n").replace(/\n$/, "")}\n`;
 }
 
-export function buildTranscriptFile(session, messages, { botUserId = null, truncated = false } = {}) {
+function chunkEntries(entries, partLimit) {
+  if (!entries.length) return [[]];
+  const chunks = [];
+  for (let index = 0; index < entries.length; index += partLimit) {
+    chunks.push(entries.slice(index, index + partLimit));
+  }
+  return chunks;
+}
+
+export function buildTranscriptFiles(session, messages, {
+  botUserId = null,
+  truncated = false,
+  partLimit = TRANSCRIPT_PART_MESSAGE_LIMIT,
+} = {}) {
   const entries = selectTranscriptMessages(session, messages, botUserId);
-  return {
-    name: transcriptFileName(session.title),
-    markdown: renderTranscriptMarkdown(session.title, entries, { truncated }),
-  };
+  const chunks = chunkEntries(entries, partLimit);
+  const files = chunks.map((chunk, index) => ({
+    name: transcriptFileName(session.title, { part: index + 1, parts: chunks.length }),
+    markdown: renderTranscriptMarkdown(session.title, chunk, { truncated: truncated && index === 0 }),
+  }));
+  return { files, truncated };
+}
+
+export function buildTranscriptFile(session, messages, options = {}) {
+  return buildTranscriptFiles(session, messages, options).files[0];
 }

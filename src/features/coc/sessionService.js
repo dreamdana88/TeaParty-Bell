@@ -5,7 +5,11 @@ import { formatRoll, rollDice } from "./dice/roller.js";
 import { INVALID_DICE_MESSAGE } from "./dice/parser.js";
 import { planNicknameRestore } from "./nickname.js";
 import { formatTextD100, isWholeMessageD100 } from "./textDice.js";
-import { buildTranscriptFile, TRANSCRIPT_FAILED_NOTICE } from "./transcript.js";
+import {
+  buildTranscriptFiles,
+  TRANSCRIPT_FAILED_NOTICE,
+  TRANSCRIPT_INCOMPLETE_NOTICE,
+} from "./transcript.js";
 import {
   activeSessionInChannel,
   applyAddOb,
@@ -490,10 +494,10 @@ export function createCocSessionService({
     return config.messageContentEnabled === true && config.transcriptEnabled === true;
   }
 
-  async function notifyTranscriptFailed(session) {
+  async function notifyTranscriptFailed(session, content = TRANSCRIPT_FAILED_NOTICE) {
     if (!session?.runChannelId || typeof discord.sendMessage !== "function") return;
     try {
-      await discord.sendMessage(session.runChannelId, { content: TRANSCRIPT_FAILED_NOTICE });
+      await discord.sendMessage(session.runChannelId, { content });
     } catch (error) {
       logger.warn?.("CoC 团录失败说明没有发出", { message: error?.message, sessionId: session.sessionId });
     }
@@ -510,7 +514,9 @@ export function createCocSessionService({
     }
     let history;
     try {
-      history = await discord.fetchChannelHistory(current.runChannelId);
+      history = await discord.fetchChannelHistory(current.runChannelId, {
+        startedAt: current.startedAt ?? null,
+      });
     } catch (error) {
       logger.warn?.("CoC 团录没有读到频道历史", { message: error?.message, sessionId: current.sessionId });
       await notifyTranscriptFailed(current);
@@ -518,24 +524,30 @@ export function createCocSessionService({
     }
     const messages = Array.isArray(history) ? history : history?.messages;
     const truncated = Array.isArray(history) ? false : history?.truncated === true;
-    let file;
+    let files;
     try {
-      file = buildTranscriptFile(current, messages ?? [], {
+      files = buildTranscriptFiles(current, messages ?? [], {
         botUserId: config.botUserId,
         truncated,
-      });
+      }).files;
     } catch (error) {
       logger.warn?.("CoC 团录没有整理出来", { message: error?.message, sessionId: current.sessionId });
       await notifyTranscriptFailed(current);
       return { ok: false };
     }
-    try {
-      await discord.sendMessage(current.runChannelId, {
-        files: [{ attachment: Buffer.from(file.markdown, "utf8"), name: file.name }],
-      });
-    } catch (error) {
-      logger.warn?.("CoC 团录没有发出", { message: error?.message, sessionId: current.sessionId });
-      await notifyTranscriptFailed(current);
+    let sentAll = true;
+    for (const file of files) {
+      try {
+        await discord.sendMessage(current.runChannelId, {
+          files: [{ attachment: Buffer.from(file.markdown, "utf8"), name: file.name }],
+        });
+      } catch (error) {
+        sentAll = false;
+        logger.warn?.("CoC 团录没有完整发出", { message: error?.message, sessionId: current.sessionId });
+      }
+    }
+    if (!sentAll) {
+      await notifyTranscriptFailed(current, TRANSCRIPT_INCOMPLETE_NOTICE);
       return { ok: false };
     }
     const marked = await store.update((state) => {

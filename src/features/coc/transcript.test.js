@@ -1,8 +1,12 @@
 import { controlPanel, transcriptPrivacyPrompt } from "./panel.js";
 import {
   buildTranscriptFile,
+  buildTranscriptFiles,
+  collectTranscriptHistory,
   formatTranscriptClock,
   selectTranscriptMessages,
+  TRANSCRIPT_PART_MESSAGE_LIMIT,
+  TRANSCRIPT_TRUNCATED_NOTICE,
   transcriptFileName,
 } from "./transcript.js";
 
@@ -89,6 +93,94 @@ const session = {
     "奈洛莉:入座|KP:退出前|KP:恢复后|后来:入座了",
     "按发送当时的身份和退出时间段过滤",
   );
+}
+
+function kpLines(count, from = 1) {
+  return Array.from({ length: count }, (_, index) => ({
+    id: `k${from + index}`,
+    authorId: "kp",
+    content: `句${from + index}`,
+    createdTimestamp: from + index,
+    type: 0,
+  }));
+}
+
+function partSession(startedAt = null) {
+  return {
+    title: "常暗之厢",
+    kpUserId: "kp",
+    startedAt,
+    pl: [],
+    ob: [{ userId: "ob" }],
+    transcriptSeats: [{ userId: "kp", role: "kp", name: "KP", from: 0, until: null }],
+    transcriptOptOutSpans: [{ userId: "kp", from: 10, until: 20 }],
+  };
+}
+
+function noise() {
+  return [
+    { id: "old", authorId: "kp", content: "开团前", createdTimestamp: 1, type: 0 },
+    { id: "skip", authorId: "kp", content: "退出中", createdTimestamp: 15, type: 0 },
+    { id: "ob", authorId: "ob", content: "旁观噪声", createdTimestamp: 80, type: 0 },
+    { id: "bot", authorId: "bot", bot: true, content: "机器人噪声", createdTimestamp: 81, type: 0 },
+  ];
+}
+
+{
+  const host = partSession(50);
+  const one = buildTranscriptFiles(host, [...kpLines(1999, 100), ...noise()]);
+  assertEqual(one.files.length, 1, "不足 2000 条有效发言仍是单文件");
+  assertEqual(one.files[0].name, "常暗之厢团录.md", "单文件不带分卷号");
+  assert(!one.files[0].markdown.includes("开团前") && !one.files[0].markdown.includes("旁观噪声"), "开团前和旁观不进单文件");
+  const exact = buildTranscriptFiles(host, [...kpLines(TRANSCRIPT_PART_MESSAGE_LIMIT, 100), ...noise()]);
+  assertEqual(exact.files.length, 1, "正好 2000 条有效发言仍是单文件");
+  const split = buildTranscriptFiles(host, [...kpLines(2001, 100), ...noise()]);
+  assertEqual(split.files.map((file) => file.name).join("|"), "常暗之厢团录-01.md|常暗之厢团录-02.md", "2001 条有效发言分成两卷");
+  assert(split.files[0].markdown.includes("句100") && split.files[0].markdown.includes("句2099"), "第一卷是前 2000 条有效发言");
+  assert(!split.files[0].markdown.includes("句2100") && split.files[1].markdown.includes("句2100"), "第 2001 条进第二卷");
+  assert(!split.files[1].markdown.includes("退出中") && !split.files[1].markdown.includes("机器人噪声"), "过滤掉的消息不占分卷名额");
+  const long = buildTranscriptFiles(host, kpLines(5000, 100));
+  assertEqual(long.files.length, 3, "5000 条有效发言分成三卷");
+  assert(long.files[2].markdown.includes("句4100") && long.files[2].markdown.includes("句5099"), "第三卷接着第二卷");
+  assert(!long.files[2].markdown.includes("句4099"), "第三卷不重复上一卷");
+}
+
+{
+  const warned = buildTranscriptFiles(partSession(50), kpLines(3, 100), { truncated: true, partLimit: 2 });
+  assert(warned.files[0].markdown.includes(TRANSCRIPT_TRUNCATED_NOTICE), "超过安全上限时第一卷写明截断");
+  assert(!warned.files[1].markdown.includes(TRANSCRIPT_TRUNCATED_NOTICE), "截断说明只放在第一卷");
+}
+
+{
+  const all = Array.from({ length: 250 }, (_, index) => ({
+    id: String(index + 1).padStart(6, "0"),
+    createdTimestamp: index + 1,
+    authorId: "kp",
+    content: `m${index + 1}`,
+    type: 0,
+  }));
+  const calls = [];
+  const fetchPage = async ({ limit, before }) => {
+    calls.push({ limit, before: before ?? null });
+    const pool = before ? all.filter((message) => message.id < before) : all;
+    return pool.slice(-limit);
+  };
+  const full = await collectTranscriptHistory(fetchPage, { startedAt: 1, pageSize: 100 });
+  assertEqual(calls.length, 3, "超过 100 条会继续向前翻页");
+  assertEqual(calls[0].limit, 100, "每页最多 100 条");
+  assertEqual(full.messages.length, 250, "翻完整个频道");
+  assert(full.truncated === false, "翻到频道开头不算截断");
+  calls.length = 0;
+  const bounded = await collectTranscriptHistory(fetchPage, { startedAt: 80, pageSize: 100 });
+  assertEqual(calls.length, 2, "读到开团时间后停止翻页");
+  assertEqual(bounded.messages.length, 171, "开团时间之后的消息都留下");
+  assert(!bounded.messages.some((message) => message.createdTimestamp < 80), "开团前的频道消息不进入结果");
+  assert(bounded.truncated === false, "读到开团时间不算截断");
+  calls.length = 0;
+  const capped = await collectTranscriptHistory(fetchPage, { startedAt: 1, pageSize: 100, hardLimit: 150 });
+  assertEqual(capped.messages.length, 150, "安全上限停在最近的 150 条");
+  assert(capped.truncated === true, "还没读到开团时间就触顶时标记截断");
+  assertEqual(capped.messages[0].createdTimestamp, 101, "触顶后保留的是较新的一段");
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

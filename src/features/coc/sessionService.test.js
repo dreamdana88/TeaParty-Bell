@@ -72,11 +72,14 @@ function fakeDiscord(overrides = {}) {
     },
     async sendMessage(_channelId, payload) {
       calls.push(["send", payload ?? null]);
-      if (overrides.failSendFile && payload?.files) throw new Error("file failed");
+      if (payload?.files) {
+        const sent = calls.filter((call) => call[0] === "send" && call[1]?.files).length;
+        if (overrides.failSendFile || sent === overrides.failSendPart) throw new Error("file failed");
+      }
       return "control-1";
     },
-    async fetchChannelHistory(channelId) {
-      calls.push(["history", channelId]);
+    async fetchChannelHistory(channelId, options) {
+      calls.push(["history", channelId, options ?? null]);
       if (overrides.failHistory) throw new Error("history failed");
       return overrides.history ?? { messages: [], truncated: false };
     },
@@ -491,6 +494,8 @@ async function activeTable(overrides) {
   assert(!containsText(beforeEnd, spoken) && !containsText(beforeEnd, hiddenLine), "跑团期间不把正文写进场次文件");
   const done = await service.finish("session-1", "kp");
   assert(done.ok && done.session.state === "ENDED", "有团录时结束仍然完成");
+  const historyCall = discord.calls.find((call) => call[0] === "history");
+  assertEqual(historyCall?.[2]?.startedAt, 1000, "读历史时带上本局开始时间");
   const historyAt = discord.calls.findIndex((call) => call[0] === "history");
   const lockAt = discord.calls.findIndex((call) => call[0] === "lock");
   assert(historyAt > lockAt && lockAt !== -1, "锁门之后才读频道历史");
@@ -549,7 +554,7 @@ async function activeTable(overrides) {
   });
   const done = await service.finish("session-1", "kp");
   assert(done.ok, "团录发送失败也照旧结束");
-  assert(discord.calls.some((call) => call[0] === "send" && call[1]?.content === "本局团录没有发出。"), "发送失败会说明团录没发出");
+  assert(discord.calls.some((call) => call[0] === "send" && call[1]?.content === "本局团录没有完整发出。"), "发送失败会说明团录没完整发出");
   assert(done.session.transcriptDelivered !== true, "没发出就不记成已交付");
   assert(!containsText(JSON.parse(readFileSync(store.filePath, "utf8")), line), "发送失败不把正文写进场次文件");
   assert(!readdirSync(dir).some((name) => name.endsWith(".md")), "发送失败不留下团录文件");
@@ -614,6 +619,56 @@ async function activeTable(overrides) {
   assert(!markdown.includes(skipped), "退出期间的 KP 发言不进团录");
   const saved = JSON.parse(readFileSync(store.filePath, "utf8"));
   assert(!containsText(saved, early) && !containsText(saved, skipped) && !containsText(saved, seated), "结束落盘仍然没有消息正文");
+}
+
+{
+  const lines = Array.from({ length: 2001 }, (_, index) => ({
+    id: `part-${index}`,
+    authorId: "kp",
+    content: `长团${index}`,
+    createdTimestamp: 5_000 + index,
+    type: 0,
+  }));
+  lines.push(
+    { id: "old", authorId: "kp", content: "开团前的长团", createdTimestamp: 1, type: 0 },
+    { id: "ob-noise", authorId: "ob", content: "旁观长团", createdTimestamp: 5_010, type: 0 },
+  );
+  const { service, discord, store, dir } = await activeTable({
+    config: { messageContentEnabled: true, transcriptEnabled: true },
+    history: { messages: lines, truncated: false },
+  });
+  const done = await service.finish("session-1", "kp");
+  assert(done.ok && done.session.state === "ENDED", "分卷团录发完后本局仍然结束");
+  const files = discord.calls.filter((call) => call[0] === "send" && call[1]?.files).map((call) => call[1].files[0]);
+  assertEqual(files.map((file) => file.name).join("|"), "成员团录-01.md|成员团录-02.md", "超过 2000 条有效发言时发出两卷");
+  const first = files[0].attachment.toString("utf8");
+  const second = files[1].attachment.toString("utf8");
+  assert(first.includes("长团0") && !first.includes("长团2000"), "第一卷只含前 2000 条有效发言");
+  assert(second.includes("长团2000") && !second.includes("旁观长团") && !second.includes("开团前的长团"), "第二卷不含已过滤的消息");
+  assert(!readdirSync(dir).some((name) => name.endsWith(".md")), "分卷发送后没有留下团录文件");
+  assert(!containsText(JSON.parse(readFileSync(store.filePath, "utf8")), "长团0"), "分卷正文不进场次文件");
+}
+
+{
+  const lines = Array.from({ length: 2001 }, (_, index) => ({
+    id: `miss-${index}`,
+    authorId: "kp",
+    content: `缺卷${index}`,
+    createdTimestamp: 5_000 + index,
+    type: 0,
+  }));
+  const { service, discord, store, dir } = await activeTable({
+    config: { messageContentEnabled: true, transcriptEnabled: true },
+    failSendPart: 2,
+    history: { messages: lines },
+  });
+  const done = await service.finish("session-1", "kp");
+  assert(done.ok && done.session.state === "ENDED", "有一卷失败时本局仍然结束");
+  assert(discord.calls.some((call) => call[0] === "send" && call[1]?.files?.[0]?.name === "成员团录-01.md"), "失败前的那一卷已经发出");
+  assert(discord.calls.some((call) => call[0] === "send" && call[1]?.content === "本局团录没有完整发出。"), "缺卷时说明团录不完整");
+  assert(done.session.transcriptDelivered !== true, "没发齐就不记成已交付");
+  assert(!containsText(JSON.parse(readFileSync(store.filePath, "utf8")), "缺卷0"), "失败的分卷不落进场次文件");
+  assert(!readdirSync(dir).some((name) => name.endsWith(".md")), "失败的分卷不写成本地文件");
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
