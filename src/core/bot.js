@@ -201,7 +201,13 @@ export async function start(options = {}) {
   if (sendingCount > 0) logger.warn("[BoostThanks] 共转换 sending → uncertain", { count: sendingCount });
 
   // ---- 5. 创建 Discord Client ----
-  const { client, login, destroy, waitUntilReady } = createClientFn();
+  // 跑团没开、或测试模式，都不申请 Message Content。
+  const requestMessageContent = config.coc?.enabled === true
+    && config.coc?.messageContentEnabled === true
+    && config.testMode !== true;
+  const { client, login, destroy, waitUntilReady } = createClientFn({
+    messageContent: requestMessageContent,
+  });
 
   // ---- 6. 注册 Gateway Lifecycle Logger ----
   const lifecycleLoggerCleanup = setupLifecycleLoggerFn({ client, logger });

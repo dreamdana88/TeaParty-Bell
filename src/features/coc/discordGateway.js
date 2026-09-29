@@ -1,4 +1,5 @@
 import { ChannelType } from "discord.js";
+import { TRANSCRIPT_HISTORY_LIMIT } from "./transcript.js";
 
 function summarizeMember(member) {
   return {
@@ -143,6 +144,36 @@ export function createCocDiscordGateway(client) {
       const channel = await client.channels.fetch(channelId);
       const message = await channel.send(payload);
       return message.id;
+    },
+
+    async fetchChannelHistory(channelId) {
+      const channel = await client.channels.fetch(channelId);
+      const messages = [];
+      let before;
+      let truncated = false;
+      while (messages.length < TRANSCRIPT_HISTORY_LIMIT) {
+        const limit = Math.min(100, TRANSCRIPT_HISTORY_LIMIT - messages.length);
+        const batch = await channel.messages.fetch({ limit, ...(before ? { before } : {}) });
+        if (batch.size === 0) break;
+        const rows = [...batch.values()].sort((left, right) => left.createdTimestamp - right.createdTimestamp);
+        for (const message of rows) {
+          messages.push({
+            id: message.id,
+            authorId: message.author?.id ?? "",
+            bot: Boolean(message.author?.bot) || message.system === true,
+            content: typeof message.content === "string" ? message.content : "",
+            createdTimestamp: message.createdTimestamp,
+            type: message.type,
+          });
+        }
+        const oldest = rows[0]?.id;
+        if (!oldest || oldest === before) break;
+        before = oldest;
+        if (batch.size < limit) break;
+        if (messages.length >= TRANSCRIPT_HISTORY_LIMIT) truncated = true;
+      }
+      messages.sort((left, right) => left.createdTimestamp - right.createdTimestamp || String(left.id).localeCompare(String(right.id)));
+      return { messages, truncated };
     },
 
     async editMessage(channelId, messageId, payload) {

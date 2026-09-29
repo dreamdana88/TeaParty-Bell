@@ -11,19 +11,20 @@ import { logger } from "../utils/logger.js";
  *   接收 MESSAGE_CREATE 事件。
  *   Phase 2 用于监听 GUILD_BOOST 系统消息（type 8/9/10/11）。
  *
- * 当前未使用任何 Privileged Intent。
- * Privileged Intent（需 Portal 开启 + 100 服务器以上需验证）：
- *   GuildMembers(2)、GuildPresences(256)、MessageContent(32768)
+ * Message Content 是特权 Intent。只有 messageContent 为 true 时才申请。
+ * 正式小G宝在 Discord 批准前必须保持关闭。
  *
+ * @param {{ messageContent?: boolean }} [options]
  * @returns {{ client: Client, login: Function, destroy: Function }}
  */
-export function createClient() {
-  const client = new Client({
-    intents: [
-      GatewayIntentBits.Guilds,
-      GatewayIntentBits.GuildMessages,
-    ],
-  });
+export function createClient({ messageContent = false } = {}) {
+  const intents = [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+  ];
+  if (messageContent === true) intents.push(GatewayIntentBits.MessageContent);
+
+  const client = new Client({ intents });
 
   // ---- 就绪事件 ----
   /** @type {Promise<void>|null} Ready Promise，供 waitUntilReady() 使用 */

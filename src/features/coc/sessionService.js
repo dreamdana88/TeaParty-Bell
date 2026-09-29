@@ -4,6 +4,8 @@ import { planChannelNames } from "./channelName.js";
 import { formatRoll, rollDice } from "./dice/roller.js";
 import { INVALID_DICE_MESSAGE } from "./dice/parser.js";
 import { planNicknameRestore } from "./nickname.js";
+import { formatTextD100, isWholeMessageD100 } from "./textDice.js";
+import { buildTranscriptFile, TRANSCRIPT_FAILED_NOTICE } from "./transcript.js";
 import {
   activeSessionInChannel,
   applyAddOb,
@@ -12,6 +14,7 @@ import {
   createRecruitingSession,
   gateMemberAdmin,
   gateNewMember,
+  gateTranscriptPrivacy,
   findOccupyingSession,
   isPrunableSession,
   lockStarting,
@@ -31,6 +34,8 @@ import {
   signupOb,
   cancelSignup,
   speakerName,
+  transcriptOptOutIds,
+  withTranscriptOptOut,
   SESSION_STATES,
 } from "./sessionRules.js";
 
@@ -198,18 +203,16 @@ export function createCocSessionService({
     if (!session) return { ok: false, message: "这场跑团已经不在了。" };
     const gate = requestEnd(session, actorId);
     if (!gate.ok) return gate;
-    return {
-      ok: true,
-      text: [
-        `确定结束《${session.title}》？`,
-        "",
-        "结束后会：",
-        "• 恢复PL昵称",
-        "• 移除KP/PL/OB身份色",
-        "• 锁定本频道",
-        "• 48小时后删除频道",
-      ].join("\n"),
-    };
+    const lines = [
+      `确定结束《${session.title}》？`,
+      "",
+      "结束后会：",
+    ];
+    if (config.messageContentEnabled === true && config.transcriptEnabled === true) {
+      lines.push("• 把本局团录发在频道里");
+    }
+    lines.push("• 恢复PL昵称", "• 移除KP/PL/OB身份色", "• 锁定本频道", "• 48小时后删除频道");
+    return { ok: true, text: lines.join("\n") };
   }
 
   async function cancelRecruit(sessionId, actorId) {
@@ -480,6 +483,70 @@ export function createCocSessionService({
     });
   }
 
+  function transcriptActive() {
+    return config.messageContentEnabled === true && config.transcriptEnabled === true;
+  }
+
+  async function notifyTranscriptFailed(session) {
+    if (!session?.runChannelId || typeof discord.sendMessage !== "function") return;
+    try {
+      await discord.sendMessage(session.runChannelId, { content: TRANSCRIPT_FAILED_NOTICE });
+    } catch (error) {
+      logger.warn?.("CoC 团录失败说明没有发出", { message: error?.message, sessionId: session.sessionId });
+    }
+  }
+
+  async function deliverTranscript(session) {
+    if (!transcriptActive() || !session?.runChannelId) return { skipped: true };
+    const current = find(session.sessionId) ?? session;
+    if (current.transcriptDelivered === true) return { skipped: true };
+    if (typeof discord.fetchChannelHistory !== "function") {
+      logger.warn?.("CoC 团录没有频道历史接口", { sessionId: current.sessionId });
+      await notifyTranscriptFailed(current);
+      return { ok: false };
+    }
+    let history;
+    try {
+      history = await discord.fetchChannelHistory(current.runChannelId);
+    } catch (error) {
+      logger.warn?.("CoC 团录没有读到频道历史", { message: error?.message, sessionId: current.sessionId });
+      await notifyTranscriptFailed(current);
+      return { ok: false };
+    }
+    const messages = Array.isArray(history) ? history : history?.messages;
+    const truncated = Array.isArray(history) ? false : history?.truncated === true;
+    let file;
+    try {
+      file = buildTranscriptFile(current, messages ?? [], {
+        botUserId: config.botUserId,
+        truncated,
+      });
+    } catch (error) {
+      logger.warn?.("CoC 团录没有整理出来", { message: error?.message, sessionId: current.sessionId });
+      await notifyTranscriptFailed(current);
+      return { ok: false };
+    }
+    try {
+      await discord.sendMessage(current.runChannelId, {
+        files: [{ attachment: Buffer.from(file.markdown, "utf8"), name: file.name }],
+      });
+    } catch (error) {
+      logger.warn?.("CoC 团录没有发出", { message: error?.message, sessionId: current.sessionId });
+      await notifyTranscriptFailed(current);
+      return { ok: false };
+    }
+    const marked = await store.update((state) => {
+      const latest = state.sessions.find((item) => item.sessionId === current.sessionId);
+      if (!latest) return { state, result: null };
+      const next = { ...latest, transcriptDelivered: true };
+      return { state: { ...state, sessions: replaceSession(state.sessions, next) }, result: next };
+    });
+    if (!marked.ok) {
+      logger.warn?.("CoC 团录已发出，但没有记下交付状态", { sessionId: current.sessionId });
+    }
+    return { ok: true };
+  }
+
   async function finish(sessionId, actorId) {
     if (mode !== "ready") return unavailable(mode === "broken" ? "CoC 场次记录暂时不可用。" : undefined);
     const session = find(sessionId);
@@ -489,6 +556,7 @@ export function createCocSessionService({
     const ending = await markSessionEnding(sessionId, actorId);
     if (!ending.ok) return { ok: false, message: ending.message };
     await cleanupRoom(ending.result);
+    await deliverTranscript(ending.result);
     const ended = await markSessionEnded(sessionId);
     if (!ended.ok) return { ok: false, message: ended.message };
     return { ok: true, session: ended.result };
@@ -498,6 +566,7 @@ export function createCocSessionService({
     const session = find(sessionId);
     if (!session || session.state !== SESSION_STATES.ending) return { ok: true, skipped: true };
     await cleanupRoom(session);
+    await deliverTranscript(session);
     return markSessionEnded(sessionId).then((ended) => (
       ended.ok ? { ok: true, session: ended.result } : { ok: false, message: ended.message }
     ));
@@ -862,6 +931,58 @@ export function createCocSessionService({
     return { ok: true, deleted: true };
   }
 
+  function transcriptControlsEnabled() {
+    return config.transcriptEnabled === true;
+  }
+
+  function previewTranscriptPrivacy(sessionId, userId) {
+    if (mode !== "ready") return unavailable(mode === "broken" ? "CoC 场次记录暂时不可用。" : undefined);
+    if (!transcriptControlsEnabled()) return { ok: false, message: "这场跑团当前不整理团录。" };
+    const gate = gateTranscriptPrivacy(find(sessionId), userId);
+    if (!gate.ok) return gate;
+    return { ok: true, optedOut: transcriptOptOutIds(find(sessionId)).includes(userId) };
+  }
+
+  async function setTranscriptOptOut(sessionId, userId, optedOut) {
+    if (mode !== "ready") return unavailable(mode === "broken" ? "CoC 场次记录暂时不可用。" : undefined);
+    if (!transcriptControlsEnabled()) return { ok: false, message: "这场跑团当前不整理团录。" };
+    const gate = gateTranscriptPrivacy(find(sessionId), userId);
+    if (!gate.ok) return gate;
+    const saved = await store.update((state) => {
+      const current = state.sessions.find((item) => item.sessionId === sessionId);
+      const again = gateTranscriptPrivacy(current, userId);
+      if (!again.ok) return { errorCode: "REJECTED", message: again.message };
+      const next = withTranscriptOptOut(current, userId, optedOut === true);
+      return { state: { ...state, sessions: replaceSession(state.sessions, next) }, result: next };
+    });
+    if (!saved.ok) return { ok: false, message: saved.message };
+    return {
+      ok: true,
+      session: saved.result,
+      optedOut: transcriptOptOutIds(saved.result).includes(userId),
+    };
+  }
+
+  function hasActiveRunChannel(channelId) {
+    return activeSessionInChannel(sessions(), channelId) != null;
+  }
+
+  async function rollPlainD100({ channelId, userId, displayName, content }) {
+    if (config.messageContentEnabled !== true) return { ignore: true };
+    if (!hasActiveRunChannel(channelId)) return { ignore: true };
+    if (!isWholeMessageD100(content)) return { ignore: true };
+    const session = activeSessionInChannel(sessions(), channelId);
+    if (!session) return { ignore: true };
+    const role = memberRole(session, userId);
+    if (role !== "KP" && role !== "PL") return { ignore: true };
+    const rolled = rollDice("1d100", randomInt);
+    if (!rolled.ok) return { ignore: true };
+    return {
+      ok: true,
+      text: formatTextD100(speakerName(session, userId, displayName), rolled.total),
+    };
+  }
+
   async function roll({ channelId, userId, displayName, expression }) {
     if (mode !== "ready") return unavailable(mode === "broken" ? "CoC 场次记录暂时不可用。" : undefined);
     const session = activeSessionInChannel(sessions(), channelId);
@@ -913,6 +1034,11 @@ export function createCocSessionService({
     previewRepost,
     deleteIfDue,
     roll,
+    rollPlainD100,
+    hasActiveRunChannel,
+    transcriptControlsEnabled,
+    previewTranscriptPrivacy,
+    setTranscriptOptOut,
     dueSessions,
     find,
   };

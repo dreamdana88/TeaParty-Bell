@@ -14,6 +14,7 @@ import {
   confirmRow,
   controlPanel,
   endedNotice,
+  transcriptPrivacyPrompt,
   memberAdminPanel,
   memberPickPanel,
   memberSearchModal,
@@ -100,7 +101,7 @@ export function createCocInteractionRouter({
       return;
     }
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-    const messageId = await discord.sendMessage(preview.session.runChannelId, controlPanel(preview.session));
+    const messageId = await discord.sendMessage(preview.session.runChannelId, runPanel(preview.session));
     await service.setControlMessage(preview.session.sessionId, messageId);
     await interaction.editReply({ content: "控制面板已重新发送。", flags: MessageFlags.Ephemeral });
   }
@@ -108,7 +109,7 @@ export function createCocInteractionRouter({
   async function syncPanels(session) {
     try {
       if (session?.controlMessageId && session.runChannelId) {
-        await discord.editMessage(session.runChannelId, session.controlMessageId, controlPanel(session));
+        await discord.editMessage(session.runChannelId, session.controlMessageId, runPanel(session));
       }
     } catch (error) {
       logger.warn?.("CoC 控制面板更新失败", { message: error?.message, sessionId: session?.sessionId });
@@ -229,6 +230,10 @@ export function createCocInteractionRouter({
     await interaction.update(recruitPanel(session));
   }
 
+  function runPanel(session) {
+    return controlPanel(session, { transcript: service.transcriptControlsEnabled?.() === true });
+  }
+
   async function handleAction(interaction, action, sessionId, targetUserId) {
     if (service.availability() !== "ready") {
       await replyEphemeral(interaction, closedMessage());
@@ -303,7 +308,7 @@ export function createCocInteractionRouter({
         return;
       }
       try {
-        const controlMessageId = await discord.sendMessage(started.session.runChannelId, controlPanel(started.session));
+        const controlMessageId = await discord.sendMessage(started.session.runChannelId, runPanel(started.session));
         await service.setControlMessage(sessionId, controlMessageId);
       } catch (error) {
         logger.warn?.("CoC 控制面板发送失败", { message: error?.message, sessionId });
@@ -406,6 +411,34 @@ export function createCocInteractionRouter({
       await interaction.editReply({ content: "已移出本局。", components: [] });
       return;
     }
+    if (action === "privacy") {
+      const preview = service.previewTranscriptPrivacy(sessionId, userId);
+      if (!preview.ok) {
+        await replyEphemeral(interaction, preview.message);
+        return;
+      }
+      const prompt = transcriptPrivacyPrompt(preview.optedOut, sessionId);
+      await interaction.reply({
+        content: prompt.content,
+        components: prompt.components,
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+    if (action === "privacy-off" || action === "privacy-on") {
+      await interaction.deferUpdate();
+      const saved = await service.setTranscriptOptOut(sessionId, userId, action === "privacy-off");
+      if (!saved.ok) {
+        await interaction.editReply({ content: saved.message, components: [] });
+        return;
+      }
+      const prompt = transcriptPrivacyPrompt(saved.optedOut, sessionId);
+      await interaction.editReply({
+        content: saved.optedOut ? "已不再记录你的发言。" : "已恢复记录你的发言。",
+        components: prompt.components,
+      });
+      return;
+    }
     if (action === "end") {
       const preview = service.previewEnd(sessionId, userId);
       if (!preview.ok) {
@@ -440,7 +473,10 @@ export function createCocInteractionRouter({
         // 控制消息停用不了也不影响锁门。
       }
       onSessionEnded?.(ended.session);
-      await interaction.editReply(ephemeral("本局已经结束。频道将在 48 小时后删除。"));
+      await interaction.editReply({
+        ...ephemeral("本局已经结束。频道将在 48 小时后删除。"),
+        components: [],
+      });
     }
   }
 

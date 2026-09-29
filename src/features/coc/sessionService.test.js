@@ -1,4 +1,4 @@
-import { mkdtempSync } from "fs";
+import { mkdtempSync, readFileSync, readdirSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { createCocSessionService } from "./sessionService.js";
@@ -70,15 +70,25 @@ function fakeDiscord(overrides = {}) {
     async lockChannel(id) {
       calls.push(["lock", id, overrides.observeState?.() ?? null]);
     },
-    async sendMessage() { return "control-1"; },
+    async sendMessage(_channelId, payload) {
+      calls.push(["send", payload ?? null]);
+      if (overrides.failSendFile && payload?.files) throw new Error("file failed");
+      return "control-1";
+    },
+    async fetchChannelHistory(channelId) {
+      calls.push(["history", channelId]);
+      if (overrides.failHistory) throw new Error("history failed");
+      return overrides.history ?? { messages: [], truncated: false };
+    },
     async editMessage() { calls.push(["edit"]); },
   };
 }
 
 function harness(discordOverrides = {}) {
+  const { config: configOverrides = {}, randomInt, ...rest } = discordOverrides;
   const dir = mkdtempSync(join(tmpdir(), "coc-mvp-"));
   const store = createCocSessionStore({ filePath: join(dir, "sessions.json") });
-  const discord = fakeDiscord(discordOverrides);
+  const discord = fakeDiscord(rest);
   let now = 1_000;
   const service = createCocSessionService({
     store,
@@ -91,12 +101,23 @@ function harness(discordOverrides = {}) {
       plRoleId: "role-pl",
       obRoleId: "role-ob",
       botUserId: "bot",
+      messageContentEnabled: false,
+      transcriptEnabled: false,
+      ...configOverrides,
     },
     clock: { now: () => now },
     logger: { warn() {}, error() {} },
     createId: () => "session-1",
+    randomInt,
   });
-  return { service, discord, store, setNow: (value) => { now = value; } };
+  return { service, discord, store, dir, setNow: (value) => { now = value; } };
+}
+
+function containsText(value, needle) {
+  if (typeof value === "string") return value.includes(needle);
+  if (Array.isArray(value)) return value.some((item) => containsText(item, needle));
+  if (value && typeof value === "object") return Object.values(value).some((item) => containsText(item, needle));
+  return false;
 }
 
 {
@@ -142,6 +163,7 @@ function harness(discordOverrides = {}) {
   assert(discord.calls.some((call) => call[0] === "nick" && call[2] === "Dream"), "结束时恢复原昵称");
   assert(discord.calls.some((call) => call[0] === "remove"), "结束时卸下身份组");
   assert(discord.calls.some((call) => call[0] === "lock"), "结束时锁定发言");
+  assert(!discord.calls.some((call) => call[0] === "history"), "关闭团录时不读频道历史");
 }
 
 {
@@ -406,6 +428,127 @@ async function activeTable(overrides) {
   const nickCalls = discord.calls.filter((call) => call[0] === "nick" && call[1] === "pl");
   assert(!nickCalls.some((call) => call[2] === "奈洛莉" && nickCalls.indexOf(call) > 0), "人工改过的昵称不会被改回去");
   assertEqual(nickCalls.at(-1)?.[2], null, "只执行过小G宝自己的那次恢复");
+}
+
+{
+  const at1515 = Date.parse("2026-09-28T12:15:00.000Z");
+  const at1516 = Date.parse("2026-09-28T12:16:00.000Z");
+  const at1517 = Date.parse("2026-09-28T12:17:00.000Z");
+  const spoken = "你们推开了地下室的门。";
+  const reply = "我先观察门后的情况。";
+  const hiddenLine = "这句不要记。";
+  const { service, discord, store, dir } = await activeTable({
+    randomInt: () => 63,
+    config: { messageContentEnabled: true, transcriptEnabled: true },
+    history: {
+      messages: [
+        { id: "m3", authorId: "pl2", content: hiddenLine, createdTimestamp: at1517, type: 0 },
+        { id: "m-ob", authorId: "ob", content: "我在旁边看。", createdTimestamp: at1516, type: 0 },
+        { id: "m2", authorId: "pl", content: reply, createdTimestamp: at1516, type: 19 },
+        { id: "m-bot", authorId: "bot", bot: true, content: "机器人播报。", createdTimestamp: at1515, type: 0 },
+        { id: "m1", authorId: "kp", content: spoken, createdTimestamp: at1515, type: 0 },
+        { id: "m-sys", authorId: "kp", content: "系统消息不记。", createdTimestamp: at1515, type: 7 },
+      ],
+    },
+  });
+  const added = await service.addPl("session-1", "kp", "pl2", "江某");
+  assert(added.ok, "再加一名 PL");
+  const kpRoll = await service.rollPlainD100({
+    channelId: "room-1", userId: "kp", displayName: "主持人", content: "1d100",
+  });
+  assertEqual(kpRoll.text, "主持人 🎲 1d100 = 63", "KP 的整句 1d100 会掷，用显示名");
+  const plRoll = await service.rollPlainD100({
+    channelId: "room-1", userId: "pl", displayName: "Dream", content: " 1D100 ",
+  });
+  assertEqual(plRoll.text, "奈洛莉 🎲 1d100 = 63", "PL 的整句 1d100 会掷，用角色名");
+  const obRoll = await service.rollPlainD100({
+    channelId: "room-1", userId: "ob", displayName: "看客", content: "1d100",
+  });
+  assert(obRoll.ignore === true && obRoll.ok !== true, "OB 发送 1d100 不掷");
+  const sentence = await service.rollPlainD100({
+    channelId: "room-1", userId: "pl", displayName: "Dream", content: "我先观察门后的情况。",
+  });
+  assert(sentence.ignore === true, "普通句子不掷");
+  const lobby = await service.rollPlainD100({
+    channelId: "lobby", userId: "pl", displayName: "Dream", content: "1d100",
+  });
+  assert(lobby.ignore === true, "普通频道不掷");
+  const slash = await service.roll({
+    channelId: "room-1", userId: "pl", displayName: "Dream", expression: "1d100",
+  });
+  assert(slash.ok && slash.text.includes("掷骰"), "/r 仍用原来的回复");
+  assert((await service.setTranscriptOptOut("session-1", "ob", true)).ok === false, "OB 不能设置团录退出");
+  assert((await service.previewTranscriptPrivacy("session-1", "stranger")).ok === false, "局外人不能设置团录退出");
+  const hidden = await service.setTranscriptOptOut("session-1", "pl2", true);
+  assert(hidden.ok && hidden.optedOut === true, "PL 可以退出团录");
+  const restored = await service.setTranscriptOptOut("session-1", "pl2", false);
+  assert(restored.ok && restored.optedOut === false, "PL 可以恢复记录");
+  await service.setTranscriptOptOut("session-1", "pl2", true);
+  const beforeEnd = JSON.parse(readFileSync(store.filePath, "utf8"));
+  assert(beforeEnd.sessions[0].transcriptOptOutUserIds.includes("pl2"), "场次只记下退出用户的 ID");
+  assert(!containsText(beforeEnd, spoken) && !containsText(beforeEnd, hiddenLine), "跑团期间不把正文写进场次文件");
+  const done = await service.finish("session-1", "kp");
+  assert(done.ok && done.session.state === "ENDED", "有团录时结束仍然完成");
+  const historyAt = discord.calls.findIndex((call) => call[0] === "history");
+  const lockAt = discord.calls.findIndex((call) => call[0] === "lock");
+  assert(historyAt > lockAt && lockAt !== -1, "锁门之后才读频道历史");
+  const fileCall = discord.calls.find((call) => call[0] === "send" && call[1]?.files);
+  const markdown = fileCall[1].files[0].attachment.toString("utf8");
+  assert(fileCall[1].files[0].name.endsWith("团录.md"), "团录作为 Markdown 附件");
+  assert(markdown.indexOf(spoken) !== -1 && markdown.indexOf(reply) !== -1, "KP 和 PL 进入团录");
+  assert(markdown.indexOf(spoken) < markdown.indexOf(reply), "团录按时间排序");
+  assert(markdown.includes("[20:15] KP：") && markdown.includes("[20:16] 奈洛莉："), "时间和称呼正确");
+  assert(!markdown.includes("我在旁边看") && !markdown.includes(hiddenLine), "OB 和退出用户不进团录");
+  assert(!markdown.includes("机器人播报") && !markdown.includes("系统消息不记"), "Bot 和系统消息不进团录");
+  const saved = JSON.parse(readFileSync(store.filePath, "utf8"));
+  assert(saved.sessions[0].transcriptDelivered === true, "只记下团录已经发出");
+  assert(!containsText(saved, spoken) && !containsText(saved, reply) && !containsText(saved, hiddenLine), "场次文件里没有消息正文");
+  assert(!readdirSync(dir).some((name) => name.endsWith(".md")), "成功发送后没有留下团录文件");
+}
+
+{
+  const { service, discord, store } = await activeTable({
+    config: { messageContentEnabled: false, transcriptEnabled: true },
+    history: { messages: [{ id: "m", authorId: "kp", content: "不该读到", createdTimestamp: Date.now(), type: 0 }] },
+  });
+  const ignored = await service.rollPlainD100({
+    channelId: "room-1", userId: "kp", displayName: "主持人", content: "1d100",
+  });
+  assert(ignored.ignore === true, "Message Content 关闭时文字骰子不运行");
+  await service.finish("session-1", "kp");
+  assert(!discord.calls.some((call) => call[0] === "history"), "Message Content 关闭时不读频道历史");
+  assert(!containsText(JSON.parse(readFileSync(store.filePath, "utf8")), "不该读到"), "关闭时正文也不进场次文件");
+}
+
+{
+  const { service, discord, store, dir } = await activeTable({
+    config: { messageContentEnabled: true, transcriptEnabled: true },
+    failHistory: true,
+    history: { messages: [{ id: "m", authorId: "kp", content: "读失败也不落盘", createdTimestamp: Date.now(), type: 0 }] },
+  });
+  const done = await service.finish("session-1", "kp");
+  assert(done.ok && done.session.state === "ENDED", "团录读失败也照旧结束");
+  assert(discord.calls.some((call) => call[0] === "send" && call[1]?.content === "本局团录没有发出。"), "频道里说明团录没发出");
+  assert(!discord.calls.some((call) => call[0] === "send" && call[1]?.files), "读失败不发送附件");
+  assert(!containsText(JSON.parse(readFileSync(store.filePath, "utf8")), "读失败也不落盘"), "读失败不把正文写进场次文件");
+  assert(!readdirSync(dir).some((name) => name.endsWith(".md")), "读失败不留下团录文件");
+}
+
+{
+  const line = "发出失败也不能落盘";
+  const { service, discord, store, dir } = await activeTable({
+    config: { messageContentEnabled: true, transcriptEnabled: true },
+    failSendFile: true,
+    history: {
+      messages: [{ id: "m", authorId: "kp", content: line, createdTimestamp: Date.parse("2026-09-28T12:15:00.000Z"), type: 0 }],
+    },
+  });
+  const done = await service.finish("session-1", "kp");
+  assert(done.ok, "团录发送失败也照旧结束");
+  assert(discord.calls.some((call) => call[0] === "send" && call[1]?.content === "本局团录没有发出。"), "发送失败会说明团录没发出");
+  assert(done.session.transcriptDelivered !== true, "没发出就不记成已交付");
+  assert(!containsText(JSON.parse(readFileSync(store.filePath, "utf8")), line), "发送失败不把正文写进场次文件");
+  assert(!readdirSync(dir).some((name) => name.endsWith(".md")), "发送失败不留下团录文件");
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

@@ -59,5 +59,40 @@ assert(source.includes("成员搜索被 Discord 拒绝了"), "403 使用中性�
   router.destroy();
 }
 
+{
+  const replies = [];
+  const client = { on(_name, fn) { this.fn = fn; }, off() {} };
+  const router = createCocInteractionRouter({
+    client,
+    service: {
+      availability: () => "ready",
+      finish: async () => ({
+        ok: true,
+        session: { sessionId: "s1", title: "我来测试", runChannelId: "room", controlMessageId: "panel" },
+      }),
+    },
+    discord: {
+      async sendMessage() { return "notice"; },
+      async editMessage() {},
+    },
+    logger: { warn() {}, error() {} },
+  });
+  router.start();
+  await client.fn({
+    isChatInputCommand: () => false,
+    isModalSubmit: () => false,
+    isStringSelectMenu: () => false,
+    isButton: () => true,
+    customId: "coc:v1:finish:s1",
+    user: { id: "kp" },
+    async deferUpdate() {},
+    async editReply(payload) { replies.push(payload); },
+  });
+  const receipt = replies.at(-1);
+  assert(receipt?.content === "本局已经结束。频道将在 48 小时后删除。", "结束回执说明频道会删除");
+  assert(Array.isArray(receipt?.components) && receipt.components.length === 0, "结束后拿掉确认和继续按钮");
+  router.destroy();
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

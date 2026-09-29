@@ -88,7 +88,37 @@ export function createRecruitingSession({
     endedAt: null,
     deleteAt: null,
     channelDeleted: false,
+    transcriptOptOutUserIds: [],
   };
+}
+
+export function transcriptOptOutIds(session) {
+  const raw = session?.transcriptOptOutUserIds;
+  if (!Array.isArray(raw)) return [];
+  const ids = [];
+  for (const id of raw) {
+    if (typeof id === "string" && id && !ids.includes(id)) ids.push(id);
+  }
+  return ids;
+}
+
+export function withTranscriptOptOut(session, userId, optedOut) {
+  const ids = transcriptOptOutIds(session).filter((id) => id !== userId);
+  if (optedOut) ids.push(userId);
+  return { ...session, transcriptOptOutUserIds: ids };
+}
+
+export function gateTranscriptPrivacy(session, userId) {
+  if (!session) return { ok: false, message: "这场跑团已经不在了。" };
+  if (session.state !== SESSION_STATES.active) {
+    return { ok: false, message: "只有进行中的跑团可以设置团录。" };
+  }
+  const role = memberRole(session, userId);
+  if (role === "OB") return { ok: false, message: "旁观的发言不会进入团录。" };
+  if (role !== "KP" && role !== "PL") {
+    return { ok: false, message: "只有本局 KP 和 PL 可以设置团录。" };
+  }
+  return { ok: true };
 }
 
 export function signupPl(sessions, session, userId, characterName) {
@@ -329,6 +359,7 @@ export function applyRemoveMember(session, userId) {
     ...session,
     pl: withoutUser(session.pl, userId),
     ob: withoutUser(session.ob, userId),
+    transcriptOptOutUserIds: transcriptOptOutIds(session).filter((id) => id !== userId),
     pendingMemberOp: null,
   };
 }

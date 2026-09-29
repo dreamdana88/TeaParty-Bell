@@ -118,7 +118,18 @@ export function cancelledPanel(session) {
   };
 }
 
-export function controlPanel(session) {
+export function controlPanel(session, { transcript = false } = {}) {
+  const components = [
+    new ActionRowBuilder().addComponents(
+      button(buildCustomId("members", session.sessionId), "👥 成员管理", ButtonStyle.Primary),
+      button(buildCustomId("end", session.sessionId), "🛑 结束本局", ButtonStyle.Danger),
+    ),
+  ];
+  if (transcript) {
+    components.push(new ActionRowBuilder().addComponents(
+      button(buildCustomId("privacy", session.sessionId), "团录与隐私", ButtonStyle.Secondary),
+    ));
+  }
   return {
     embeds: [{
       color: PANEL_COLOR,
@@ -131,10 +142,26 @@ export function controlPanel(session) {
         "跑团已开始。",
       ].join("\n"),
     }],
+    components,
+  };
+}
+
+export function transcriptPrivacyPrompt(optedOut, sessionId) {
+  if (optedOut) {
+    return {
+      content: "你的发言现在不会进入本局团录。",
+      components: [
+        new ActionRowBuilder().addComponents(
+          button(buildCustomId("privacy-on", sessionId), "恢复记录我的消息", ButtonStyle.Primary),
+        ),
+      ],
+    };
+  }
+  return {
+    content: "你的发言现在会进入本局团录。",
     components: [
       new ActionRowBuilder().addComponents(
-        button(buildCustomId("members", session.sessionId), "👥 成员管理", ButtonStyle.Primary),
-        button(buildCustomId("end", session.sessionId), "🛑 结束本局", ButtonStyle.Danger),
+        button(buildCustomId("privacy-off", sessionId), "不记录我的消息", ButtonStyle.Secondary),
       ),
     ],
   };

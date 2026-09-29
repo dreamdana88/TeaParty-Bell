@@ -2,6 +2,7 @@ import { createCocDiscordGateway } from "./discordGateway.js";
 import { createCocInteractionRouter } from "./interactionRouter.js";
 import { createCocSessionService } from "./sessionService.js";
 import { createCocSessionStore } from "./sessionStore.js";
+import { attachTextDiceListener } from "./textDice.js";
 
 const RETRY_MS = 60 * 1000;
 
@@ -41,12 +42,15 @@ export function createCocRuntime({
       plRoleId: coc.plRoleId,
       obRoleId: coc.obRoleId,
       botUserId: null,
+      messageContentEnabled: coc.messageContentEnabled === true,
+      transcriptEnabled: coc.transcriptEnabled === true,
     } : { enabled: false, disabledReason },
     clock,
     logger,
   });
   const handles = new Map();
   let router = null;
+  let detachTextDice = null;
 
   function arm(session) {
     if (!session || session.state !== "ENDED" || session.channelDeleted || session.deleteAt == null) return;
@@ -103,6 +107,9 @@ export function createCocRuntime({
     const recovered = await service.recoverInterrupted();
     for (const session of recovered.ended) arm(session);
     for (const session of service.dueSessions()) arm(session);
+    if (coc.messageContentEnabled === true) {
+      detachTextDice = attachTextDiceListener({ client, service, logger });
+    }
     return { enabled: true };
   }
 
@@ -117,6 +124,8 @@ export function createCocRuntime({
   function stop() {
     for (const handle of handles.values()) timers.clearTimeout(handle);
     handles.clear();
+    detachTextDice?.();
+    detachTextDice = null;
     router?.destroy();
   }
 
