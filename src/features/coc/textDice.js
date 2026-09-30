@@ -1,9 +1,14 @@
 import { Events } from "discord.js";
+import { parseBonusPenalty } from "./dice/bonusPenalty.js";
 import { parseDiceExpression } from "./dice/parser.js";
 
 /** 整句必须是 /r 已接受的骰子表达式。认不出就当普通聊天。 */
 export function isWholeMessageDice(content) {
   return parseDiceExpression(content).ok === true;
+}
+
+export function isBonusPenaltyMessage(content) {
+  return parseBonusPenalty(content).ok === true;
 }
 
 /**
@@ -24,12 +29,17 @@ export function formatTextDice(userId, result) {
   return `${mention} 🎲 ${result.notation} → [${faces}] ${sign} ${Math.abs(result.modifier)} = ${result.total}`;
 }
 
+/** 奖励/惩罚的候选和总值直接用这一次 roll 的结果。 */
+export function formatBonusPenalty(userId, result) {
+  return `<@${userId}> 🎲 ${result.notation} → [${result.candidates.join(", ")}] = ${result.total}`;
+}
+
 /**
  * 先看是不是进行中的跑团频道，再看正文。普通频道不读 content。
  */
 export function messageNeedsTextDice(message, channelIsActive) {
   if (!channelIsActive || !message || message.system || message.author?.bot || !message.guildId) return false;
-  return isWholeMessageDice(message.content);
+  return isWholeMessageDice(message.content) || isBonusPenaltyMessage(message.content);
 }
 
 export function attachTextDiceListener({ client, service, logger = console }) {

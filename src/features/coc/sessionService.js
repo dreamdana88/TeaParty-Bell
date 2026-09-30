@@ -1,8 +1,9 @@
 import { randomBytes } from "crypto";
 import { buildRoomOverwrites } from "./channelAccess.js";
 import { planChannelNames } from "./channelName.js";
+import { parseBonusPenalty, rollBonusPenalty } from "./dice/bonusPenalty.js";
 import { formatRoll, rollDice } from "./dice/roller.js";
-import { formatTextDice } from "./textDice.js";
+import { formatBonusPenalty, formatTextDice } from "./textDice.js";
 import { INVALID_DICE_MESSAGE, parseDiceExpression } from "./dice/parser.js";
 import { planNicknameRestore } from "./nickname.js";
 import {
@@ -985,12 +986,18 @@ export function createCocSessionService({
   async function rollTextDice({ channelId, userId, content }) {
     if (config.messageContentEnabled !== true) return { ignore: true };
     if (!hasActiveRunChannel(channelId)) return { ignore: true };
-    const parsed = parseDiceExpression(content);
-    if (!parsed.ok) return { ignore: true };
+    const bonus = parseBonusPenalty(content);
+    const parsed = bonus.ok ? null : parseDiceExpression(content);
+    if (!bonus.ok && !parsed?.ok) return { ignore: true };
     const session = activeSessionInChannel(sessions(), channelId);
     if (!session) return { ignore: true };
     const role = memberRole(session, userId);
     if (role !== "KP" && role !== "PL") return { ignore: true };
+    if (bonus.ok) {
+      const rolled = rollBonusPenalty(bonus, randomInt);
+      if (!rolled.ok) return { ignore: true };
+      return { ok: true, text: formatBonusPenalty(userId, rolled) };
+    }
     const rolled = rollDice(parsed, randomInt);
     if (!rolled.ok) return { ignore: true };
     return {

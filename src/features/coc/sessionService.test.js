@@ -1,8 +1,9 @@
 import { mkdtempSync, readFileSync, readdirSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
+import { parseBonusPenalty, rollBonusPenalty } from "./dice/bonusPenalty.js";
 import { formatRoll, rollDice } from "./dice/roller.js";
-import { formatTextDice } from "./textDice.js";
+import { formatBonusPenalty, formatTextDice } from "./textDice.js";
 import { createCocSessionService } from "./sessionService.js";
 import { createCocSessionStore } from "./sessionStore.js";
 import { DELETE_AFTER_MS, SETTLED_RETENTION_MS } from "./sessionRules.js";
@@ -735,6 +736,63 @@ async function activeTable(overrides) {
   assert(done.session.transcriptDelivered !== true, "没发齐就不记成已交付");
   assert(!containsText(JSON.parse(readFileSync(store.filePath, "utf8")), "缺卷0"), "失败的分卷不落进场次文件");
   assert(!readdirSync(dir).some((name) => name.endsWith(".md")), "失败的分卷不写成本地文件");
+}
+
+{
+  const values = [7, 5, 2, 4, 7, 3, 9, 3, 4, 8, 4, 2, 6, 9, 0, 0, 5, 0, 0, 5, 63, 8];
+  let cursor = 0;
+  const { service } = await activeTable({
+    config: { messageContentEnabled: true },
+    randomInt: () => values[cursor++],
+  });
+  async function expectBonus(userId, content, label) {
+    const start = cursor;
+    const actual = await service.rollTextDice({
+      channelId: "room-1", userId, content,
+    });
+    let index = start;
+    const expected = rollBonusPenalty(parseBonusPenalty(content), () => values[index++]);
+    assert(actual.ok === true && expected.ok === true, `${label} 会掷`);
+    assertEqual(actual.text, formatBonusPenalty(userId, expected), label);
+    assertEqual(cursor, index, `${label} 不另掷`);
+    const chosen = expected.kind === "bonus" ? Math.min(...expected.candidates) : Math.max(...expected.candidates);
+    assertEqual(expected.total, chosen, `${label} 用候选里的${expected.kind === "bonus" ? "最小" : "最大"}值`);
+  }
+  const before = cursor;
+  for (const [userId, content] of [
+    ["ob", "1D100 奖励1"],
+    ["pl", "2D100 奖励1"],
+    ["pl", "1D20 奖励1"],
+    ["pl", "1D100 奖励3"],
+    ["pl", "我投一个1D100 奖励1"],
+    ["guest", "1D100 惩罚1"],
+  ]) {
+    const ignored = await service.rollTextDice({ channelId: "room-1", userId, content });
+    assert(ignored.ignore === true && ignored.ok !== true && ignored.message == null, `忽略 ${userId} ${content}`);
+  }
+  const lobby = await service.rollTextDice({
+    channelId: "lobby", userId: "kp", content: "1D100 惩罚2",
+  });
+  assert(lobby.ignore === true, "普通频道的奖励骰不掷");
+  assertEqual(cursor, before, "被忽略的奖励骰不消耗随机数");
+  await expectBonus("kp", "1D100 奖励1", "KP 奖励1");
+  await expectBonus("pl", "  1d100 奖励2  ", "PL 奖励2");
+  await expectBonus("kp", "1D100 惩罚1", "KP 惩罚1");
+  await expectBonus("pl", "1d100 惩罚2", "PL 惩罚2");
+  await expectBonus("pl", "1D100 奖励1", "奖励骰 100 边界");
+  await expectBonus("kp", "1D100 惩罚1", "惩罚骰 100 边界");
+  const plain = await service.rollTextDice({
+    channelId: "room-1", userId: "pl", content: "1D100",
+  });
+  assertEqual(plain.text, "<@pl> 🎲 1d100 = 63", "普通 1D100 自然骰不变");
+  const slashBad = await service.roll({
+    channelId: "room-1", userId: "pl", displayName: "Dream", expression: "1D100 奖励1",
+  });
+  assert(slashBad.ok === false && slashBad.message?.includes("骰子表达式无效"), "/r 不接受奖励骰");
+  const slash = await service.roll({
+    channelId: "room-1", userId: "pl", displayName: "Dream", expression: "1d100",
+  });
+  assertEqual(slash.text, "🎲 奈洛莉掷骰\n\n1d100 → 8", "/r 回复格式不变");
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

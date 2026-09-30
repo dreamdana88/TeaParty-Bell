@@ -1,4 +1,4 @@
-import { attachTextDiceListener, formatTextDice, isWholeMessageDice, messageNeedsTextDice } from "./textDice.js";
+import { attachTextDiceListener, formatBonusPenalty, formatTextDice, isWholeMessageDice, messageNeedsTextDice } from "./textDice.js";
 
 let passed = 0;
 let failed = 0;
@@ -44,6 +44,18 @@ assertEqual(formatTextDice("user", {
 assertEqual(formatTextDice("user", {
   notation: "2d6+3", count: 2, rolls: [1, 5], modifier: 3, total: 9,
 }).includes("[1, 5]"), true, "展示用传入的骰面，不另掷");
+assertEqual(formatBonusPenalty("user", {
+  notation: "1D100 奖励1", candidates: [57, 27], total: 27,
+}), "<@user> 🎲 1D100 奖励1 → [57, 27] = 27", "奖励1 展示候选");
+assertEqual(formatBonusPenalty("user", {
+  notation: "1D100 奖励2", candidates: [74, 34, 94], total: 34,
+}), "<@user> 🎲 1D100 奖励2 → [74, 34, 94] = 34", "奖励2 展示候选");
+assertEqual(formatBonusPenalty("user", {
+  notation: "1D100 惩罚1", candidates: [43, 83], total: 83,
+}), "<@user> 🎲 1D100 惩罚1 → [43, 83] = 83", "惩罚1 展示候选");
+assertEqual(formatBonusPenalty("user", {
+  notation: "1D100 惩罚2", candidates: [24, 64, 94], total: 94,
+}), "<@user> 🎲 1D100 惩罚2 → [24, 64, 94] = 94", "惩罚2 展示候选");
 
 {
   let reads = 0;
@@ -67,6 +79,20 @@ assertEqual(formatTextDice("user", {
     content: "1d100",
   }, true) === false, "系统消息不掷");
   assert(messageNeedsTextDice({ guildId: "g", author: { bot: false }, content: "2d6-1" }, true) === true, "进行中的频道里整句骰子才读");
+  let bonusReads = 0;
+  const lobbyBonus = {
+    guildId: "g",
+    author: { bot: false },
+    get content() { bonusReads += 1; return "1D100 奖励1"; },
+  };
+  assert(messageNeedsTextDice(lobbyBonus, false) === false, "普通频道不读奖励骰正文");
+  assertEqual(bonusReads, 0, "普通频道没有碰到奖励骰正文");
+  for (const bad of ["2D100 奖励1", "1D20 奖励1", "1D100 奖励3", "我投一个1D100 奖励1"]) {
+    assert(messageNeedsTextDice({ guildId: "g", author: { bot: false }, content: bad }, true) === false, `不触发 ${bad}`);
+  }
+  assert(messageNeedsTextDice({ guildId: "g", author: { bot: true }, content: "1D100 惩罚1" }, true) === false, "Bot 的惩罚骰不掷");
+  assert(messageNeedsTextDice({ guildId: "g", author: { bot: false }, content: "  1d100 奖励2  " }, true) === true, "整句奖励骰才读");
+  assert(messageNeedsTextDice({ guildId: "g", author: { bot: false }, content: "1D100 惩罚2" }, true) === true, "整句惩罚骰才读");
 }
 
 {
@@ -106,6 +132,13 @@ assertEqual(formatTextDice("user", {
   assert(replies[0].allowedMentions?.parse?.length === 0, "不解析消息里的其他提及");
   assert(replies[0].allowedMentions?.repliedUser === false, "回复引用不再额外 @ 一次");
   assert(!replies.some((payload) => String(payload.content).includes("无效")), "非法或失败都不回复报错");
+  await handler({ ...base, content: "1D100 奖励3" });
+  await handler({ ...base, content: "1D100 奖励1" });
+  const bonusReply = replies.at(-1);
+  assert(calls.at(-1) === "1D100 奖励1", "奖励骰整句会交给掷骰");
+  assert(!calls.includes("1D100 奖励3"), "非法奖励骰不交给掷骰");
+  assertEqual(bonusReply.allowedMentions?.users?.[0], "pl", "奖励骰也只 @ 触发者");
+  assert(bonusReply.allowedMentions?.parse?.length === 0 && bonusReply.allowedMentions?.repliedUser === false, "奖励骰不解析其他提及");
   detach();
 }
 
