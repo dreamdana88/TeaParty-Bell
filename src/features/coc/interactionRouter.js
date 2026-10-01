@@ -25,7 +25,7 @@ import {
 } from "./panel.js";
 import { classifyMemberQuery, memberOptionLabel } from "./memberQuery.js";
 import { COC_COMMAND_NAME, COC_OPEN_SUBCOMMAND, COC_PANEL_SUBCOMMAND, COC_ARCHIVE_SUBCOMMAND, ROLL_COMMAND_NAME } from "./commands.js";
-import { archiveEntry, characterChoices } from "./characterPanel.js";
+import { archiveEntry, characterChoices, characterInvitation } from "./characterPanel.js";
 
 const CLOSED = "CoC 跑团暂时没有开启。";
 
@@ -60,13 +60,6 @@ function titleModal() {
     .addComponents(textRow("title", "模组名称", 80));
 }
 
-function targetNameModal(action, sessionId, userId) {
-  return new ModalBuilder()
-    .setCustomId(buildCustomId(action, sessionId, userId))
-    .setTitle("本局角色名")
-    .addComponents(textRow("character", "本局角色名", 32));
-}
-
 function displayNameOf(interaction) {
   return interaction.member?.displayName
     ?? interaction.member?.nickname
@@ -85,34 +78,53 @@ export function createCocInteractionRouter({
 } = {}) {
   let started = false;
 
-  async function selectAndReply(interaction, sessionId, characterId) {
-    const selected = await service.selectCharacter(sessionId, interaction.user.id, characterId);
+  async function selectAndReply(interaction, sessionId, characterId, invitationId = null) {
+    const invitation = service.invitationFor(sessionId, invitationId);
+    if (!invitation || invitation.targetUserId !== interaction.user.id) {
+      await interaction.editReply({ content: "只有目标本人可以选卡，或邀请已失效。", components: [] });
+      return;
+    }
+    const selected = await service.selectCharacter(sessionId, interaction.user.id, characterId, invitationId);
     if (!selected.ok) {
       await interaction.editReply({ content: selected.message, components: [], allowedMentions: { parse: [] } });
       return;
     }
-    await editRecruit(selected.session, recruitPanel(selected.session));
+    if (selected.session.state === "ACTIVE") await syncPanels(selected.session);
+    else await editRecruit(selected.session, recruitPanel(selected.session));
     const member = selected.session.pl.find((item) => item.userId === interaction.user.id);
     await interaction.editReply({
-      content: `本局调查员已选择：${member.characterName}。开团时会使用该名字设置临时昵称。`,
+      content: `本局调查员已选择：${member.characterName}。${selected.session.state === "ACTIVE" ? "已加入本局 PL。" : "开团时会使用该名字设置临时昵称。"}`,
       components: [], allowedMentions: { parse: [] },
     });
   }
 
-  async function showCharacters(interaction, sessionId, page = 0) {
-    const result = await service.prepareCharacterSelection(sessionId, interaction.user.id);
+  async function showCharacters(interaction, sessionId, page = 0, invitationId = null) {
+    const result = await service.prepareCharacterSelection(sessionId, interaction.user.id, invitationId);
     if (!result.ok) {
       await interaction.editReply({ content: result.message, components: [] });
       return;
     }
-    await editRecruit(result.session, recruitPanel(result.session));
     if (result.characters.length === 0) {
-      await interaction.editReply(archiveEntry(archiveUrl, "已报名 PL，但你还没有角色卡。请到档案馆建卡，然后重新点击报名 PL 选择调查员。"));
+      await interaction.editReply(archiveEntry(archiveUrl, "你还没有角色卡，本次选卡已取消。请到档案馆建卡，之后重新报名或请 KP 再次邀请。"));
     } else if (result.characters.length === 1) {
-      await selectAndReply(interaction, sessionId, result.characters[0].id);
+      await selectAndReply(interaction, sessionId, result.characters[0].id, result.invitation?.id);
     } else {
-      await interaction.editReply(characterChoices(sessionId, interaction.user.id, result.characters, page));
+      await interaction.editReply(characterChoices(sessionId, interaction.user.id, result.characters, page, result.invitation?.id));
     }
+  }
+
+  async function sendCharacterInvite(interaction, sessionId, targetUserId, kind) {
+    const result = await service.inviteCharacter(sessionId, interaction.user.id, targetUserId, kind);
+    if (!result.ok) { await interaction.editReply({ content: result.message, components: [] }); return; }
+    const channelId = kind === "convert" ? result.session.runChannelId : result.session.recruitChannelId;
+    try {
+      await discord.sendMessage(channelId, characterInvitation(sessionId, result.invitation));
+    } catch {
+      await service.cancelCharacterInvitation(sessionId, interaction.user.id, result.invitation.id);
+      await interaction.editReply({ content: "选卡邀请未能发到频道，本次邀请已取消。", components: [] });
+      return;
+    }
+    await interaction.editReply({ content: "已在频道邀请目标本人选卡，成功后才会成为 PL。", components: [] });
   }
 
   function closedMessage() {
@@ -195,17 +207,7 @@ export function createCocInteractionRouter({
     const labeled = members.map((member) => ({ ...member, label: memberOptionLabel(member) }));
     if (labeled.length === 1 && classified.kind === "id") {
       if (parsed.action === "modal-find-pl") {
-        await interaction.editReply({
-          content: `找到 ${labeled[0].label}。请填写本局角色名。`,
-          components: [
-            new ActionRowBuilder().addComponents(
-              new ButtonBuilder()
-                .setCustomId(buildCustomId("ask-name", parsed.sessionId, labeled[0].userId))
-                .setLabel("填写角色名")
-                .setStyle(ButtonStyle.Primary),
-            ),
-          ],
-        });
+        await sendCharacterInvite(interaction, parsed.sessionId, labeled[0].userId, "add");
         return;
       }
       const added = await service.addOb(parsed.sessionId, interaction.user.id, labeled[0].userId);
@@ -278,15 +280,20 @@ export function createCocInteractionRouter({
       return;
     }
     const userId = interaction.user.id;
+    if (action === "invite-open" || /^invited-page-\d+$/.test(action)) {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      await showCharacters(interaction, sessionId, action === "invite-open" ? 0 : Number(action.slice("invited-page-".length)), targetUserId);
+      return;
+    }
+    if (action === "invite-cancel") {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      const result = await service.cancelCharacterInvitation(sessionId, userId, targetUserId);
+      await interaction.editReply({ content: result.ok ? "选卡邀请已取消。" : result.message, components: [] });
+      return;
+    }
     if (action === "kl") {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       await showCharacters(interaction, sessionId);
-      return;
-    }
-    if (/^cards-page-\d+$/.test(action)) {
-      if (targetUserId !== userId) { await replyEphemeral(interaction, "只能操作自己的选卡菜单。"); return; }
-      await interaction.deferUpdate();
-      await showCharacters(interaction, sessionId, Number(action.slice("cards-page-".length)));
       return;
     }
     if (action === "ob") {
@@ -387,10 +394,6 @@ export function createCocInteractionRouter({
         logger.warn?.("CoC 取消面板更新失败", { message: error?.message, sessionId });
       }
       await interaction.editReply(ephemeral("招募已取消。"));
-      return;
-    }
-    if (action === "ask-name") {
-      await interaction.showModal(targetNameModal("modal-add-pl", sessionId, targetUserId));
       return;
     }
     if (action === "members") {
@@ -564,35 +567,22 @@ export function createCocInteractionRouter({
           await showMemberSearch(interaction, parsed);
           return;
         }
-        if (parsed.action === "modal-add-pl" || parsed.action === "modal-ob-pl") {
-          await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-          const name = interaction.fields.getTextInputValue("character");
-          const changed = parsed.action === "modal-add-pl"
-            ? await service.addPl(parsed.sessionId, interaction.user.id, parsed.userId, name)
-            : await service.convertObToPl(parsed.sessionId, interaction.user.id, parsed.userId, name);
-          if (!changed.ok) {
-            await interaction.editReply({ content: changed.message });
-            return;
-          }
-          await syncPanels(changed.session);
-          await interaction.editReply({ content: parsed.action === "modal-add-pl" ? "已添加为 PL。" : "已转为 PL。" });
-        }
         return;
       }
       if (interaction.isStringSelectMenu?.()) {
         const parsed = parseCustomId(interaction.customId);
         if (!parsed?.sessionId) return;
         const selected = String(interaction.values?.[0] ?? "");
-        if (parsed.action === "pick-character") {
-          if (parsed.userId !== interaction.user.id) { await replyEphemeral(interaction, "只能操作自己的选卡菜单。"); return; }
+        if (parsed.action === "pick-invited-character") {
           await interaction.deferUpdate();
-          await selectAndReply(interaction, parsed.sessionId, selected);
+          await selectAndReply(interaction, parsed.sessionId, selected, parsed.userId);
           return;
         }
         if (parsed.action === "pick-found-pl" || parsed.action === "pick-found-ob") {
           if (!selected) return;
           if (parsed.action === "pick-found-pl") {
-            await interaction.showModal(targetNameModal("modal-add-pl", parsed.sessionId, selected));
+            await interaction.deferUpdate();
+            await sendCharacterInvite(interaction, parsed.sessionId, selected, "add");
             return;
           }
           await interaction.deferUpdate();
@@ -608,7 +598,8 @@ export function createCocInteractionRouter({
         const [role, targetUserId] = selected.split(":");
         if (!targetUserId) return;
         if (parsed.action === "pick-convert" && role === "ob") {
-          await interaction.showModal(targetNameModal("modal-ob-pl", parsed.sessionId, targetUserId));
+          await interaction.deferUpdate();
+          await sendCharacterInvite(interaction, parsed.sessionId, targetUserId, "convert");
           return;
         }
         if (parsed.action === "pick-convert" && role === "pl") {

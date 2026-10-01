@@ -90,6 +90,16 @@ function fakeDiscord(overrides = {}) {
   };
 }
 
+async function bindPl(service, sessionId, userId, cardId) {
+  const prepared = await service.prepareCharacterSelection(sessionId, userId);
+  if (!prepared.ok) return prepared;
+  return service.selectCharacter(sessionId, userId, cardId, prepared.invitation.id);
+}
+async function invitePl(service, kind, sessionId, actorId, targetUserId, cardId) {
+  const invited = await service.inviteCharacter(sessionId, actorId, targetUserId, kind);
+  if (!invited.ok) return invited;
+  return service.selectCharacter(sessionId, targetUserId, cardId, invited.invitation.id);
+}
 function harness(discordOverrides = {}) {
   const { config: configOverrides = {}, randomInt, characters, ...rest } = discordOverrides;
   const dir = mkdtempSync(join(tmpdir(), "coc-mvp-"));
@@ -115,7 +125,13 @@ function harness(discordOverrides = {}) {
     logger: { warn() {}, error() {} },
     createId: () => "session-1",
     randomInt,
-    characters,
+    characters: characters ?? {
+      async list() { return { ok: true, characters: [{ id: "fixture-card" }] }; },
+      async read(id, ownerDiscordUserId) {
+        return { ok: true, snapshot: { characterId: id, ownerDiscordUserId, characterName: id,
+          occupation: "测试职业", initialHp: 10, initialSan: 50, initialMp: 10, initialLuck: 50, skills: [] } };
+      },
+    },
   });
   return { service, discord, store, dir, setNow: (value) => { now = value; } };
 }
@@ -138,7 +154,7 @@ function containsText(value, needle) {
     messageId: "panel",
   });
   assert(opened.ok, "KP 成功开团");
-  const kl = await service.joinPl("session-1", "kl", "奈洛莉");
+  const kl = await bindPl(service, "session-1", "kl", "奈洛莉");
   assert(kl.ok && kl.session.pl[0].characterName === "奈洛莉", "KL 填写角色名");
   const ob = await service.joinOb("session-1", "ob");
   assert(ob.ok && ob.session.ob.length === 1, "OB 报名");
@@ -179,7 +195,7 @@ function containsText(value, needle) {
   await service.openRecruit({
     guildId: "guild", channelId: "public", kpUserId: "kp", title: "无昵称", messageId: "panel",
   });
-  await service.joinPl("session-1", "kl", "奈洛莉");
+  await bindPl(service, "session-1", "kl", "奈洛莉");
   await service.confirmStart("session-1", "kp");
   await service.finish("session-1", "kp");
   assert(discord.calls.some((call) => call[0] === "nick" && call[2] === null), "原来没有昵称时清除");
@@ -194,7 +210,7 @@ function containsText(value, needle) {
   await service.openRecruit({
     guildId: "guild", channelId: "public", kpUserId: "kp", title: "半成品", messageId: "panel",
   });
-  await service.joinPl("session-1", "kl", "奈洛莉");
+  await bindPl(service, "session-1", "kl", "奈洛莉");
   const started = await service.confirmStart("session-1", "kp");
   assert(started.ok === false, "身份组失败则不开团");
   assert(discord.calls.some((call) => call[0] === "delete"), "失败后删掉刚建的频道");
@@ -207,7 +223,7 @@ function containsText(value, needle) {
   await service.openRecruit({
     guildId: "guild", channelId: "public", kpUserId: "kp", title: "改名失败", messageId: "panel",
   });
-  await service.joinPl("session-1", "kl", "奈洛莉");
+  await bindPl(service, "session-1", "kl", "奈洛莉");
   const started = await service.confirmStart("session-1", "kp");
   assert(started.ok && started.session.pl[0].appliedNickname === null, "改名失败仍开团且不记恢复义务");
 }
@@ -233,7 +249,7 @@ function containsText(value, needle) {
   await service.openRecruit({
     guildId: "guild", channelId: "public", kpUserId: "kp", title: "收尾", messageId: "panel",
   });
-  await service.joinPl("session-1", "kl", "奈洛莉");
+  await bindPl(service, "session-1", "kl", "奈洛莉");
   await service.confirmStart("session-1", "kp");
   await service.finish("session-1", "kp");
   const lock = discord.calls.find((call) => call[0] === "lock");
@@ -314,7 +330,7 @@ function containsText(value, needle) {
   await service.openRecruit({
     guildId: "guild", channelId: "public", kpUserId: "kp", title: "逐个卸", messageId: "panel",
   });
-  await service.joinPl("session-1", "kl", "奈洛莉");
+  await bindPl(service, "session-1", "kl", "奈洛莉");
   await service.confirmStart("session-1", "kp");
   await service.finish("session-1", "kp");
   assert(discord.calls.filter((call) => call[0] === "remove").length > 1, "一个身份组卸失败后继续卸其他人");
@@ -326,7 +342,7 @@ async function activeTable(overrides) {
   await env.service.openRecruit({
     guildId: "guild", channelId: "public", kpUserId: "kp", title: "成员", messageId: "panel",
   });
-  await env.service.joinPl("session-1", "pl", "奈洛莉");
+  await bindPl(env.service, "session-1", "pl", "奈洛莉");
   await env.service.joinOb("session-1", "ob");
   await env.service.confirmStart("session-1", "kp");
   await env.service.setControlMessage("session-1", "control");
@@ -340,7 +356,7 @@ async function activeTable(overrides) {
   const added = await service.addOb("session-1", "kp", "guest");
   assert(added.ok && added.session.ob.some((member) => member.userId === "guest"), "KP 添加外部 OB");
   assert(discord.calls.some((call) => call[0] === "grant" && call[2] === "guest"), "外部 OB 获得频道权限");
-  const asPl = await service.convertObToPl("session-1", "kp", "guest", "江某");
+  const asPl = await invitePl(service, "convert", "session-1", "kp", "guest", "江某");
   assert(asPl.ok && asPl.session.pl.some((member) => member.characterName === "江某"), "OB 转为 PL");
   assert(discord.calls.some((call) => call[0] === "add" && call[1] === "guest" && call[2] === "role-pl"), "转换后获得 PL 身份组");
   const back = await service.convertPlToOb("session-1", "kp", "pl");
@@ -350,7 +366,7 @@ async function activeTable(overrides) {
   assert(removed.ok && !removed.session.pl.some((member) => member.userId === "guest"), "移出 PL");
   assert(discord.calls.some((call) => call[0] === "revoke" && call[2] === "guest"), "移出后失去频道权限");
   assert((await service.removeMember("session-1", "kp", "kp")).ok === false, "不能移出 KP");
-  assert((await service.addPl("session-1", "kp", "robot", "机器人")).ok === false, "不能添加机器人");
+  assert((await invitePl(service, "add", "session-1", "kp", "robot", "机器人")).ok === false, "不能添加机器人");
   assert((await service.addOb("session-1", "kp", "pl")).message.includes("转换身份"), "本局成员要走转换身份");
 }
 
@@ -458,7 +474,7 @@ async function activeTable(overrides) {
       ],
     },
   });
-  const added = await service.addPl("session-1", "kp", "pl2", "江某");
+  const added = await invitePl(service, "add", "session-1", "kp", "pl2", "江某");
   assert(added.ok, "再加一名 PL");
   const kpRoll = await service.rollTextDice({
     channelId: "room-1", userId: "kp", displayName: "主持人", content: "1d100",
@@ -666,7 +682,7 @@ async function activeTable(overrides) {
   const toOb = await service.convertPlToOb("session-1", "kp", "pl");
   assert(toOb.ok, "PL 转成 OB");
   setNow(t(40));
-  const toPl = await service.convertObToPl("session-1", "kp", "ob", "后来");
+  const toPl = await invitePl(service, "convert", "session-1", "kp", "ob", "后来");
   assert(toPl.ok, "OB 转成 PL");
   const before = JSON.parse(readFileSync(store.filePath, "utf8"));
   const seats = before.sessions[0].transcriptSeats;
@@ -815,6 +831,113 @@ async function activeTable(overrides) {
   assert(discord.calls.some((call) => call[0] === "nick" && call[2] === "档案馆姓名"), "复用开团逻辑设置档案馆姓名");
   await service.finish("session-1", "kp");
   assert(discord.calls.some((call) => call[0] === "nick" && call[2] === "Dream"), "复用结束逻辑恢复原昵称");
+}
+
+{
+  const snapshot = (ownerDiscordUserId) => ({ characterId: "archive-card", ownerDiscordUserId,
+    characterName: "档案馆调查员", occupation: "演员", initialHp: 11, initialSan: 35,
+    initialMp: 14, initialLuck: 60, skills: [{ name: "演技", base: 5, growth: 0, occupationPoints: 45, interestPoints: 0 }] });
+  let wrongOwner = false;
+  let noCards = false;
+  let failApi = false;
+  let releaseRead;
+  let holdRead = false;
+  const characters = {
+    async list() { return failApi ? { ok: false, message: "档案馆不可用" } : { ok: true, characters: noCards ? [] : [{ id: "archive-card" }] }; },
+    async read(_id, userId) {
+      if (holdRead) return new Promise((resolve) => { releaseRead = resolve; });
+      return failApi ? { ok: false, message: "档案馆不可用" }
+        : { ok: true, snapshot: snapshot(wrongOwner ? "other" : userId) };
+    },
+  };
+  const { service, discord, store } = harness({ characters });
+  await service.openRecruit({ guildId: "guild", channelId: "recruit", kpUserId: "kp", title: "邀请补丁" });
+  await bindPl(service, "session-1", "kl", "archive-card");
+  await service.confirmStart("session-1", "kp");
+  const invited = await service.inviteCharacter("session-1", "kp", "guest", "add");
+  assert(invited.ok && !service.find("session-1").pl.some((item) => item.userId === "guest"), "KP 邀请不先创建正式 PL");
+  assert(!discord.calls.some((call) => call[0] === "nick" && call[1] === "guest"), "邀请时不修改目标昵称");
+  assert((await service.prepareCharacterSelection("session-1", "kp", invited.invitation.id)).ok === false, "KP 不能打开别人的选卡菜单");
+  assert((await service.selectCharacter("session-1", "kp", "archive-card", invited.invitation.id)).ok === false, "KP 不能替目标选卡");
+  const accepted = await service.selectCharacter("session-1", "guest", "archive-card", invited.invitation.id);
+  const added = accepted.session?.pl.find((item) => item.userId === "guest");
+  assert(accepted.ok && Object.entries(snapshot("guest")).every(([key, value]) => JSON.stringify(added[key]) === JSON.stringify(value)), "本人选卡成功且所有快照字段完整");
+  assert(discord.calls.some((call) => call[0] === "nick" && call[1] === "guest" && call[2] === "档案馆调查员"), "新增 PL 昵称使用档案馆姓名");
+  assert(discord.calls.some((call) => call[0] === "grant" && call[2] === "guest"), "选卡成功后才授予频道权限");
+  assert(!service.invitationFor("session-1", invited.invitation.id), "成功后消费邀请，不能重复加入");
+  await service.addOb("session-1", "kp", "observer");
+  const conversion = await service.inviteCharacter("session-1", "kp", "observer", "convert");
+  assert(conversion.ok && service.find("session-1").ob.some((item) => item.userId === "observer"), "OB 邀请阶段保留原 OB 身份");
+  const converted = await service.selectCharacter("session-1", "observer", "archive-card", conversion.invitation.id);
+  assert(converted.ok && converted.session.pl.some((item) => item.userId === "observer" && item.characterId === "archive-card")
+    && !converted.session.ob.some((item) => item.userId === "observer"), "OB 本人选卡成功后正式转 PL");
+  assert(discord.calls.some((call) => call[0] === "nick" && call[1] === "observer" && call[2] === "档案馆调查员"), "OB 转 PL 使用档案馆昵称");
+
+  const empty = await service.inviteCharacter("session-1", "kp", "empty", "add");
+  noCards = true;
+  const emptyList = await service.prepareCharacterSelection("session-1", "empty", empty.invitation.id);
+  noCards = false;
+  assert(emptyList.ok && emptyList.characters.length === 0 && !service.invitationFor("session-1", empty.invitation.id)
+    && !service.find("session-1").pl.some((item) => item.userId === "empty"), "无卡取消邀请且没有半成品 PL");
+  const denied = await service.inviteCharacter("session-1", "kp", "denied", "add");
+  wrongOwner = true;
+  assert(!(await service.selectCharacter("session-1", "denied", "archive-card", denied.invitation.id)).ok, "owner 不匹配拒绝");
+  wrongOwner = false;
+  assert(!service.invitationFor("session-1", denied.invitation.id) && !service.find("session-1").pl.some((item) => item.userId === "denied"), "owner 错误不留下邀请或正式 PL");
+  const unavailable = await service.inviteCharacter("session-1", "kp", "unavailable", "add");
+  failApi = true;
+  assert(!(await service.prepareCharacterSelection("session-1", "unavailable", unavailable.invitation.id)).ok
+    && !service.invitationFor("session-1", unavailable.invitation.id), "API 列表失败清理 pending");
+  failApi = false;
+  const cancelled = await service.inviteCharacter("session-1", "kp", "cancelled", "add");
+  assert(!(await service.cancelCharacterInvitation("session-1", "stranger", cancelled.invitation.id)).ok, "其它用户不能取消邀请");
+  assert((await service.cancelCharacterInvitation("session-1", "kp", cancelled.invitation.id)).ok, "KP 可以取消邀请");
+  assert(!(await service.selectCharacter("session-1", "cancelled", "archive-card", cancelled.invitation.id)).ok, "取消后旧按钮不能再加入");
+  const selfCancelled = await service.inviteCharacter("session-1", "kp", "self", "add");
+  assert((await service.cancelCharacterInvitation("session-1", "self", selfCancelled.invitation.id)).ok, "目标本人可以取消邀请");
+  const disappeared = await service.inviteCharacter("session-1", "kp", "gone", "add");
+  holdRead = true;
+  const reading = service.selectCharacter("session-1", "gone", "archive-card", disappeared.invitation.id);
+  await service.cancelCharacterInvitation("session-1", "kp", disappeared.invitation.id);
+  releaseRead({ ok: true, snapshot: snapshot("gone") });
+  assert(!(await reading).ok && !service.find("session-1").pl.some((item) => item.userId === "gone"), "读卡期间取消不会回写 PL");
+  holdRead = false;
+  const ending = await service.inviteCharacter("session-1", "kp", "late", "add");
+  holdRead = true;
+  const late = service.selectCharacter("session-1", "late", "archive-card", ending.invitation.id);
+  await service.finish("session-1", "kp");
+  const finished = store.snapshot();
+  releaseRead({ ok: true, snapshot: snapshot("late") });
+  assert(!(await late).ok && JSON.stringify(store.snapshot()) === JSON.stringify(finished), "读卡期间结束 Session 不回写任何场次数据");
+  assert(service.find("session-1").characterInvitations.length === 0, "结束团清除所有选卡邀请");
+}
+
+{
+  const { service, discord } = harness();
+  await service.openRecruit({ guildId: "guild", channelId: "recruit", kpUserId: "kp", title: "邀请权限竞态" });
+  await bindPl(service, "session-1", "kl", "奈洛莉");
+  await service.confirmStart("session-1", "kp");
+  const departed = await service.inviteCharacter("session-1", "kp", "departed", "add");
+  const originalFetch = discord.fetchGuildMember;
+  discord.fetchGuildMember = async (_guild, userId) => {
+    if (userId === "departed") throw new Error("left guild");
+    return originalFetch(_guild, userId);
+  };
+  assert(!(await service.selectCharacter("session-1", "departed", "江某", departed.invitation.id)).ok
+    && !service.invitationFor("session-1", departed.invitation.id), "目标离开服务器不加入且清理邀请");
+  let release;
+  let entered;
+  const blocked = new Promise((resolve) => { entered = resolve; });
+  discord.grantChannelAccess = async () => { entered(); await new Promise((resolve) => { release = resolve; }); };
+  const ending = await service.inviteCharacter("session-1", "kp", "late", "add");
+  const selecting = service.selectCharacter("session-1", "late", "江某", ending.invitation.id);
+  await blocked;
+  await service.finish("session-1", "kp");
+  release();
+  const result = await selecting;
+  assert(!result.ok && !service.find("session-1").pl.some((member) => member.userId === "late"), "权限操作期间结束团也不会提交半成品 PL");
+  assert(discord.calls.some((call) => call[0] === "revoke" && call[2] === "late"), "结束后收回晚到的新增频道权限");
+  assert(service.find("session-1").pendingMemberOp === null, "晚到变更回滚后清理操作锁");
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

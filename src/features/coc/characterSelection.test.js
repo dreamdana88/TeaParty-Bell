@@ -65,6 +65,7 @@ try {
   check((await service.prepareCharacterSelection("s1", "100")).ok, "PL 报名后查询列表");
   check(!service.previewStart("s1", "kp").ok, "未选卡不能开团");
   check(!(await service.selectCharacter("s1", "100", "b")).ok, "响应角色 ID 不符不能绑定");
+  await service.prepareCharacterSelection("s1", "100");
   const selected = await service.selectCharacter("s1", "100", "a");
   check(selected.ok, "选择自己的卡成功");
   const member = service.find("s1").pl[0];
@@ -82,9 +83,11 @@ try {
   status = 500;
   const beforeError = store.snapshot();
   check(!(await service.selectCharacter("s1", "100", "a")).ok, "读卡服务异常不绑定角色");
-  assert.deepEqual(store.snapshot(), beforeError);
+  assert.deepEqual(store.snapshot().sessions[0].pl, beforeError.sessions[0].pl);
+  check(store.snapshot().sessions[0].characterInvitations.length === 0, "读卡失败清理选卡邀请");
   check(true, "失败的读卡不会改写已有快照");
   status = 200;
+  await service.prepareCharacterSelection("s1", "100");
   let release;
   const racing = createCocSessionService({ store, discord: {}, config: { enabled: true }, characters: {
     read: async () => new Promise((resolve) => { release = resolve; }),
@@ -100,7 +103,8 @@ try {
   let selectedId;
   const router = createCocInteractionRouter({ client: interactionClient, archiveUrl: "https://archive.example/investigators",
     service: { availability: () => "ready",
-      prepareCharacterSelection: async () => ({ ok: true, characters: listedCards, session: service.find("s1") }),
+      prepareCharacterSelection: async () => ({ ok: true, characters: listedCards, session: service.find("s1"), invitation: { id: "inv-100" } }),
+      invitationFor: (_session, id) => id === "inv-100" ? { targetUserId: "100" } : { targetUserId: "200" },
       selectCharacter: async (_s, _u, id) => { choices++; selectedId = id; return { ok: true, session: { sessionId: "s1", pl: [{ userId: "100", characterName: "奈洛莉" }] } }; },
     }, discord: {}, logger: { error() {}, warn() {} } });
   router.start();
@@ -112,8 +116,8 @@ try {
   listedCards = [...summary, { ...summary[0], id: "b" }];
   await interactionClient.fn({ ...base, isButton: () => true, customId: "coc:v1:kl:s1" });
   check(choices === 1 && replies.at(-1).components[0].toJSON().components[0].options.length === 2, "多张卡显示本人选择菜单");
-  await interactionClient.fn({ ...base, isStringSelectMenu: () => true, customId: "coc:v1:pick-character:s1:200", values: ["b"] });
-  check(choices === 1 && replies.at(-1).content.includes("自己的"), "伪造他人的菜单被拒绝");
+  await interactionClient.fn({ ...base, isStringSelectMenu: () => true, customId: "coc:v1:pick-invited-character:s1:inv-200", values: ["b"] });
+  check(choices === 1 && replies.at(-1).content.includes("目标本人"), "伪造他人的菜单被拒绝");
   listedCards = [];
   await interactionClient.fn({ ...base, isButton: () => true, customId: "coc:v1:kl:s1" });
   check(replies.at(-1).components[0].toJSON().components[0].url === "https://archive.example/investigators", "无卡提示包含档案馆链接");
@@ -121,8 +125,8 @@ try {
   check(replies.at(-1).content.includes("Discord 授权"), "/coc 建卡提供仅本人入口和授权说明");
   router.destroy();
   const many = Array.from({ length: 26 }, (_, index) => ({ ...summary[0], id: `card-${index}` }));
-  check(characterChoices("s1", "100", many).components[0].toJSON().components[0].options.length === 25, "每页最多 25 张卡");
-  check(characterChoices("s1", "100", many, 1).components[0].toJSON().components[0].options[0].value === "card-25", "第 26 张卡可以在下一页选择");
+  check(characterChoices("s1", "100", many, 0, "inv-100").components[0].toJSON().components[0].options.length === 25, "每页最多 25 张卡");
+  check(characterChoices("s1", "100", many, 1, "inv-100").components[0].toJSON().components[0].options[0].value === "card-25", "第 26 张卡可以在下一页选择");
   check(archiveEntry("").components.length === 0, "入口未配置时不编造网址");
   check(cocCommandDefinitions.find((item) => item.name === "coc").options.some((item) => item.name === "建卡"), "正式命令定义包含建卡子命令");
   check(requests.every((request) => request.method === "GET" && request.auth === `Bearer ${secret}`), "所有档案馆请求仅 GET 且使用 Bearer 密钥");

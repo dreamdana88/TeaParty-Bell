@@ -174,41 +174,122 @@ export function createCocSessionService({
     return { ok: true, session: saved.result };
   }
 
-  function joinPl(sessionId, userId, characterName) {
-    return mutateRecruit(sessionId, userId, (all, session) => signupPl(all, session, userId, characterName));
+  function selectionGate(all, session, userId, kind) {
+    if (!session) return { ok: false, message: "这场跑团已经不在了。" };
+    if (kind === "signup") {
+      if (session.state !== SESSION_STATES.recruiting) return { ok: false, message: "这场招募已经结束。" };
+      if (session.kpUserId === userId || findOccupyingSession(all, userId, session.sessionId)) {
+        return { ok: false, message: "你不能报名这场 PL，请先确认当前跑团身份。" };
+      }
+      return { ok: true };
+    }
+    const gate = gateMemberAdmin(session, session.kpUserId);
+    if (!gate.ok) return gate;
+    if (kind === "convert") return memberRole(session, userId) === "OB"
+      ? { ok: true } : { ok: false, message: "目标已不是本局 OB。" };
+    return gateNewMember(all, session, userId, false);
   }
 
-  async function prepareCharacterSelection(sessionId, userId) {
-    if (!characters) return { ok: false, message: "档案馆接口尚未配置。" };
-    const previous = find(sessionId)?.pl.find((member) => member.userId === userId);
-    const joined = await joinPl(sessionId, userId, previous?.characterName || "待选择调查员");
-    if (!joined.ok) return joined;
+  function invitationFor(sessionId, invitationId) {
+    return find(sessionId)?.characterInvitations?.find((item) => item.id === invitationId) ?? null;
+  }
+
+  async function cancelCharacterInvitation(sessionId, actorId, invitationId) {
+    const saved = await store.update((state) => {
+      const session = state.sessions.find((item) => item.sessionId === sessionId);
+      const invitation = session?.characterInvitations?.find((item) => item.id === invitationId);
+      if (!invitation) return { errorCode: "MISSING", message: "邀请已经失效。" };
+      if (actorId !== invitation.targetUserId && actorId !== session.kpUserId) {
+        return { errorCode: "FORBIDDEN", message: "只有目标本人或 KP 可以取消邀请。" };
+      }
+      const next = { ...session, characterInvitations: session.characterInvitations.filter((item) => item.id !== invitationId) };
+      return { state: { ...state, sessions: replaceSession(state.sessions, next) }, result: next };
+    });
+    return saved.ok ? { ok: true, session: saved.result } : { ok: false, message: saved.message };
+  }
+
+  async function inviteCharacter(sessionId, actorId, targetUserId, kind = "add") {
+    if (kind !== "add" && kind !== "convert") return { ok: false, message: "选卡邀请类型无效。" };
+    if (mode !== "ready" || !characters) return unavailable("档案馆选卡暂时不可用。");
+    let info;
+    try { info = await discord.fetchGuildMember(find(sessionId)?.guildId, targetUserId); }
+    catch { return { ok: false, message: "该成员不在这个服务器里。" }; }
+    if (info.bot) return { ok: false, message: "不能把机器人加进跑团。" };
+    const saved = await store.update((state) => {
+      const session = state.sessions.find((item) => item.sessionId === sessionId);
+      const admin = gateMemberAdmin(session, actorId);
+      if (!admin.ok) return { errorCode: "REJECTED", message: admin.message };
+      const gate = selectionGate(state.sessions, session, targetUserId, kind);
+      if (!gate.ok) return { errorCode: "REJECTED", message: gate.message };
+      const invitation = { id: randomBytes(8).toString("hex"), targetUserId, kind, actorId };
+      const next = { ...session, characterInvitations: [
+        ...(session.characterInvitations ?? []).filter((item) => item.targetUserId !== targetUserId), invitation,
+      ] };
+      return { state: { ...state, sessions: replaceSession(state.sessions, next) }, result: { session: next, invitation } };
+    });
+    return saved.ok ? { ok: true, ...saved.result } : { ok: false, message: saved.message };
+  }
+
+  async function prepareCharacterSelection(sessionId, userId, invitationId = null) {
+    if (mode !== "ready" || !characters) return unavailable("档案馆选卡暂时不可用。");
+    let invitation = invitationId ? invitationFor(sessionId, invitationId) : null;
+    if (invitationId && (!invitation || invitation.targetUserId !== userId)) {
+      return { ok: false, message: "只有目标本人可以选卡，或邀请已失效。" };
+    }
+    if (!invitationId) {
+      const saved = await store.update((state) => {
+        const session = state.sessions.find((item) => item.sessionId === sessionId);
+        const gate = selectionGate(state.sessions, session, userId, "signup");
+        if (!gate.ok) return { errorCode: "REJECTED", message: gate.message };
+        invitation = { id: randomBytes(8).toString("hex"), targetUserId: userId, kind: "signup", actorId: userId };
+        const next = { ...session, characterInvitations: [
+          ...(session.characterInvitations ?? []).filter((item) => item.targetUserId !== userId), invitation,
+        ] };
+        return { state: { ...state, sessions: replaceSession(state.sessions, next) }, result: next };
+      });
+      if (!saved.ok) return { ok: false, message: saved.message };
+    }
+    const gate = selectionGate(sessions(), find(sessionId), userId, invitation.kind);
+    if (!gate.ok) return gate;
     const listed = await characters.list(userId);
-    return { ...listed, session: joined.session };
+    if (!listed.ok || listed.characters.length === 0) {
+      await cancelCharacterInvitation(sessionId, userId, invitation.id);
+    }
+    return { ...listed, session: find(sessionId), invitation };
   }
 
-  async function selectCharacter(sessionId, userId, characterId) {
+  async function selectCharacter(sessionId, userId, characterId, invitationId = null) {
     if (mode !== "ready") return unavailable(statusMessage());
     if (!characters) return { ok: false, message: "档案馆接口尚未配置。" };
     const session = find(sessionId);
-    if (session?.state !== SESSION_STATES.recruiting || !session.pl.some((member) => member.userId === userId)) {
-      return { ok: false, message: "只有本场招募中的 PL 可以选择调查员。" };
-    }
+    const invitation = invitationId ? invitationFor(sessionId, invitationId)
+      : session?.characterInvitations?.find((item) => item.targetUserId === userId && item.kind === "signup");
+    if (!invitation || invitation.targetUserId !== userId) return { ok: false, message: "只有邀请目标本人可以选卡，或邀请已失效。" };
+    const gate = selectionGate(sessions(), session, userId, invitation.kind);
+    if (!gate.ok) return gate;
     const read = await characters.read(characterId, userId);
-    if (!read.ok) return read;
+    if (!read.ok) { await cancelCharacterInvitation(sessionId, userId, invitation.id); return read; }
     const snapshot = read.snapshot;
-    if (snapshot.ownerDiscordUserId !== userId) return { ok: false, message: "只能选择自己的角色卡。" };
+    if (snapshot.ownerDiscordUserId !== userId) {
+      await cancelCharacterInvitation(sessionId, userId, invitation.id);
+      return { ok: false, message: "只能选择自己的角色卡。" };
+    }
     if (!normalizeCharacterName(snapshot.characterName)) {
+      await cancelCharacterInvitation(sessionId, userId, invitation.id);
       return { ok: false, message: "调查员姓名不能超过 32 个字，请先到档案馆修改。" };
     }
+    if (invitation.kind !== "signup") return acceptCharacterInvitation(sessionId, userId, invitation, snapshot);
     const saved = await store.update((state) => {
       const current = state.sessions.find((item) => item.sessionId === sessionId);
       if (mode !== "ready" || current?.state !== SESSION_STATES.recruiting
-        || !current.pl.some((member) => member.userId === userId)) {
+        || !current.characterInvitations?.some((item) => item.id === invitation.id)) {
         return { errorCode: "REJECTED", message: "报名状态已改变，请重新打开选卡。" };
       }
-      const next = { ...current, pl: current.pl.map((member) => member.userId === userId
-        ? { ...member, ...structuredClone(snapshot) } : member) };
+      const joined = signupPl(state.sessions, current, userId, snapshot.characterName);
+      if (!joined.ok) return { errorCode: "REJECTED", message: joined.message };
+      const next = { ...joined.session,
+        characterInvitations: current.characterInvitations.filter((item) => item.id !== invitation.id),
+        pl: joined.session.pl.map((member) => member.userId === userId ? { ...member, ...structuredClone(snapshot) } : member) };
       return { state: { ...state, sessions: replaceSession(state.sessions, next) }, result: next };
     });
     return saved.ok ? { ok: true, session: saved.result } : { ok: false, message: saved.message };
@@ -224,7 +305,11 @@ export function createCocSessionService({
   }
 
   function leave(sessionId, userId) {
-    return mutateRecruit(sessionId, userId, (_all, session) => cancelSignup(session, userId));
+    return mutateRecruit(sessionId, userId, (_all, session) => {
+      const changed = cancelSignup(session, userId);
+      if (changed.ok) changed.session.characterInvitations = (session.characterInvitations ?? []).filter((item) => item.targetUserId !== userId);
+      return changed;
+    });
   }
 
   function previewStart(sessionId, actorId) {
@@ -702,7 +787,7 @@ export function createCocSessionService({
     const op = session?.pendingMemberOp;
     if (!session || !op) return;
     try {
-      await ensureCocRole(session.guildId, op.targetUserId, op.beforeRole ?? null);
+      await ensureCocRole(session.guildId, op.targetUserId, session.state === SESSION_STATES.active ? (op.beforeRole ?? null) : null);
     } catch (error) {
       logger.warn?.("CoC 回滚身份组失败", { message: error?.message, userId: op.targetUserId });
     }
@@ -713,7 +798,7 @@ export function createCocSessionService({
         logger.warn?.("CoC 收回频道权限失败", { message: error?.message });
       }
     }
-    if (session.runChannelId && op.beforeChannelAccess === true) {
+    if (session.runChannelId && op.beforeChannelAccess === true && session.state === SESSION_STATES.active) {
       try {
         await discord.grantChannelAccess(session.runChannelId, op.targetUserId);
       } catch (error) {
@@ -747,6 +832,11 @@ export function createCocSessionService({
     return store.update((state) => {
       const current = state.sessions.find((item) => item.sessionId === sessionId);
       if (!current?.pendingMemberOp) return { errorCode: "MISSING", message: "没有进行中的成员变更。" };
+      if (current.state !== SESSION_STATES.active) return { errorCode: "ENDED", message: "本局已结束。" };
+      const invitationId = current.pendingMemberOp.invitationId;
+      if (invitationId && !current.characterInvitations?.some((item) => item.id === invitationId)) {
+        return { errorCode: "CANCELLED", message: "选卡邀请已经取消。" };
+      }
       const next = apply(current, clock.now());
       return { state: { ...state, sessions: replaceSession(state.sessions, next) }, result: next };
     });
@@ -789,37 +879,28 @@ export function createCocSessionService({
     }
   }
 
-  async function addPl(sessionId, actorId, targetUserId, characterName) {
+  async function acceptCharacterInvitation(sessionId, userId, invitation, snapshot) {
     let info;
-    try {
-      info = await discord.fetchGuildMember(find(sessionId)?.guildId, targetUserId);
-    } catch {
-      return { ok: false, message: "该成员不在这个服务器里。" };
-    }
-    const name = normalizeCharacterName(characterName);
-    if (!name) return { ok: false, message: "角色名不能为空，且不能超过 32 个字。" };
-    return runMemberChange(
-      sessionId,
-      actorId,
-      (all, session) => gateNewMember(all, session, targetUserId, info.bot),
-      {
-        id: createId(),
-        type: "add-pl",
-        targetUserId,
-        beforeRole: null,
-        afterRole: "pl",
-        beforeChannelAccess: false,
-        afterChannelAccess: true,
-        nicknameBefore: info.nickname ?? null,
-        nicknameAfter: name,
-      },
-      (current, nick, at) => applyAddPl(current, {
-        userId: targetUserId,
-        characterName: name,
-        originalNickname: nick.originalNickname,
-        appliedNickname: nick.changed ? name : null,
-      }, at),
-    );
+    try { info = await discord.fetchGuildMember(find(sessionId)?.guildId, userId); }
+    catch { await cancelCharacterInvitation(sessionId, userId, invitation.id); return { ok: false, message: "目标用户已离开服务器。" }; }
+    const result = await runMemberChange(sessionId, invitation.actorId,
+      (all, session) => {
+        if (!session.characterInvitations?.some((item) => item.id === invitation.id && item.targetUserId === userId)) {
+          return { ok: false, message: "选卡邀请已经取消。" };
+        }
+        if (info.bot) return { ok: false, message: "不能把机器人加进跑团。" };
+        return selectionGate(all, session, userId, invitation.kind);
+      }, {
+        id: randomBytes(8).toString("hex"), type: "invite-pl", invitationId: invitation.id,
+        targetUserId: userId, beforeRole: invitation.kind === "convert" ? "ob" : null,
+        afterRole: "pl", beforeChannelAccess: invitation.kind === "convert", afterChannelAccess: true,
+        nicknameBefore: info.nickname ?? null, nicknameAfter: snapshot.characterName,
+      }, (current, nick, at) => ({ ...applyAddPl(current, {
+        userId, ...structuredClone(snapshot), originalNickname: nick.originalNickname,
+        appliedNickname: nick.changed ? snapshot.characterName : null,
+      }, at), characterInvitations: current.characterInvitations.filter((item) => item.id !== invitation.id) }));
+    if (!result.ok) await cancelCharacterInvitation(sessionId, userId, invitation.id);
+    return result;
   }
 
   async function addOb(sessionId, actorId, targetUserId) {
@@ -843,43 +924,6 @@ export function createCocSessionService({
         afterChannelAccess: true,
       },
       (_current, _nick, at) => applyAddOb(_current, targetUserId, at),
-    );
-  }
-
-  async function convertObToPl(sessionId, actorId, targetUserId, characterName) {
-    const name = normalizeCharacterName(characterName);
-    if (!name) return { ok: false, message: "角色名不能为空，且不能超过 32 个字。" };
-    let nicknameBefore = null;
-    try {
-      nicknameBefore = await discord.fetchNickname(find(sessionId)?.guildId, targetUserId);
-    } catch {
-      nicknameBefore = null;
-    }
-    return runMemberChange(
-      sessionId,
-      actorId,
-      (_all, session) => (
-        memberRole(session, targetUserId) === "OB"
-          ? { ok: true }
-          : { ok: false, message: "只能把本局 OB 转成 PL。" }
-      ),
-      {
-        id: createId(),
-        type: "ob-to-pl",
-        targetUserId,
-        beforeRole: "ob",
-        afterRole: "pl",
-        beforeChannelAccess: true,
-        afterChannelAccess: true,
-        nicknameBefore,
-        nicknameAfter: name,
-      },
-      (current, nick, at) => applyAddPl(current, {
-        userId: targetUserId,
-        characterName: name,
-        originalNickname: nick.originalNickname,
-        appliedNickname: nick.changed ? name : null,
-      }, at),
     );
   }
 
@@ -1084,7 +1128,7 @@ export function createCocSessionService({
     openRecruit,
     setRecruitMessage,
     setControlMessage,
-    joinPl,
+    inviteCharacter,
     prepareCharacterSelection,
     selectCharacter,
     joinOb,
@@ -1095,9 +1139,9 @@ export function createCocSessionService({
     cancelRecruit,
     confirmStart,
     finish,
-    addPl,
+    invitationFor,
     addOb,
-    convertObToPl,
+    cancelCharacterInvitation,
     convertPlToOb,
     removeMember,
     previewMembers,

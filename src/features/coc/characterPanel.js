@@ -11,21 +11,33 @@ export function archiveEntry(url, content = "打开调查员档案馆创建或�
   )] };
 }
 
-export function characterChoices(sessionId, userId, cards, page = 0) {
+export function characterChoices(sessionId, userId, cards, page = 0, invitationId) {
   const last = Math.max(0, Math.ceil(cards.length / 25) - 1);
   const current = Math.min(last, Math.max(0, page));
   const components = [new ActionRowBuilder().addComponents(new StringSelectMenuBuilder()
-    .setCustomId(buildCustomId("pick-character", sessionId, userId))
+    .setCustomId(buildCustomId("pick-invited-character", sessionId, invitationId))
     .setPlaceholder("选择本次跑团的调查员")
     .addOptions(cards.slice(current * 25, (current + 1) * 25).map((card) => ({
       label: (card.name || "未命名调查员").slice(0, 100), value: card.id,
       description: `${card.occupation || "职业未填写"} · ${card.era || "时代未填写"}`.slice(0, 100),
     }))))];
   if (last > 0) components.push(new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(buildCustomId(`cards-page-${current - 1}`, sessionId, userId))
+    new ButtonBuilder().setCustomId(buildCustomId(`invited-page-${current - 1}`, sessionId, invitationId))
       .setLabel("上一页").setStyle(ButtonStyle.Secondary).setDisabled(current === 0),
-    new ButtonBuilder().setCustomId(buildCustomId(`cards-page-${current + 1}`, sessionId, userId))
+    new ButtonBuilder().setCustomId(buildCustomId(`invited-page-${current + 1}`, sessionId, invitationId))
       .setLabel("下一页").setStyle(ButtonStyle.Secondary).setDisabled(current === last),
   ));
+  if (invitationId) components.push(new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(buildCustomId("invite-cancel", sessionId, invitationId)).setLabel("取消选卡").setStyle(ButtonStyle.Secondary),
+  ));
   return { content: `请选择你自己的调查员（第 ${current + 1}/${last + 1} 页）。`, allowedMentions: { parse: [] }, components };
+}
+
+export function characterInvitation(sessionId, invitation) {
+  return { content: `<@${invitation.targetUserId}>，请选择本局调查员。只有你本人可以选卡；你或 KP 可以取消邀请。`,
+    allowedMentions: { users: [invitation.targetUserId], parse: [] },
+    components: [new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(buildCustomId("invite-open", sessionId, invitation.id)).setLabel("选择调查员").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(buildCustomId("invite-cancel", sessionId, invitation.id)).setLabel("取消邀请").setStyle(ButtonStyle.Secondary),
+    )] };
 }

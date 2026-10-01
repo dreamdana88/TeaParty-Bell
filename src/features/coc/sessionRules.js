@@ -368,7 +368,7 @@ export function lockStarting(session) {
   if (session.state !== SESSION_STATES.recruiting) {
     return { ok: false, message: "这场招募已经在开始，或已经开始了。" };
   }
-  return { ok: true, session: { ...session, state: SESSION_STATES.starting } };
+  return { ok: true, session: { ...session, state: SESSION_STATES.starting, characterInvitations: [] } };
 }
 
 export function revertStarting(session) {
@@ -400,6 +400,7 @@ export function requestCancel(session, actorId) {
 export function markCancelled(session, now) {
   return {
     ...session,
+    characterInvitations: [],
     state: SESSION_STATES.cancelled,
     endedAt: now,
   };
@@ -423,6 +424,7 @@ export function markEnding(session, now) {
   if (session.state !== SESSION_STATES.active && session.state !== SESSION_STATES.ending) return null;
   return {
     ...session,
+    characterInvitations: [],
     state: SESSION_STATES.ending,
     endedAt: session.endedAt ?? now,
     deleteAt: session.deleteAt ?? now + DELETE_AFTER_MS,
@@ -532,6 +534,7 @@ export function applyRemoveMember(session, userId, at) {
   const next = withTranscriptOptOut({ ...session, transcriptSeats }, userId, false, at);
   return {
     ...next,
+    characterInvitations: (session.characterInvitations ?? []).filter((item) => item.targetUserId !== userId),
     pl: withoutUser(session.pl, userId),
     ob: withoutUser(session.ob, userId),
     pendingMemberOp: null,
