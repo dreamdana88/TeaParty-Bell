@@ -1,4 +1,4 @@
-import { attachTextDiceListener, formatBonusPenalty, formatTextDice, isWholeMessageDice, messageNeedsTextDice } from "./textDice.js";
+import { attachTextDiceListener, findSnapshotSkill, formatBonusPenalty, formatTextDice, isWholeMessageDice, messageNeedsTextDice, parseSkillDice } from "./textDice.js";
 
 let passed = 0;
 let failed = 0;
@@ -28,34 +28,34 @@ assert(!isWholeMessageDice(""), "空消息不掷");
 
 assertEqual(formatTextDice("user", {
   notation: "1d100", count: 1, rolls: [79], modifier: 0, total: 79,
-}), "<@user> 🎲 1d100 = 79", "单骰 1d100");
+}), "**<@user> 祝骰运昌隆喵~！**\n🎲 1d100 = 79", "单骰 1d100");
 assertEqual(formatTextDice("user", {
   notation: "1d4", count: 1, rolls: [3], modifier: 0, total: 3,
-}), "<@user> 🎲 1d4 = 3", "单骰 1d4");
+}), "**<@user> 祝骰运昌隆喵~！**\n🎲 1d4 = 3", "单骰 1d4");
 assertEqual(formatTextDice("user", {
   notation: "2d6", count: 2, rolls: [1, 5], modifier: 0, total: 6,
-}), "<@user> 🎲 2d6 → [1, 5] = 6", "多骰列出每一颗");
+}), "**<@user> 祝骰运昌隆喵~！**\n🎲 2d6 → [1, 5] = 6", "多骰列出每一颗");
 assertEqual(formatTextDice("user", {
   notation: "2d6+3", count: 2, rolls: [1, 5], modifier: 3, total: 9,
-}), "<@user> 🎲 2d6+3 → [1, 5] + 3 = 9", "多骰加修正");
+}), "**<@user> 祝骰运昌隆喵~！**\n🎲 2d6+3 → [1, 5] + 3 = 9", "多骰加修正");
 assertEqual(formatTextDice("user", {
   notation: "3d8-2", count: 3, rolls: [4, 7, 2], modifier: -2, total: 11,
-}), "<@user> 🎲 3d8-2 → [4, 7, 2] - 2 = 11", "多骰减修正");
+}), "**<@user> 祝骰运昌隆喵~！**\n🎲 3d8-2 → [4, 7, 2] - 2 = 11", "多骰减修正");
 assertEqual(formatTextDice("user", {
   notation: "2d6+3", count: 2, rolls: [1, 5], modifier: 3, total: 9,
 }).includes("[1, 5]"), true, "展示用传入的骰面，不另掷");
 assertEqual(formatBonusPenalty("user", {
   notation: "1D100 奖励1", candidates: [57, 27], total: 27,
-}), "<@user> 🎲 1D100 奖励1 → [57, 27] = 27", "奖励1 展示候选");
+}), "**<@user> 祝骰运昌隆喵~！**\n🎲 1D100 奖励1 → [57, 27] = 27", "奖励1 展示候选");
 assertEqual(formatBonusPenalty("user", {
   notation: "1D100 奖励2", candidates: [74, 34, 94], total: 34,
-}), "<@user> 🎲 1D100 奖励2 → [74, 34, 94] = 34", "奖励2 展示候选");
+}), "**<@user> 祝骰运昌隆喵~！**\n🎲 1D100 奖励2 → [74, 34, 94] = 34", "奖励2 展示候选");
 assertEqual(formatBonusPenalty("user", {
   notation: "1D100 惩罚1", candidates: [43, 83], total: 83,
-}), "<@user> 🎲 1D100 惩罚1 → [43, 83] = 83", "惩罚1 展示候选");
+}), "**<@user> 祝骰运昌隆喵~！**\n🎲 1D100 惩罚1 → [43, 83] = 83", "惩罚1 展示候选");
 assertEqual(formatBonusPenalty("user", {
   notation: "1D100 惩罚2", candidates: [24, 64, 94], total: 94,
-}), "<@user> 🎲 1D100 惩罚2 → [24, 64, 94] = 94", "惩罚2 展示候选");
+}), "**<@user> 祝骰运昌隆喵~！**\n🎲 1D100 惩罚2 → [24, 64, 94] = 94", "惩罚2 展示候选");
 
 {
   let reads = 0;
@@ -111,7 +111,7 @@ assertEqual(formatBonusPenalty("user", {
       async rollTextDice(input) {
         calls.push(input.content);
         if (input.content === "1d6") return { ok: false, message: "骰子表达式无效" };
-        return { ok: true, text: "<@pl> 🎲 2d6+3 → [3, 4] + 3 = 10" };
+        return { ok: true, text: "**<@pl> 祝骰运昌隆喵~！**\n🎲 2d6+3 → [3, 4] + 3 = 10" };
       },
     },
     logger: { warn() {} },
@@ -127,7 +127,7 @@ assertEqual(formatBonusPenalty("user", {
   await handler({ ...base, content: "1d6" });
   await handler({ ...base, content: "2d6+3", member: { displayName: "奈洛莉" } });
   assertEqual(calls.length, 2, "只有整句骰子才会交给掷骰");
-  assert(replies.length === 1 && replies[0].content.startsWith("<@pl> 🎲"), "合法整句回复里 @ 触发者");
+  assert(replies.length === 1 && replies[0].content.startsWith("**<@pl> 祝骰运昌隆喵~！**\n🎲"), "合法整句回复里 @ 触发者");
   assertEqual(replies[0].allowedMentions?.users?.[0], "pl", "只允许 @ 触发骰子的用户");
   assert(replies[0].allowedMentions?.parse?.length === 0, "不解析消息里的其他提及");
   assert(replies[0].allowedMentions?.repliedUser === false, "回复引用不再额外 @ 一次");
@@ -142,5 +142,20 @@ assertEqual(formatBonusPenalty("user", {
   detach();
 }
 
+{
+  const member = { characterId: "a", skills: [
+    { name: "艺术与手艺", specialty: "演技", base: 5, occupationPoints: 30, interestPoints: 10, growth: 5 },
+    { name: "艺术与手艺", specialty: "绘画", base: 5, occupationPoints: 0, interestPoints: 0, growth: 0 },
+  ] };
+  assert(parseSkillDice("1d100 演技").ok, "技能骰点语法");
+  assert(parseSkillDice("1d100 演技 奖励2").bonus.extra === 2, "技能骰点复用奖惩骰");
+  assert(!parseSkillDice("1d100 奖励3").ok, "非法奖惩不误作技能");
+  assertEqual(findSnapshotSkill(member, "演技").value, 50, "技能值使用四项合计");
+  assertEqual(findSnapshotSkill(member, "艺术与手艺:演技").name, "艺术与手艺：演技", "完整专业名称匹配");
+  assert(!findSnapshotSkill(member, "艺术与手艺").ok, "重名技能拒绝猜测");
+  assert(!findSnapshotSkill(member, "不存在").ok, "未知技能拒绝");
+  assert(!findSnapshotSkill({}, "演技").ok, "无绑定角色拒绝");
+  assert(messageNeedsTextDice({ guildId: "g", author: { bot: false }, content: "1d100 演技" }, true), "自然消息识别技能骰点");
+}
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

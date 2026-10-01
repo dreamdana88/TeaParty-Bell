@@ -178,7 +178,7 @@ function containsText(value, needle) {
     displayName: "Dream",
     expression: "1d100",
   });
-  assert(inside.ok && inside.text.includes("奈洛莉") && inside.text.includes("1d100"), "跑团频道允许骰子并使用角色名");
+  assert(inside.ok && inside.text.includes("<@kl>") && inside.text.includes("1d100"), "跑团频道允许骰子并提及触发者");
   const ended = await service.finish("session-1", "kl");
   assert(ended.ok === false, "非 KP 不能结束");
   const done = await service.finish("session-1", "kp");
@@ -479,11 +479,11 @@ async function activeTable(overrides) {
   const kpRoll = await service.rollTextDice({
     channelId: "room-1", userId: "kp", displayName: "主持人", content: "1d100",
   });
-  assertEqual(kpRoll.text, "<@kp> 🎲 1d100 = 63", "KP 的整句 1d100 会 @ 触发者");
+  assertEqual(kpRoll.text, "**<@kp> 祝骰运昌隆喵~！**\n🎲 1d100 = 63", "KP 的整句 1d100 会 @ 触发者");
   const plRoll = await service.rollTextDice({
     channelId: "room-1", userId: "pl", displayName: "Dream", content: " 1D100 ",
   });
-  assertEqual(plRoll.text, "<@pl> 🎲 1d100 = 63", "PL 的整句 1d100 会 @ 触发者");
+  assertEqual(plRoll.text, "**<@pl> 祝骰运昌隆喵~！**\n🎲 1d100 = 63", "PL 的整句 1d100 会 @ 触发者");
   const obRoll = await service.rollTextDice({
     channelId: "room-1", userId: "ob", displayName: "看客", content: "1d100",
   });
@@ -499,7 +499,7 @@ async function activeTable(overrides) {
   const slash = await service.roll({
     channelId: "room-1", userId: "pl", displayName: "Dream", expression: "1d100",
   });
-  assert(slash.ok && slash.text.includes("掷骰"), "/r 仍用原来的回复");
+  assert(slash.ok && slash.text.includes("骰运昌隆喵"), "/r 仍用原来的回复");
   assert((await service.setTranscriptOptOut("session-1", "ob", true)).ok === false, "OB 不能设置团录退出");
   assert((await service.previewTranscriptPrivacy("session-1", "stranger")).ok === false, "局外人不能设置团录退出");
   const hidden = await service.setTranscriptOptOut("session-1", "pl2", true);
@@ -518,8 +518,11 @@ async function activeTable(overrides) {
   assertEqual(historyCall?.[2]?.startedAt, 1000, "读历史时带上本局开始时间");
   const historyAt = discord.calls.findIndex((call) => call[0] === "history");
   const lockAt = discord.calls.findIndex((call) => call[0] === "lock");
-  assert(historyAt > lockAt && lockAt !== -1, "锁门之后才读频道历史");
+  assert(historyAt < lockAt && historyAt !== -1, "先读取团录历史再完成锁门清理");
   const fileCall = discord.calls.find((call) => call[0] === "send" && call[1]?.files);
+  const fileAt = discord.calls.indexOf(fileCall);
+  assert(discord.calls.slice(fileAt + 1).some(call => call[0] === "nick")
+    && !discord.calls.slice(historyAt, fileAt).some(call => call[0] === "nick" || call[0] === "remove"), "先发团录，再恢复昵称和移除身份组");
   const markdown = fileCall[1].files[0].attachment.toString("utf8");
   assert(fileCall[1].files[0].name.endsWith("团录.md"), "团录作为 Markdown 附件");
   assert(markdown.indexOf(spoken) !== -1 && markdown.indexOf(reply) !== -1, "KP 和 PL 进入团录");
@@ -648,8 +651,8 @@ async function activeTable(overrides) {
   let slashIndex = slashStart;
   const slashRoll = rollDice("1d4", () => values[slashIndex++]);
   assert(slash.ok, "/r 仍然会掷");
-  assertEqual(slash.text, formatRoll("奈洛莉", slashRoll), "/r 回复格式不变");
-  assert(!slash.text.includes("<@"), "/r 不 @ 用户");
+  assertEqual(slash.text, formatTextDice("pl", slashRoll), "/r 回复格式不变");
+  assert(slash.text.includes("<@pl>"), "/r 提及触发者");
 }
 
 {
@@ -801,7 +804,7 @@ async function activeTable(overrides) {
   const plain = await service.rollTextDice({
     channelId: "room-1", userId: "pl", content: "1D100",
   });
-  assertEqual(plain.text, "<@pl> 🎲 1d100 = 63", "普通 1D100 自然骰不变");
+  assertEqual(plain.text, "**<@pl> 祝骰运昌隆喵~！**\n🎲 1d100 = 63", "普通 1D100 自然骰不变");
   const slashBad = await service.roll({
     channelId: "room-1", userId: "pl", displayName: "Dream", expression: "1D100 奖励1",
   });
@@ -809,7 +812,7 @@ async function activeTable(overrides) {
   const slash = await service.roll({
     channelId: "room-1", userId: "pl", displayName: "Dream", expression: "1d100",
   });
-  assertEqual(slash.text, "🎲 奈洛莉掷骰\n\n1d100 → 8", "/r 回复格式不变");
+  assertEqual(slash.text, "**<@pl> 祝骰运昌隆喵~！**\n🎲 1d100 = 8", "/r 回复格式不变");
 }
 
 {
@@ -940,5 +943,31 @@ async function activeTable(overrides) {
   assert(service.find("session-1").pendingMemberOp === null, "晚到变更回滚后清理操作锁");
 }
 
+{
+  let draws = 0;
+  let plainResult = 63;
+  const { service, store } = await activeTable({ config: { messageContentEnabled: true }, randomInt: (min, max) => { draws += 1; return max === 9 ? 2 : plainResult; } });
+  await store.update(state => ({ state: { ...state, sessions: state.sessions.map(session => ({ ...session,
+    pl: session.pl.map(member => ({ ...member, skills: [{ name: "艺术与手艺", specialty: "演技", base: 5, growth: 5, occupationPoints: 30, interestPoints: 10 }] })) })) } }));
+  const before = readFileSync(store.filePath, "utf8");
+  const actual = await service.rollTextDice({ channelId: "room-1", userId: "pl", content: "1d100 演技" });
+  assert(actual.ok && actual.text.includes("演技：63/50 失败") && actual.text.includes("= 63"), "技能骰点展示骰点／技能值与实际结果");
+  assert(actual.text.endsWith("\n艺术与手艺：演技：63/50 失败") && !actual.text.includes("奈洛莉"), "技能行不重复角色姓名");
+  assert(actual.text.endsWith("失败") && !/大成功|大失败|极难|困难|普通成功/.test(actual.text), "超过技能值只标失败，不细分等级");
+  assertEqual(draws, 1, "技能只掷一次");
+  plainResult = 50;
+  const boundary = await service.rollTextDice({ channelId: "room-1", userId: "pl", content: "1d100 演技" });
+  assert(boundary.ok && boundary.text.includes("演技：50/50 成功"), "骰点等于技能值标成功");
+  const bonus = await service.rollTextDice({ channelId: "room-1", userId: "pl", content: "1d100 演技 奖励1" });
+  assert(bonus.ok && bonus.text.includes("奖励1") && bonus.text.includes("演技：22/50 成功"), "技能奖惩展示最终骰点／技能值");
+  assert(bonus.text.endsWith("成功"), "奖惩骰使用最终结果标成功");
+  const count = draws;
+  const unknown = await service.rollTextDice({ channelId: "room-1", userId: "pl", content: "1d100 不存在" });
+  assert(unknown.skillError && draws === count, "未知技能提示且不掷骰");
+  const kp = await service.rollTextDice({ channelId: "room-1", userId: "kp", content: "1d100 演技" });
+  assert(kp.skillError && draws === count, "KP 不借用 PL 卡");
+  assert((await service.rollTextDice({ channelId: "room-1", userId: "ob", content: "1d100 演技" })).ignore, "OB 技能骰点忽略");
+  assertEqual(readFileSync(store.filePath, "utf8"), before, "技能骰点不写 Session 或长期卡");
+}
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

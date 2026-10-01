@@ -30,6 +30,21 @@ const session = {
 };
 
 {
+  const diceSession = { kpUserId: "1", pl: [{ userId: "2", characterName: "白夜行" }, { userId: "3", characterName: "隐私PL" }], transcriptOptOutUserIds: ["3"] };
+  const msg = (id, authorId, userId) => ({ id, authorId, bot: true, type: 19, createdTimestamp: 2000,
+    content: `**<@${userId}> 祝骰运昌隆喵~！**\n🎲 2d50 → [15, 7] = 22` });
+  const selected = selectTranscriptMessages(diceSession, [msg("a", "bot", "2"), msg("b", "other", "2"),
+    msg("c", "bot", "3"), msg("d", "bot", "outsider"),
+    { ...msg("e", "bot", "2"), content: "开团管理通知" }], "bot");
+  assertEqual(selected.length, 1, "只保留本Bot为允许记录的成员发出的骰点，忽略其他Bot和管理消息");
+  assertEqual(selected[0].speaker, "小G宝", "团录注明骰点由小G宝发出");
+  assert(selected[0].content.includes("白夜行") && selected[0].content.includes("[15, 7] = 22"), "团录提及转角色名且保留骰点");
+  assertEqual(selectTranscriptMessages(diceSession, [{ ...msg("slash", "bot", "2"), type: 20 }], "bot").length, 1, "团录保留 /r 应用命令回复");
+  const mention = selectTranscriptMessages(diceSession, [{ id: "mention", authorId: "1", content: "<@2> 请调查", type: 0, createdTimestamp: 2000 }], "bot");
+  assertEqual(mention[0].content, "白夜行 请调查", "原文中的 Discord 提及转为发言时角色名，不依赖当前昵称");
+}
+
+{
   assertEqual(formatTranscriptClock(Date.parse("2026-09-28T12:15:00.000Z")), "20:15", "团录时间用上海时区");
   assertEqual(transcriptFileName("a/b:c"), "a b c团录.md", "文件名去掉路径字符");
   const entries = selectTranscriptMessages(session, [

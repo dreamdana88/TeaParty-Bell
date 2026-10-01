@@ -553,7 +553,7 @@ export function createCocInteractionRouter({
           await replyEphemeral(interaction, rolled.message);
           return;
         }
-        await interaction.reply({ content: rolled.text });
+        await interaction.reply({ content: rolled.text, allowedMentions: { parse: [], users: [interaction.user.id] } });
         return;
       }
       if (interaction.isModalSubmit?.()) {

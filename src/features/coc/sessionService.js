@@ -2,8 +2,8 @@ import { randomBytes } from "crypto";
 import { buildRoomOverwrites } from "./channelAccess.js";
 import { planChannelNames } from "./channelName.js";
 import { parseBonusPenalty, rollBonusPenalty } from "./dice/bonusPenalty.js";
-import { formatRoll, rollDice } from "./dice/roller.js";
-import { formatBonusPenalty, formatTextDice } from "./textDice.js";
+import { rollDice } from "./dice/roller.js";
+import { findSnapshotSkill, formatBonusPenalty, formatTextDice, parseSkillDice } from "./textDice.js";
 import { INVALID_DICE_MESSAGE, parseDiceExpression } from "./dice/parser.js";
 import { planNicknameRestore } from "./nickname.js";
 import {
@@ -40,7 +40,6 @@ import {
   signupOb,
   cancelSignup,
   isTranscriptOptedOut,
-  speakerName,
   withTranscriptOptOut,
   SESSION_STATES,
 } from "./sessionRules.js";
@@ -702,8 +701,8 @@ export function createCocSessionService({
     if (!gate.ok) return gate;
     const ending = await markSessionEnding(sessionId, actorId);
     if (!ending.ok) return { ok: false, message: ending.message };
-    await cleanupRoom(ending.result);
     await deliverTranscript(ending.result);
+    await cleanupRoom(ending.result);
     const ended = await markSessionEnded(sessionId);
     if (!ended.ok) return { ok: false, message: ended.message };
     return { ok: true, session: ended.result };
@@ -712,8 +711,8 @@ export function createCocSessionService({
   async function continueEnding(sessionId) {
     const session = find(sessionId);
     if (!session || session.state !== SESSION_STATES.ending) return { ok: true, skipped: true };
-    await cleanupRoom(session);
     await deliverTranscript(session);
+    await cleanupRoom(session);
     return markSessionEnded(sessionId).then((ended) => (
       ended.ok ? { ok: true, session: ended.result } : { ok: false, message: ended.message }
     ));
@@ -1076,13 +1075,23 @@ export function createCocSessionService({
   async function rollTextDice({ channelId, userId, content }) {
     if (config.messageContentEnabled !== true) return { ignore: true };
     if (!hasActiveRunChannel(channelId)) return { ignore: true };
-    const bonus = parseBonusPenalty(content);
+    const skill = parseSkillDice(content);
+    const bonus = skill.ok && skill.bonus ? skill.bonus : parseBonusPenalty(content);
     const parsed = bonus.ok ? null : parseDiceExpression(content);
-    if (!bonus.ok && !parsed?.ok) return { ignore: true };
+    if (!skill.ok && !bonus.ok && !parsed?.ok) return { ignore: true };
     const session = activeSessionInChannel(sessions(), channelId);
     if (!session) return { ignore: true };
     const role = memberRole(session, userId);
     if (role !== "KP" && role !== "PL") return { ignore: true };
+    if (skill.ok) {
+      const member = session.pl.find(item => item.userId === userId);
+      const selected = findSnapshotSkill(member, skill.name);
+      if (!selected.ok) return { ...selected, skillError: true };
+      const rolled = bonus.ok ? rollBonusPenalty(bonus, randomInt) : rollDice("1d100", randomInt);
+      const text = bonus.ok ? formatBonusPenalty(userId, rolled) : formatTextDice(userId, rolled);
+      const escape = value => String(value).replace(/([\\`*_~<>])/g, "\\$1").replace(/[\r\n]/g, " ");
+      return { ok: true, text: `${text}\n${escape(selected.name)}：${rolled.total}/${selected.value} ${rolled.total <= selected.value ? "成功" : "失败"}` };
+    }
     if (bonus.ok) {
       const rolled = rollBonusPenalty(bonus, randomInt);
       if (!rolled.ok) return { ignore: true };
@@ -1106,7 +1115,7 @@ export function createCocSessionService({
     if (!rolled.ok) return { ok: false, message: INVALID_DICE_MESSAGE };
     return {
       ok: true,
-      text: formatRoll(speakerName(session, userId, displayName), rolled),
+      text: formatTextDice(userId, rolled),
     };
   }
 

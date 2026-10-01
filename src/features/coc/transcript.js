@@ -118,22 +118,27 @@ export function selectTranscriptMessages(session, messages, botUserId) {
   const seen = new Set();
   const entries = [];
   for (const message of messages ?? []) {
-    if (!message || message.bot) continue;
+    if (!message) continue;
     if (!message.id || seen.has(message.id)) continue;
-    if (botUserId && message.authorId === botUserId) continue;
-    if (message.type != null && !INCLUDED_TYPES.has(message.type)) continue;
+    const content = typeof message.content === "string" ? message.content.trim() : "";
+    const ownDice = botUserId && message.authorId === botUserId
+      ? /^\*\*<@(\d+)> 祝骰运昌隆喵~！\*\*\n🎲 \d+d\d+(?:[+-]\d+)?(?: (?:奖励|惩罚)[12])? (?:=|→) [^\n]+/i.exec(content) : null;
+    if ((message.bot || message.authorId === botUserId) && !ownDice) continue;
+    if (message.type != null && !INCLUDED_TYPES.has(message.type) && !(ownDice && message.type === 20)) continue;
     if (session?.startedAt != null && message.createdTimestamp < session.startedAt) continue;
     const time = formatTranscriptClock(message.createdTimestamp);
     if (!time) continue;
-    const speaker = speakerFor(session, message.authorId, message.createdTimestamp);
+    const speaker = speakerFor(session, ownDice ? ownDice[1] : message.authorId, message.createdTimestamp);
     if (!speaker) continue;
-    const content = typeof message.content === "string" ? message.content.trim() : "";
     if (!content) continue;
     seen.add(message.id);
     entries.push({
       id: message.id,
-      speaker,
-      content,
+      speaker: ownDice ? "小G宝" : speaker,
+      content: content.replace(/<@!?(\d+)>/g, (mention, userId) => {
+        const seat = transcriptSeatAt(session, userId, message.createdTimestamp);
+        return seat ? (seat.role === "kp" ? "KP" : seat.name || "PL") : mention;
+      }),
       time,
       createdTimestamp: message.createdTimestamp,
     });
