@@ -48,5 +48,12 @@ const root = "D:/tmp/teaparty";
   assert(config.transcriptEnabled === false, "非法团录开关只当关闭，不拖垮跑团");
 }
 
+{
+  const config = loadCocConfig({ COC_ARCHIVE_URL: "https://archive.example/investigators",
+    COC_CHARACTER_API_URL: "http://127.0.0.1:8787", INTERNAL_API_SECRET: "test-secret" }, { projectRoot: root });
+  assert(config.archiveUrl === "https://archive.example/investigators", "建卡入口使用配置网址");
+  assert(config.characterApiUrl === "http://127.0.0.1:8787" && config.internalApiSecret === "test-secret", "内部 API 地址和密钥读取统一配置");
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

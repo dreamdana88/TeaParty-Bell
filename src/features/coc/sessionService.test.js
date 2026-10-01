@@ -91,7 +91,7 @@ function fakeDiscord(overrides = {}) {
 }
 
 function harness(discordOverrides = {}) {
-  const { config: configOverrides = {}, randomInt, ...rest } = discordOverrides;
+  const { config: configOverrides = {}, randomInt, characters, ...rest } = discordOverrides;
   const dir = mkdtempSync(join(tmpdir(), "coc-mvp-"));
   const store = createCocSessionStore({ filePath: join(dir, "sessions.json") });
   const discord = fakeDiscord(rest);
@@ -115,6 +115,7 @@ function harness(discordOverrides = {}) {
     logger: { warn() {}, error() {} },
     createId: () => "session-1",
     randomInt,
+    characters,
   });
   return { service, discord, store, dir, setNow: (value) => { now = value; } };
 }
@@ -793,6 +794,27 @@ async function activeTable(overrides) {
     channelId: "room-1", userId: "pl", displayName: "Dream", expression: "1d100",
   });
   assertEqual(slash.text, "🎲 奈洛莉掷骰\n\n1d100 → 8", "/r 回复格式不变");
+}
+
+{
+  const snapshot = { characterId: "card-1", ownerDiscordUserId: "kl", characterName: "档案馆姓名",
+    occupation: "演员", initialHp: 11, initialSan: 35, initialMp: 14, initialLuck: 60, skills: [] };
+  const { service, discord } = harness({ characters: {
+    async list() { return { ok: true, characters: [{ id: "card-1" }] }; },
+    async read() { return { ok: true, snapshot }; },
+  } });
+  await service.openRecruit({ guildId: "guild", channelId: "recruit", kpUserId: "kp", title: "B8 昵称测试" });
+  await service.prepareCharacterSelection("session-1", "kl");
+  const waiting = await service.confirmStart("session-1", "kp");
+  assert(!waiting.ok && !discord.calls.some((call) => call[0] === "create"), "未绑定卡时不能绕过预览开团");
+  const selected = await service.selectCharacter("session-1", "kl", "card-1");
+  assert(selected.ok, "B8 角色绑定成功");
+  assert(!discord.calls.some((call) => call[0] === "nick"), "招募选卡不提前修改全服昵称");
+  const started = await service.confirmStart("session-1", "kp");
+  assert(started.ok && started.session.pl[0].initialSan === 35, "开团保留选卡快照");
+  assert(discord.calls.some((call) => call[0] === "nick" && call[2] === "档案馆姓名"), "复用开团逻辑设置档案馆姓名");
+  await service.finish("session-1", "kp");
+  assert(discord.calls.some((call) => call[0] === "nick" && call[2] === "Dream"), "复用结束逻辑恢复原昵称");
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

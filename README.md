@@ -24,6 +24,8 @@ npm run commands:register -- --confirm-guild <服务器ID>
 
 ## 文档
 
+B8 第一阶段已实现招募期间 PL 的档案馆选卡与本局快照，以及 `/coc 建卡` 链接入口。只通过本机 HTTP 读取长期卡，不读取档案馆 SQLite，不执行本局资源修改或技能自动检定。部署配置、命令同步和验收边界见 [B8 第一阶段交付](docs/coc-b8-phase1.md)。
+
 - 跑团最小版：[docs/coc-mvp-0.1.md](docs/coc-mvp-0.1.md)
 - 完整规划：[BOT_CONSTRUCTION_PLAN3.md](BOT_CONSTRUCTION_PLAN3.md)
 - 角色卡 B 线：[docs/coc-b-line.md](docs/coc-b-line.md)

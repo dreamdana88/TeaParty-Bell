@@ -66,6 +66,7 @@ export function createCocSessionService({
   logger = console,
   createId = () => randomBytes(8).toString("hex"),
   randomInt,
+  characters,
 } = {}) {
   let mode = config?.enabled ? "ready" : "off";
 
@@ -177,6 +178,47 @@ export function createCocSessionService({
     return mutateRecruit(sessionId, userId, (all, session) => signupPl(all, session, userId, characterName));
   }
 
+  async function prepareCharacterSelection(sessionId, userId) {
+    if (!characters) return { ok: false, message: "档案馆接口尚未配置。" };
+    const previous = find(sessionId)?.pl.find((member) => member.userId === userId);
+    const joined = await joinPl(sessionId, userId, previous?.characterName || "待选择调查员");
+    if (!joined.ok) return joined;
+    const listed = await characters.list(userId);
+    return { ...listed, session: joined.session };
+  }
+
+  async function selectCharacter(sessionId, userId, characterId) {
+    if (mode !== "ready") return unavailable(statusMessage());
+    if (!characters) return { ok: false, message: "档案馆接口尚未配置。" };
+    const session = find(sessionId);
+    if (session?.state !== SESSION_STATES.recruiting || !session.pl.some((member) => member.userId === userId)) {
+      return { ok: false, message: "只有本场招募中的 PL 可以选择调查员。" };
+    }
+    const read = await characters.read(characterId, userId);
+    if (!read.ok) return read;
+    const snapshot = read.snapshot;
+    if (snapshot.ownerDiscordUserId !== userId) return { ok: false, message: "只能选择自己的角色卡。" };
+    if (!normalizeCharacterName(snapshot.characterName)) {
+      return { ok: false, message: "调查员姓名不能超过 32 个字，请先到档案馆修改。" };
+    }
+    const saved = await store.update((state) => {
+      const current = state.sessions.find((item) => item.sessionId === sessionId);
+      if (mode !== "ready" || current?.state !== SESSION_STATES.recruiting
+        || !current.pl.some((member) => member.userId === userId)) {
+        return { errorCode: "REJECTED", message: "报名状态已改变，请重新打开选卡。" };
+      }
+      const next = { ...current, pl: current.pl.map((member) => member.userId === userId
+        ? { ...member, ...structuredClone(snapshot) } : member) };
+      return { state: { ...state, sessions: replaceSession(state.sessions, next) }, result: next };
+    });
+    return saved.ok ? { ok: true, session: saved.result } : { ok: false, message: saved.message };
+  }
+
+  function unselectedMessage(session) {
+    return characters && session.pl.some((member) => !member.characterId)
+      ? "还有 PL 未选择档案馆角色卡，请先完成选卡后再开团。" : null;
+  }
+
   function joinOb(sessionId, userId) {
     return mutateRecruit(sessionId, userId, (all, session) => signupOb(all, session, userId));
   }
@@ -190,6 +232,8 @@ export function createCocSessionService({
     if (!session) return { ok: false, message: "这场招募已经不在了。" };
     const gate = requestStart(session, actorId);
     if (!gate.ok) return gate;
+    const unselected = unselectedMessage(session);
+    if (unselected) return { ok: false, message: unselected };
     return {
       ok: true,
       text: `确定开始《${session.title}》？\n\nPL：${session.pl.length}\nOB：${session.ob.length}`,
@@ -319,6 +363,8 @@ export function createCocSessionService({
       if (!current) return { errorCode: "MISSING", message: "这场招募已经不在了。" };
       const gate = requestStart(current, actorId);
       if (!gate.ok) return { errorCode: "REJECTED", message: gate.message };
+      const unselected = unselectedMessage(current);
+      if (unselected) return { errorCode: "REJECTED", message: unselected };
       const starting = lockStarting(current);
       if (!starting.ok) return { errorCode: "REJECTED", message: starting.message };
       return {
@@ -1039,6 +1085,8 @@ export function createCocSessionService({
     setRecruitMessage,
     setControlMessage,
     joinPl,
+    prepareCharacterSelection,
+    selectCharacter,
     joinOb,
     leave,
     previewStart,

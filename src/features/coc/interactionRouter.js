@@ -24,7 +24,8 @@ import {
   startedPanel,
 } from "./panel.js";
 import { classifyMemberQuery, memberOptionLabel } from "./memberQuery.js";
-import { COC_COMMAND_NAME, COC_OPEN_SUBCOMMAND, COC_PANEL_SUBCOMMAND, ROLL_COMMAND_NAME } from "./commands.js";
+import { COC_COMMAND_NAME, COC_OPEN_SUBCOMMAND, COC_PANEL_SUBCOMMAND, COC_ARCHIVE_SUBCOMMAND, ROLL_COMMAND_NAME } from "./commands.js";
+import { archiveEntry, characterChoices } from "./characterPanel.js";
 
 const CLOSED = "CoC 跑团暂时没有开启。";
 
@@ -59,13 +60,6 @@ function titleModal() {
     .addComponents(textRow("title", "模组名称", 80));
 }
 
-function nameModal(sessionId) {
-  return new ModalBuilder()
-    .setCustomId(buildCustomId("modal-kl", sessionId))
-    .setTitle("报名调查员")
-    .addComponents(textRow("character", "本局角色名", 32));
-}
-
 function targetNameModal(action, sessionId, userId) {
   return new ModalBuilder()
     .setCustomId(buildCustomId(action, sessionId, userId))
@@ -87,8 +81,39 @@ export function createCocInteractionRouter({
   discord,
   onSessionEnded,
   logger = console,
+  archiveUrl,
 } = {}) {
   let started = false;
+
+  async function selectAndReply(interaction, sessionId, characterId) {
+    const selected = await service.selectCharacter(sessionId, interaction.user.id, characterId);
+    if (!selected.ok) {
+      await interaction.editReply({ content: selected.message, components: [], allowedMentions: { parse: [] } });
+      return;
+    }
+    await editRecruit(selected.session, recruitPanel(selected.session));
+    const member = selected.session.pl.find((item) => item.userId === interaction.user.id);
+    await interaction.editReply({
+      content: `本局调查员已选择：${member.characterName}。开团时会使用该名字设置临时昵称。`,
+      components: [], allowedMentions: { parse: [] },
+    });
+  }
+
+  async function showCharacters(interaction, sessionId, page = 0) {
+    const result = await service.prepareCharacterSelection(sessionId, interaction.user.id);
+    if (!result.ok) {
+      await interaction.editReply({ content: result.message, components: [] });
+      return;
+    }
+    await editRecruit(result.session, recruitPanel(result.session));
+    if (result.characters.length === 0) {
+      await interaction.editReply(archiveEntry(archiveUrl, "已报名 PL，但你还没有角色卡。请到档案馆建卡，然后重新点击报名 PL 选择调查员。"));
+    } else if (result.characters.length === 1) {
+      await selectAndReply(interaction, sessionId, result.characters[0].id);
+    } else {
+      await interaction.editReply(characterChoices(sessionId, interaction.user.id, result.characters, page));
+    }
+  }
 
   function closedMessage() {
     return service.statusMessage?.() ?? CLOSED;
@@ -254,7 +279,14 @@ export function createCocInteractionRouter({
     }
     const userId = interaction.user.id;
     if (action === "kl") {
-      await interaction.showModal(nameModal(sessionId));
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      await showCharacters(interaction, sessionId);
+      return;
+    }
+    if (/^cards-page-\d+$/.test(action)) {
+      if (targetUserId !== userId) { await replyEphemeral(interaction, "只能操作自己的选卡菜单。"); return; }
+      await interaction.deferUpdate();
+      await showCharacters(interaction, sessionId, Number(action.slice("cards-page-".length)));
       return;
     }
     if (action === "ob") {
@@ -490,6 +522,10 @@ export function createCocInteractionRouter({
     try {
       if (interaction.isChatInputCommand?.() && interaction.commandName === COC_COMMAND_NAME) {
         const subcommand = interaction.options.getSubcommand(false);
+        if (subcommand === COC_ARCHIVE_SUBCOMMAND) {
+          await interaction.reply({ ...archiveEntry(archiveUrl), flags: MessageFlags.Ephemeral });
+          return;
+        }
         if (subcommand === COC_PANEL_SUBCOMMAND) {
           await repostPanel(interaction);
           return;
@@ -524,20 +560,6 @@ export function createCocInteractionRouter({
           await handleOpenModal(interaction);
           return;
         }
-        if (parsed.action === "modal-kl") {
-          const joined = await service.joinPl(
-            parsed.sessionId,
-            interaction.user.id,
-            interaction.fields.getTextInputValue("character"),
-          );
-          if (!joined.ok) {
-            await replyEphemeral(interaction, joined.message);
-            return;
-          }
-          await interaction.deferUpdate();
-          await interaction.editReply(recruitPanel(joined.session));
-          return;
-        }
         if (parsed.action === "modal-find-pl" || parsed.action === "modal-find-ob") {
           await showMemberSearch(interaction, parsed);
           return;
@@ -561,6 +583,12 @@ export function createCocInteractionRouter({
         const parsed = parseCustomId(interaction.customId);
         if (!parsed?.sessionId) return;
         const selected = String(interaction.values?.[0] ?? "");
+        if (parsed.action === "pick-character") {
+          if (parsed.userId !== interaction.user.id) { await replyEphemeral(interaction, "只能操作自己的选卡菜单。"); return; }
+          await interaction.deferUpdate();
+          await selectAndReply(interaction, parsed.sessionId, selected);
+          return;
+        }
         if (parsed.action === "pick-found-pl" || parsed.action === "pick-found-ob") {
           if (!selected) return;
           if (parsed.action === "pick-found-pl") {

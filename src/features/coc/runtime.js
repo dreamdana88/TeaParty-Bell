@@ -3,6 +3,7 @@ import { createCocInteractionRouter } from "./interactionRouter.js";
 import { createCocSessionService } from "./sessionService.js";
 import { createCocSessionStore } from "./sessionStore.js";
 import { attachTextDiceListener } from "./textDice.js";
+import { createCharacterClient } from "./characterClient.js";
 
 const RETRY_MS = 60 * 1000;
 
@@ -47,6 +48,7 @@ export function createCocRuntime({
     } : { enabled: false, disabledReason },
     clock,
     logger,
+    characters: createCharacterClient({ baseUrl: coc?.characterApiUrl, secret: coc?.internalApiSecret }),
   });
   const handles = new Map();
   let router = null;
@@ -77,6 +79,7 @@ export function createCocRuntime({
     discord: resolvedDiscord,
     onSessionEnded: arm,
     logger,
+    archiveUrl: coc?.archiveUrl,
   });
 
   async function warn(message) {

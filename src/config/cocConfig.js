@@ -34,7 +34,12 @@ export function loadCocConfig(env, { projectRoot }) {
     plRoleId: env.COC_PL_ROLE_ID?.trim() || env.COC_KL_ROLE_ID?.trim() || "",
     obRoleId: env.COC_OB_ROLE_ID?.trim() ?? "",
   };
-  const flags = { messageContentEnabled, transcriptEnabled };
+  const flags = {
+    messageContentEnabled, transcriptEnabled,
+    characterApiUrl: env.COC_CHARACTER_API_URL?.trim() || "http://127.0.0.1:8787",
+    archiveUrl: env.COC_ARCHIVE_URL?.trim() || "",
+    internalApiSecret: env.INTERNAL_API_SECRET || "",
+  };
   if (!flag.enabled) {
     return { enabled: false, statePath, ...ids, ...flags, disabledReason: flag.reason };
   }

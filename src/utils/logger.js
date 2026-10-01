@@ -24,6 +24,8 @@ const SENSITIVE_KEYS = new Set([
   "authorization",
   "password",
   "secret",
+  "internalApiSecret",
+  "INTERNAL_API_SECRET",
 ]);
 
 let currentLevel = "info";

@@ -303,6 +303,7 @@ export function signupPl(sessions, session, userId, characterName) {
     pl: [
       ...withoutUser(session.pl, userId),
       {
+        ...previous,
         userId,
         characterName: name,
         originalNickname: previous?.originalNickname ?? null,

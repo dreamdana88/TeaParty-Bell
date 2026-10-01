@@ -3,6 +3,7 @@ import { SlashCommandBuilder } from "discord.js";
 export const COC_COMMAND_NAME = "coc";
 export const COC_OPEN_SUBCOMMAND = "开团";
 export const COC_PANEL_SUBCOMMAND = "面板";
+export const COC_ARCHIVE_SUBCOMMAND = "建卡";
 export const ROLL_COMMAND_NAME = "r";
 
 export function buildCocCommands() {
@@ -15,7 +16,10 @@ export function buildCocCommands() {
       .setDescription("在当前频道发起一场招募"))
     .addSubcommand((sub) => sub
       .setName(COC_PANEL_SUBCOMMAND)
-      .setDescription("在跑团频道重新发送控制面板"));
+      .setDescription("在跑团频道重新发送控制面板"))
+    .addSubcommand((sub) => sub
+      .setName(COC_ARCHIVE_SUBCOMMAND)
+      .setDescription("打开调查员档案馆创建或管理角色卡"));
   const roll = new SlashCommandBuilder()
     .setName(ROLL_COMMAND_NAME)
     .setDescription("在 CoC 跑团房间里掷骰")
