@@ -5,7 +5,7 @@ import { buildCustomId } from "./panel.js";
 export function archiveCommandPanel(imagePath = fileURLToPath(new URL("../../resources/coc/archive-banner.png", import.meta.url))) {
   return {
     allowedMentions: { parse: [] },
-    embeds: [new EmbedBuilder().setColor(0x78383f).setTitle("茶话会调查员档案馆")
+    embeds: [new EmbedBuilder().setColor(0x78383f)
       .setImage("attachment://archive-banner.png")
       .setFooter({ text: "点击按钮前往档案馆创建/管理角色卡" })],
     files: [new AttachmentBuilder(imagePath, { name: "archive-banner.png" })],

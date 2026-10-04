@@ -125,7 +125,7 @@ try {
   await interactionClient.fn({ ...base, isChatInputCommand: () => true, commandName: "coc", options: { getSubcommand: () => "建卡" } });
   const panel = replies.at(-1);
   check(!panel.embeds[0].toJSON().description && panel.embeds[0].toJSON().footer.text === "点击按钮前往档案馆创建/管理角色卡" && deferredFlags === 64, "/coc 建卡仅本人可见且只显示简短图下提示");
-  check(panel.embeds[0].toJSON().title === "茶话会调查员档案馆" && panel.embeds[0].toJSON().image.url === "attachment://archive-banner.png", "建卡图文面板包含标题与宣传图");
+  check(!panel.embeds[0].toJSON().title && panel.embeds[0].toJSON().image.url === "attachment://archive-banner.png", "建卡面板只含宣传图，不重复图片标题");
   check(panel.files[0].name === "archive-banner.png" && panel.components[0].toJSON().components[0].url === "https://coc.dreamdana.baby", "建卡宣传图附件与正式档案馆链接");
   router.destroy();
   const many = Array.from({ length: 26 }, (_, index) => ({ ...summary[0], id: `card-${index}` }));
