@@ -125,8 +125,8 @@ try {
   await interactionClient.fn({ ...base, isChatInputCommand: () => true, commandName: "coc", options: { getSubcommand: () => "建卡" } });
   const panel = replies.at(-1);
   check(panel.embeds[0].toJSON().description.includes("Discord 授权") && deferredFlags === 64, "/coc 建卡提供仅本人入口和授权说明");
-  check(panel.embeds[0].toJSON().title === "茶话会调查员档案馆" && panel.embeds[0].toJSON().image.url === "attachment://archive-banner.jpg", "建卡图文面板包含标题与宣传图");
-  check(panel.files[0].name === "archive-banner.jpg" && panel.components[0].toJSON().components[0].url === "https://coc.dreamdana.baby", "建卡宣传图附件与正式档案馆链接");
+  check(panel.embeds[0].toJSON().title === "茶话会调查员档案馆" && panel.embeds[0].toJSON().image.url === "attachment://archive-banner.png", "建卡图文面板包含标题与宣传图");
+  check(panel.files[0].name === "archive-banner.png" && panel.components[0].toJSON().components[0].url === "https://coc.dreamdana.baby", "建卡宣传图附件与正式档案馆链接");
   router.destroy();
   const many = Array.from({ length: 26 }, (_, index) => ({ ...summary[0], id: `card-${index}` }));
   check(characterChoices("s1", "100", many, 0, "inv-100").components[0].toJSON().components[0].options.length === 25, "每页最多 25 张卡");

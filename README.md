@@ -36,7 +36,7 @@ UNLICENSED — 内部项目，未开放授权。
 # 本地技能骰点
 
 `/coc 建卡` 以仅本人可见的图文面板提供正式档案馆入口 `https://coc.dreamdana.baby`。
-默认宣传图为 `src/resources/coc/archive-banner.jpg`；可替换此图片，或设置 `COC_ARCHIVE_PANEL_IMAGE` 指向另一张本地图片（相对项目根目录或绝对路径）。
+默认宣传图为 `src/resources/coc/archive-banner.png`；可替换此图片，或设置 `COC_ARCHIVE_PANEL_IMAGE` 指向另一张本地图片（相对项目根目录或绝对路径）。
 修改配置后重启 Bot。图片以附件发送，不依赖外部图片托管。
 
 进行中的跑团频道支持 `1d100 演技`，以及 `1d100 演技 奖励1` / `1d100 演技 惩罚2`。
