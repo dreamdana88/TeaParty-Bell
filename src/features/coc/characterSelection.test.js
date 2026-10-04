@@ -124,9 +124,12 @@ try {
   check(replies.at(-1).components[0].toJSON().components[0].url === "https://archive.example/investigators", "无卡提示包含档案馆链接");
   await interactionClient.fn({ ...base, isChatInputCommand: () => true, commandName: "coc", options: { getSubcommand: () => "建卡" } });
   const panel = replies.at(-1);
-  check(!panel.embeds[0].toJSON().description && panel.embeds[1].toJSON().description === "**点击按钮前往档案馆创建/管理角色**" && deferredFlags === 64, "/coc 建卡仅本人可见且只显示简短图下提示");
-  check(!panel.embeds[0].toJSON().title && panel.embeds[0].toJSON().image.url === "attachment://archive-banner.png", "建卡面板只含宣传图，不重复图片标题");
-  check(panel.files[0].name === "archive-banner.png" && panel.components[0].toJSON().components[0].url === "https://coc.dreamdana.baby", "建卡宣传图附件与正式档案馆链接");
+  const unified = panel.components[0].toJSON();
+  check(deferredFlags === 64 && panel.flags === 32768 && !panel.embeds, "统一图文面板保持仅本人可见");
+  check(panel.components.length === 1 && unified.type === 17 && unified.components[0].type === 12
+    && unified.components[0].items[0].media.url === "attachment://archive-banner.png", "图片在一体容器最上方，竖线不拆开");
+  check(unified.components[1].content === "## 茶话会档案馆" && unified.components[2].content.includes("创建或管理你的调查员"), "图片下方展示大标题和调查员文案");
+  check(panel.files[0].name === "archive-banner.png" && unified.components[3].components[0].url === "https://coc.dreamdana.baby", "真实链接按钮位于同一卡片内");
   router.destroy();
   const many = Array.from({ length: 26 }, (_, index) => ({ ...summary[0], id: `card-${index}` }));
   check(characterChoices("s1", "100", many, 0, "inv-100").components[0].toJSON().components[0].options.length === 25, "每页最多 25 张卡");

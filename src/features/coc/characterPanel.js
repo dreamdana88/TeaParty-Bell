@@ -1,16 +1,20 @@
-import { ActionRowBuilder, AttachmentBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, StringSelectMenuBuilder } from "discord.js";
+import { ActionRowBuilder, AttachmentBuilder, ButtonBuilder, ButtonStyle, ContainerBuilder, MediaGalleryBuilder, MediaGalleryItemBuilder, MessageFlags, StringSelectMenuBuilder, TextDisplayBuilder } from "discord.js";
 import { fileURLToPath } from "node:url";
 import { buildCustomId } from "./panel.js";
 
 export function archiveCommandPanel(imagePath = fileURLToPath(new URL("../../resources/coc/archive-banner.png", import.meta.url))) {
+  const panel = new ContainerBuilder().setAccentColor(0x78383f)
+    .addMediaGalleryComponents(new MediaGalleryBuilder().addItems(
+      new MediaGalleryItemBuilder().setURL("attachment://archive-banner.png")))
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent("## 茶话会档案馆"),
+      new TextDisplayBuilder().setContent("为踏入未知的调查员，留下一页档案。\n点击按钮，创建或管理你的调查员。"))
+    .addActionRowComponents(new ActionRowBuilder().addComponents(new ButtonBuilder()
+      .setLabel("前往档案馆").setStyle(ButtonStyle.Link).setURL("https://coc.dreamdana.baby")));
   return {
+    flags: MessageFlags.IsComponentsV2,
     allowedMentions: { parse: [] },
-    embeds: [new EmbedBuilder().setColor(0x78383f)
-      .setImage("attachment://archive-banner.png"),
-      new EmbedBuilder().setColor(0x78383f).setDescription("**点击按钮前往档案馆创建/管理角色**")],
     files: [new AttachmentBuilder(imagePath, { name: "archive-banner.png" })],
-    components: [new ActionRowBuilder().addComponents(new ButtonBuilder()
-      .setLabel("前往档案馆").setStyle(ButtonStyle.Link).setURL("https://coc.dreamdana.baby"))],
+    components: [panel],
   };
 }
 
