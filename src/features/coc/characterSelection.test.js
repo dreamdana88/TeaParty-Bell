@@ -109,7 +109,8 @@ try {
     }, discord: {}, logger: { error() {}, warn() {} } });
   router.start();
   const replies = [];
-  const base = { user: { id: "100" }, async deferReply() {}, async deferUpdate() {},
+  let deferredFlags;
+  const base = { user: { id: "100" }, async deferReply(payload) { deferredFlags = payload?.flags; }, async deferUpdate() {},
     async editReply(payload) { replies.push(payload); }, async reply(payload) { replies.push(payload); } };
   await interactionClient.fn({ ...base, isButton: () => true, customId: "coc:v1:kl:s1" });
   check(choices === 1 && selectedId === "a", "一张卡自动选择");
@@ -122,7 +123,10 @@ try {
   await interactionClient.fn({ ...base, isButton: () => true, customId: "coc:v1:kl:s1" });
   check(replies.at(-1).components[0].toJSON().components[0].url === "https://archive.example/investigators", "无卡提示包含档案馆链接");
   await interactionClient.fn({ ...base, isChatInputCommand: () => true, commandName: "coc", options: { getSubcommand: () => "建卡" } });
-  check(replies.at(-1).content.includes("Discord 授权"), "/coc 建卡提供仅本人入口和授权说明");
+  const panel = replies.at(-1);
+  check(panel.embeds[0].toJSON().description.includes("Discord 授权") && deferredFlags === 64, "/coc 建卡提供仅本人入口和授权说明");
+  check(panel.embeds[0].toJSON().title === "茶话会调查员档案馆" && panel.embeds[0].toJSON().image.url === "attachment://archive-banner.jpg", "建卡图文面板包含标题与宣传图");
+  check(panel.files[0].name === "archive-banner.jpg" && panel.components[0].toJSON().components[0].url === "https://coc.dreamdana.baby", "建卡宣传图附件与正式档案馆链接");
   router.destroy();
   const many = Array.from({ length: 26 }, (_, index) => ({ ...summary[0], id: `card-${index}` }));
   check(characterChoices("s1", "100", many, 0, "inv-100").components[0].toJSON().components[0].options.length === 25, "每页最多 25 张卡");

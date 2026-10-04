@@ -80,6 +80,7 @@ export function createCocRuntime({
     onSessionEnded: arm,
     logger,
     archiveUrl: coc?.archiveUrl,
+    archivePanelImage: coc?.archivePanelImage,
   });
 
   async function warn(message) {

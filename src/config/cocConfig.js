@@ -38,6 +38,7 @@ export function loadCocConfig(env, { projectRoot }) {
     messageContentEnabled, transcriptEnabled,
     characterApiUrl: env.COC_CHARACTER_API_URL?.trim() || "http://127.0.0.1:8787",
     archiveUrl: env.COC_ARCHIVE_URL?.trim() || "",
+    archivePanelImage: resolve(projectRoot, env.COC_ARCHIVE_PANEL_IMAGE?.trim() || "src/resources/coc/archive-banner.jpg"),
     internalApiSecret: env.INTERNAL_API_SECRET || "",
   };
   if (!flag.enabled) {

@@ -25,7 +25,7 @@ import {
 } from "./panel.js";
 import { classifyMemberQuery, memberOptionLabel } from "./memberQuery.js";
 import { COC_COMMAND_NAME, COC_OPEN_SUBCOMMAND, COC_PANEL_SUBCOMMAND, COC_ARCHIVE_SUBCOMMAND, ROLL_COMMAND_NAME } from "./commands.js";
-import { archiveEntry, characterChoices, characterInvitation } from "./characterPanel.js";
+import { archiveCommandPanel, archiveEntry, characterChoices, characterInvitation } from "./characterPanel.js";
 
 const CLOSED = "CoC 跑团暂时没有开启。";
 
@@ -75,6 +75,7 @@ export function createCocInteractionRouter({
   onSessionEnded,
   logger = console,
   archiveUrl,
+  archivePanelImage,
 } = {}) {
   let started = false;
 
@@ -526,7 +527,8 @@ export function createCocInteractionRouter({
       if (interaction.isChatInputCommand?.() && interaction.commandName === COC_COMMAND_NAME) {
         const subcommand = interaction.options.getSubcommand(false);
         if (subcommand === COC_ARCHIVE_SUBCOMMAND) {
-          await interaction.reply({ ...archiveEntry(archiveUrl), flags: MessageFlags.Ephemeral });
+          await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+          await interaction.editReply(archiveCommandPanel(archivePanelImage));
           return;
         }
         if (subcommand === COC_PANEL_SUBCOMMAND) {

@@ -1,5 +1,18 @@
-import { ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder } from "discord.js";
+import { ActionRowBuilder, AttachmentBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, StringSelectMenuBuilder } from "discord.js";
+import { fileURLToPath } from "node:url";
 import { buildCustomId } from "./panel.js";
+
+export function archiveCommandPanel(imagePath = fileURLToPath(new URL("../../resources/coc/archive-banner.jpg", import.meta.url))) {
+  return {
+    allowedMentions: { parse: [] },
+    embeds: [new EmbedBuilder().setColor(0x78383f).setTitle("茶话会调查员档案馆")
+      .setDescription("为下一场故事，准备你的调查员。\n\n前往档案馆创建或管理你的 **CoC 7 长期调查员角色卡**。未登录时，请先完成 Discord 授权。")
+      .setImage("attachment://archive-banner.jpg")],
+    files: [new AttachmentBuilder(imagePath, { name: "archive-banner.jpg" })],
+    components: [new ActionRowBuilder().addComponents(new ButtonBuilder()
+      .setLabel("前往档案馆").setStyle(ButtonStyle.Link).setURL("https://coc.dreamdana.baby"))],
+  };
+}
 
 export function archiveEntry(url, content = "打开调查员档案馆创建或管理角色卡；未登录时请先完成 Discord 授权。") {
   try {
