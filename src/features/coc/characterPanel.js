@@ -7,7 +7,7 @@ export function archiveCommandPanel(imagePath = fileURLToPath(new URL("../../res
     allowedMentions: { parse: [] },
     embeds: [new EmbedBuilder().setColor(0x78383f)
       .setImage("attachment://archive-banner.png"),
-      new EmbedBuilder().setColor(0x78383f).setDescription("**点击按钮前往档案馆创建/管理角色卡**")],
+      new EmbedBuilder().setColor(0x78383f).setDescription("**点击按钮前往档案馆创建/管理角色**")],
     files: [new AttachmentBuilder(imagePath, { name: "archive-banner.png" })],
     components: [new ActionRowBuilder().addComponents(new ButtonBuilder()
       .setLabel("前往档案馆").setStyle(ButtonStyle.Link).setURL("https://coc.dreamdana.baby"))],

@@ -124,7 +124,7 @@ try {
   check(replies.at(-1).components[0].toJSON().components[0].url === "https://archive.example/investigators", "无卡提示包含档案馆链接");
   await interactionClient.fn({ ...base, isChatInputCommand: () => true, commandName: "coc", options: { getSubcommand: () => "建卡" } });
   const panel = replies.at(-1);
-  check(!panel.embeds[0].toJSON().description && panel.embeds[1].toJSON().description === "**点击按钮前往档案馆创建/管理角色卡**" && deferredFlags === 64, "/coc 建卡仅本人可见且只显示简短图下提示");
+  check(!panel.embeds[0].toJSON().description && panel.embeds[1].toJSON().description === "**点击按钮前往档案馆创建/管理角色**" && deferredFlags === 64, "/coc 建卡仅本人可见且只显示简短图下提示");
   check(!panel.embeds[0].toJSON().title && panel.embeds[0].toJSON().image.url === "attachment://archive-banner.png", "建卡面板只含宣传图，不重复图片标题");
   check(panel.files[0].name === "archive-banner.png" && panel.components[0].toJSON().components[0].url === "https://coc.dreamdana.baby", "建卡宣传图附件与正式档案馆链接");
   router.destroy();
