@@ -77,8 +77,9 @@ function ioFailed(what, err) {
  * @param {object} options
  * @param {string} options.lockPath
  * @param {() => void} [options.onStaleGuardCleaned] 测试钩子：残留守卫清理后、重试 acquire 前调用
+ * @param {(stalePath: string) => void} [options.onStaleRenamed] 测试钩子：过期锁 rename 成功后、独占创建前调用
  */
-export function createInstanceLock({ lockPath, onStaleGuardCleaned = null } = {}) {
+export function createInstanceLock({ lockPath, onStaleGuardCleaned = null, onStaleRenamed = null } = {}) {
   if (!lockPath || typeof lockPath !== "string") {
     throw new TypeError("createInstanceLock 需要 lockPath");
   }
@@ -194,6 +195,7 @@ export function createInstanceLock({ lockPath, onStaleGuardCleaned = null } = {}
       if (again.raw !== null && again.raw !== staleRaw) {
         throw busy("实例锁竞争失败");
       }
+      // 本进程唯一的 rename 目标；只清理这一个路径，绝不触碰其他 .stale.* 或他人的锁/守卫
       const stalePath = `${lockPath}.stale.${pid}.${randomBytes(6).toString("hex")}`;
       let renamed = false;
       try {
@@ -203,9 +205,15 @@ export function createInstanceLock({ lockPath, onStaleGuardCleaned = null } = {}
         if (err?.code !== "ENOENT") throw ioFailed("无法移走过期实例锁", err);
         // 已被他人移走：重试一次独占创建
       }
-      const created = tryCreate();
-      if (renamed) {
-        try { unlinkSync(stalePath); } catch { /* ignore */ }
+      let created;
+      try {
+        if (renamed) onStaleRenamed?.(stalePath);
+        created = tryCreate();
+      } finally {
+        // best-effort：无论创建成功、失败还是抛 IO 错误都清理；unlink 失败不影响结果与退出码
+        if (renamed) {
+          try { unlinkSync(stalePath); } catch { /* ignore */ }
+        }
       }
       if (!created) throw busy("实例锁竞争失败");
       held = true;

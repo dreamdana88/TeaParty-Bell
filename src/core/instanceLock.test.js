@@ -140,6 +140,63 @@ try {
     assert(readdirSync(join(lockPath, "..")).every((f) => !f.includes(".stale.")), "接管后不残留 .stale 文件");
   }
 
+  // .stale 清理：只删本进程 rename 出的那一个文件
+  {
+    const lockPath = freshLockPath();
+    const dir = join(lockPath, "..");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(lockPath, JSON.stringify({ pid: deadPid(), startTime: null }));
+    const foreign = `${lockPath}.stale.999999.deadbeefcafe`;
+    writeFileSync(foreign, "foreign");
+    let ownStale = null;
+    const lock = createInstanceLock({ lockPath, onStaleRenamed: (p) => { ownStale = p; } });
+    const r = lock.acquire();
+    assert(r.acquired && r.reclaimed, "过期锁被接管");
+    assert(ownStale?.startsWith(`${lockPath}.stale.${process.pid}.`) && !existsSync(ownStale), "本进程 rename 出的 .stale 文件已删除");
+    assert(existsSync(foreign) && readFileSync(foreign, "utf8") === "foreign", "预先存在的他人 .stale.* 文件原样保留");
+    assert(readdirSync(dir).filter((f) => f.includes(".stale.")).length === 1, "只剩他人的那一个 .stale 文件");
+    lock.release();
+  }
+  {
+    // unlink 失败（rename 目标被替换成非空目录）：不影响接管结果
+    const lockPath = freshLockPath();
+    mkdirSync(join(lockPath, ".."), { recursive: true });
+    writeFileSync(lockPath, JSON.stringify({ pid: deadPid(), startTime: null }));
+    let ownStale = null;
+    const lock = createInstanceLock({
+      lockPath,
+      onStaleRenamed: (p) => {
+        ownStale = p;
+        rmSync(p);
+        mkdirSync(join(p, "sub"), { recursive: true });
+      },
+    });
+    let r = null;
+    let err = null;
+    try { r = lock.acquire(); } catch (e) { err = e; }
+    assert(err === null && r?.acquired === true && r.reclaimed === true, "unlink .stale 失败不影响接管结果");
+    assert(JSON.parse(readFileSync(lockPath, "utf8")).pid === process.pid && lock.isHeld(), "锁归本进程");
+    assert(existsSync(ownStale), "无法删除的 .stale 保留（best-effort，不重试、不报错）");
+    lock.release();
+  }
+  {
+    // 独占创建失败（他人抢先创建新锁）：仍清理本进程的 .stale，并按 78 退出
+    const lockPath = freshLockPath();
+    mkdirSync(join(lockPath, ".."), { recursive: true });
+    writeFileSync(lockPath, JSON.stringify({ pid: deadPid(), startTime: null }));
+    const liveBody = JSON.stringify({ pid: process.ppid, startTime: readProcessStartTime(process.ppid) });
+    let ownStale = null;
+    const lock = createInstanceLock({
+      lockPath,
+      onStaleRenamed: (p) => { ownStale = p; writeFileSync(lockPath, liveBody); },
+    });
+    let err = null;
+    try { lock.acquire(); } catch (e) { err = e; }
+    assert(err?.exitCode === 78 && err?.code === "INSTANCE_LOCK_BUSY", "创建失败 → 78");
+    assert(!existsSync(ownStale), "创建失败时本进程的 .stale 也已删除");
+    assert(readFileSync(lockPath, "utf8") === liveBody, "他人的新锁原样保留");
+  }
+
   // 残留 .takeover 守卫：清理后同一进程重试一次 acquire
   const old = () => new Date(Date.now() - 60_000);
   const staleSetup = () => {
@@ -208,6 +265,19 @@ try {
       assert(err?.exitCode === 1 && err?.code === "INSTANCE_LOCK_IO_FAILED" && err.message.includes("接管守卫"),
         `守卫创建 EACCES → IO_FAILED / exit 1（got ${err?.code}/${err?.exitCode}）`);
       assert(readFileSync(lockPath, "utf8") === staleBody && !existsSync(`${lockPath}.takeover`), "锁文件未被改动，无守卫残留");
+    }
+    {
+      // rename 后独占创建 EACCES（目录变只读）：仍是 IO_FAILED / exit 1；此时 .stale 也删不掉，best-effort 不改变结果
+      const lockPath = freshLockPath();
+      const dir = join(lockPath, "..");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(lockPath, JSON.stringify({ pid: deadPid(), startTime: null }));
+      let err = null;
+      try {
+        createInstanceLock({ lockPath, onStaleRenamed: () => chmodSync(dir, 0o555) }).acquire();
+      } catch (e) { err = e; } finally { chmodSync(dir, 0o755); }
+      assert(err?.exitCode === 1 && err?.code === "INSTANCE_LOCK_IO_FAILED" && err.message.includes("无法创建实例锁"),
+        `rename 后创建 EACCES → IO_FAILED / exit 1，清理失败不改变退出码（got ${err?.code}/${err?.exitCode}）`);
     }
     {
       // 读锁 EACCES：不得当作损坏接管
@@ -279,7 +349,10 @@ try {
       const losers78 = codes.filter((c) => c === INSTANCE_LOCK_BUSY_EXIT_CODE).length;
       writeFileSync(gate, "1");
       const finals = await Promise.all(children.map(exitOf));
-      if (winners === 1 && losers78 === RACERS - 1 && finals.filter((c) => c === 0).length === 1) okRounds += 1;
+      const leftovers = readdirSync(dir).filter((f) => f.includes(".stale."));
+      if (leftovers.length > 0) console.error(`  round ${round}: .stale 残留 ${JSON.stringify(leftovers)}`);
+      if (winners === 1 && losers78 === RACERS - 1 && leftovers.length === 0
+        && finals.filter((c) => c === 0).length === 1) okRounds += 1;
       else console.error(`  round ${round}: winners=${winners} codes=${JSON.stringify(finals)}`);
     }
     assert(okRounds === ROUNDS, `并发接管 ${ROUNDS} 轮 × ${RACERS} 进程：每轮恰好 1 个胜者，其余 exit 78（ok=${okRounds}）`);
