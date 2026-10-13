@@ -6,7 +6,7 @@
 
 import { ChannelType, PermissionFlagsBits } from "discord.js";
 import { createForumBumpError, isForumBumpError } from "./errors.js";
-import { evaluateThreadCandidate, sortCandidates } from "./candidateRules.js";
+import { evaluateThreadCandidate } from "./candidateRules.js";
 import { buildScanReport } from "./report.js";
 
 const UNKNOWN_CHANNEL = 10003;
@@ -415,9 +415,6 @@ export async function scanForumCandidates({
     allRecords,
     clock,
   });
-
-  // 附带完整候选排序（供测试统计）；CLI 输出仍以 report.candidates 展示裁剪
-  report._allEligibleSorted = sortCandidates(allRecords.filter((r) => r.eligible));
 
   logger?.info?.("[ForumBump] scan complete", {
     operation: "forum-scan",
