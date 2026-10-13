@@ -135,87 +135,31 @@ export function validateDynamicConfig(data) {
     throw createDynamicConfigError("DYNAMIC_CONFIG_INVALID");
   }
 
-  if (!Number.isInteger(data.revision) || data.revision < 0) {
-    throw createDynamicConfigError("DYNAMIC_CONFIG_INVALID", undefined, {
-      field: "revision",
-    });
-  }
+  const invalid = (field) => createDynamicConfigError("DYNAMIC_CONFIG_INVALID", undefined, { field });
 
+  if (!Number.isInteger(data.revision) || data.revision < 0) throw invalid("revision");
   // dailyLimit 整数范围粗检；与活跃窗关系由 computeAutoInterval 统一判定
-  if (!Number.isInteger(data.dailyLimit) || data.dailyLimit < 1) {
-    throw createDynamicConfigError("DYNAMIC_CONFIG_INVALID", undefined, {
-      field: "dailyLimit",
-    });
-  }
+  if (!Number.isInteger(data.dailyLimit) || data.dailyLimit < 1) throw invalid("dailyLimit");
 
-  if (typeof data.activeStart !== "string" || !parseHhMm(data.activeStart)) {
-    throw createDynamicConfigError("DYNAMIC_CONFIG_INVALID", undefined, {
-      field: "activeStart",
-    });
-  }
-  if (typeof data.activeEnd !== "string" || !parseHhMm(data.activeEnd)) {
-    throw createDynamicConfigError("DYNAMIC_CONFIG_INVALID", undefined, {
-      field: "activeEnd",
-    });
-  }
   const start = parseHhMm(data.activeStart);
+  if (!start) throw invalid("activeStart");
   const end = parseHhMm(data.activeEnd);
-  const startMin = start.hour * 60 + start.minute;
-  const endMin = end.hour * 60 + end.minute;
-  if (startMin >= endMin) {
-    throw createDynamicConfigError("DYNAMIC_CONFIG_INVALID", undefined, {
-      field: "activeWindow",
-    });
-  }
+  if (!end) throw invalid("activeEnd");
+  if (start.hour * 60 + start.minute >= end.hour * 60 + end.minute) throw invalid("activeWindow");
 
-  if (!Array.isArray(data.forumChannelIds) || data.forumChannelIds.length === 0) {
-    throw createDynamicConfigError("DYNAMIC_CONFIG_INVALID", undefined, {
-      field: "forumChannelIds",
-    });
+  if (!Array.isArray(data.forumChannelIds) || data.forumChannelIds.length === 0
+    || !data.forumChannelIds.every(isDiscordSnowflake)) {
+    throw invalid("forumChannelIds");
   }
-  const forumChannelIds = [];
-  const seen = new Set();
-  for (const id of data.forumChannelIds) {
-    if (typeof id !== "string" || !isDiscordSnowflake(id)) {
-      throw createDynamicConfigError("DYNAMIC_CONFIG_INVALID", undefined, {
-        field: "forumChannelIds",
-      });
-    }
-    if (seen.has(id)) continue;
-    seen.add(id);
-    forumChannelIds.push(id);
-  }
-  if (forumChannelIds.length === 0) {
-    throw createDynamicConfigError("DYNAMIC_CONFIG_INVALID", undefined, {
-      field: "forumChannelIds",
-    });
-  }
+  const forumChannelIds = [...new Set(data.forumChannelIds)];
 
   if (!Number.isInteger(data.silenceDays) || data.silenceDays < 1 || data.silenceDays > 3650) {
-    throw createDynamicConfigError("DYNAMIC_CONFIG_INVALID", undefined, {
-      field: "silenceDays",
-    });
+    throw invalid("silenceDays");
   }
-
-  if (data.updatedAt !== null) {
-    if (typeof data.updatedAt !== "string" || !isValidIsoTimestamp(data.updatedAt)) {
-      throw createDynamicConfigError("DYNAMIC_CONFIG_INVALID", undefined, {
-        field: "updatedAt",
-      });
-    }
-  }
-
-  if (data.updatedBy !== null) {
-    if (typeof data.updatedBy !== "string" || data.updatedBy.trim().length === 0) {
-      throw createDynamicConfigError("DYNAMIC_CONFIG_INVALID", undefined, {
-        field: "updatedBy",
-      });
-    }
-    if (data.updatedBy.length > 200) {
-      throw createDynamicConfigError("DYNAMIC_CONFIG_INVALID", undefined, {
-        field: "updatedBy",
-      });
-    }
+  if (data.updatedAt !== null && !isValidIsoTimestamp(data.updatedAt)) throw invalid("updatedAt");
+  if (data.updatedBy !== null && (typeof data.updatedBy !== "string"
+    || data.updatedBy.trim().length === 0 || data.updatedBy.length > 200)) {
+    throw invalid("updatedBy");
   }
 
   const interval = computeAutoInterval(data.activeStart, data.activeEnd, data.dailyLimit);
@@ -237,7 +181,7 @@ export function validateDynamicConfig(data) {
     forumChannelIds,
     silenceDays: data.silenceDays,
     updatedAt: data.updatedAt,
-    updatedBy: data.updatedBy === null ? null : String(data.updatedBy).trim(),
+    updatedBy: data.updatedBy === null ? null : data.updatedBy.trim(),
   };
 }
 
