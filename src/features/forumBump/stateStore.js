@@ -143,15 +143,11 @@ export function createForumBumpStateStore({
 
         if (!result.changed) {
           const snap = cloneState(diskState);
-          try {
-            logger?.info?.("[ForumBumpState] noop", {
-              operation,
-              revision: snap.revision,
-              changed: false,
-            });
-          } catch {
-            // ignore
-          }
+          logger?.info?.("[ForumBumpState] noop", {
+            operation,
+            revision: snap.revision,
+            changed: false,
+          });
           return {
             operation,
             success: true,
@@ -172,21 +168,17 @@ export function createForumBumpStateStore({
         _atomicWrite(next);
         _state = next;
 
-        try {
-          logger?.info?.("[ForumBumpState] updated", {
-            operation,
-            previousRevision,
-            revision: next.revision,
-            localDate: next.localDate,
-            successCount: next.successCount,
-            paused: next.paused,
-            pauseReason: next.pauseReason,
-            inFlightPhase: next.inFlight?.phase ?? null,
-            durationMs: Math.max(0, clock.now() - started),
-          });
-        } catch {
-          // ignore
-        }
+        logger?.info?.("[ForumBumpState] updated", {
+          operation,
+          previousRevision,
+          revision: next.revision,
+          localDate: next.localDate,
+          successCount: next.successCount,
+          paused: next.paused,
+          pauseReason: next.pauseReason,
+          inFlightPhase: next.inFlight?.phase ?? null,
+          durationMs: Math.max(0, clock.now() - started),
+        });
 
         return {
           operation,
@@ -201,15 +193,11 @@ export function createForumBumpStateStore({
         };
       } catch (error) {
         const code = isForumBumpStateError(error) ? error.code : "STATE_WRITE_FAILED";
-        try {
-          logger?.warn?.("[ForumBumpState] operation failed", {
-            operation,
-            errorCode: code,
-            expectedRevision: expectedRevision ?? null,
-          });
-        } catch {
-          // ignore
-        }
+        logger?.warn?.("[ForumBumpState] operation failed", {
+          operation,
+          errorCode: code,
+          expectedRevision: expectedRevision ?? null,
+        });
         return {
           ...emptyResult(operation),
           errorCode: code,
@@ -230,15 +218,11 @@ export function createForumBumpStateStore({
         const initial = createInitialState(localDate);
         _atomicWrite(initial);
         _state = cloneState(initial);
-        try {
-          logger?.info?.("[ForumBumpState] initialized", {
-            operation: "initialize",
-            revision: 0,
-            localDate: initial.localDate,
-          });
-        } catch {
-          // ignore
-        }
+        logger?.info?.("[ForumBumpState] initialized", {
+          operation: "initialize",
+          revision: 0,
+          localDate: initial.localDate,
+        });
         return {
           operation: "initialize",
           success: true,
@@ -406,18 +390,14 @@ export function createForumBumpStateStore({
         _atomicWrite(next);
         _state = next;
 
-        try {
-          logger?.warn?.("[ForumBumpState] recovery pause applied", {
-            operation: "recoverOnStartup",
-            recoveryStatus: plan.recoveryStatus,
-            pauseReason: next.pauseReason,
-            previousRevision,
-            revision: next.revision,
-            inFlightPhase: next.inFlight?.phase ?? null,
-          });
-        } catch {
-          // ignore
-        }
+        logger?.warn?.("[ForumBumpState] recovery pause applied", {
+          operation: "recoverOnStartup",
+          recoveryStatus: plan.recoveryStatus,
+          pauseReason: next.pauseReason,
+          previousRevision,
+          revision: next.revision,
+          inFlightPhase: next.inFlight?.phase ?? null,
+        });
 
         return {
           operation: "recoverOnStartup",

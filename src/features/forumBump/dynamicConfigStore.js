@@ -188,14 +188,10 @@ export function createForumBumpDynamicConfigStore({
         const finalDoc = validateDynamicConfig(next);
         _atomicWrite(finalDoc);
         _config = cloneDynamicConfig(finalDoc);
-        try {
-          logger?.info?.("[ForumBumpDynamicConfig] saved", {
-            revision: finalDoc.revision,
-            dailyLimit: finalDoc.dailyLimit,
-          });
-        } catch {
-          // ignore
-        }
+        logger?.info?.("[ForumBumpDynamicConfig] saved", {
+          revision: finalDoc.revision,
+          dailyLimit: finalDoc.dailyLimit,
+        });
         return {
           operation: "save",
           success: true,
