@@ -148,7 +148,7 @@ export function validateDynamicConfig(data) {
   if (start.hour * 60 + start.minute >= end.hour * 60 + end.minute) throw invalid("activeWindow");
 
   if (!Array.isArray(data.forumChannelIds) || data.forumChannelIds.length === 0
-    || !data.forumChannelIds.every(isDiscordSnowflake)) {
+    || ![...data.forumChannelIds].every(isDiscordSnowflake)) {
     throw invalid("forumChannelIds");
   }
   const forumChannelIds = [...new Set(data.forumChannelIds)];
