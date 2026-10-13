@@ -701,9 +701,8 @@ export function createForumBumpScheduler({
       });
     }
 
-    const candidates = scanReport?.candidates
-      || scanReport?._allEligibleSorted
-      || [];
+    // scanner 报告的 candidates 已按优先级排序（buildScanReport）
+    const candidates = scanReport?.candidates || [];
     const first = candidates[0] || null;
     if (!first) {
       return deferAndArm(revision, config.idlePollMs, null, "no_candidate", {

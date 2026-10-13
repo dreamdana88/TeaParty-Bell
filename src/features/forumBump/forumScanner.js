@@ -416,9 +416,6 @@ export async function scanForumCandidates({
     clock,
   });
 
-  // 附带完整候选排序（供测试统计）；CLI 输出仍以 report.candidates 展示裁剪
-  report._allEligibleSorted = sortCandidates(allRecords.filter((r) => r.eligible));
-
   logger?.info?.("[ForumBump] scan complete", {
     operation: "forum-scan",
     dryRun: true,

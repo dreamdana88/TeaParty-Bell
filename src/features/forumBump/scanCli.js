@@ -181,19 +181,6 @@ async function safelyDestroy(destroyFn, logger) {
   }
 }
 
-/**
- * 剥离内部字段后再输出。
- * @param {object} report
- */
-export function publicScanReport(report) {
-  if (!report || typeof report !== "object") return report;
-  const { _allEligibleSorted, ...publicReport } = report;
-  return publicReport;
-}
-
-/**
- * @param {object} [options]
- */
 export async function runForumScan({
   argv = [],
   loadConfigFn = loadConfig,
@@ -275,7 +262,6 @@ export async function runForumScan({
     };
   }
 
-  const publicResult = publicScanReport(result);
-  writeOut(JSON.stringify(publicResult, null, 2));
-  return { exitCode: 0, result: publicResult };
+  writeOut(JSON.stringify(result, null, 2));
+  return { exitCode: 0, result };
 }
