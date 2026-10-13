@@ -31,6 +31,7 @@ export class InstanceLockError extends Error {
 
 /** 刚创建、尚未写完内容的锁文件在此时长内不按「损坏」接管。 */
 const CORRUPT_GRACE_MS = 2000;
+const RETRY = Symbol("retry");
 /** takeover 守卫超过此时长视为崩溃残留。 */
 const GUARD_STALE_MS = 10_000;
 
@@ -66,8 +67,9 @@ function busy(message) {
 /**
  * @param {object} options
  * @param {string} options.lockPath
+ * @param {() => void} [options.onStaleGuardCleaned] 测试钩子：残留守卫清理后、重试 acquire 前调用
  */
-export function createInstanceLock({ lockPath } = {}) {
+export function createInstanceLock({ lockPath, onStaleGuardCleaned = null } = {}) {
   if (!lockPath || typeof lockPath !== "string") {
     throw new TypeError("createInstanceLock 需要 lockPath");
   }
@@ -147,19 +149,31 @@ export function createInstanceLock({ lockPath } = {}) {
    * 接管过期锁。takeover 守卫（wx 独占）保证同一时刻只有一个进程在 rename：
    * 否则持旧视图的进程可能把刚接管者的新锁 rename 走，出现两个胜者。
    */
-  function takeOver(staleRaw) {
+  function takeOver(staleRaw, isRetry) {
     const guardPath = `${lockPath}.takeover`;
     let guardFd;
     try {
       guardFd = openSync(guardPath, "wx");
     } catch (err) {
-      if (err?.code === "EEXIST") {
-        // 守卫残留（接管者在极短窗口内崩溃）：清理后本次仍按占用退出，由进程管理器重启再试
-        try {
-          if (Date.now() - statSync(guardPath).mtimeMs > GUARD_STALE_MS) unlinkSync(guardPath);
-        } catch {
-          // ignore
+      if (err?.code !== "EEXIST") throw busy("实例锁竞争失败");
+      // 守卫残留（接管者在极短窗口内崩溃）：清理后在本进程重试一次 acquire。
+      // 不能以 78 退出：部署模板 RestartPreventExitStatus=78 会让服务永久停止。
+      let cleaned = false;
+      try {
+        if (Date.now() - statSync(guardPath).mtimeMs > GUARD_STALE_MS) {
+          unlinkSync(guardPath);
+          cleaned = true;
         }
+      } catch {
+        // 守卫已被他人删除 / 无法 stat：按未清理处理
+      }
+      if (isRetry) {
+        // 重试仍遇到守卫：可恢复状况，exit 1 交给进程管理器重启
+        throw new InstanceLockError("实例锁接管守卫仍被占用，稍后重试", "INSTANCE_LOCK_TAKEOVER_BUSY", 1);
+      }
+      if (cleaned) {
+        onStaleGuardCleaned?.();
+        return RETRY;
       }
       throw busy("实例锁竞争失败");
     }
@@ -194,7 +208,12 @@ export function createInstanceLock({ lockPath } = {}) {
   function acquire() {
     if (held) return { acquired: true, lockPath, pid, reentrant: true };
     mkdirSync(dirname(lockPath), { recursive: true });
+    const first = acquireOnce(false);
+    // 仅在清理了残留守卫后重试一次（有界，不循环）
+    return first === RETRY ? acquireOnce(true) : first;
+  }
 
+  function acquireOnce(isRetry) {
     if (tryCreate()) {
       held = true;
       return { acquired: true, lockPath, pid };
@@ -205,7 +224,7 @@ export function createInstanceLock({ lockPath } = {}) {
       if (!isStale(lock.owner)) {
         throw busy(`另一个 TeaParty-Bell 进程正在运行（pid=${lock.owner.pid}）`);
       }
-      return takeOver(lock.raw);
+      return takeOver(lock.raw, isRetry);
     }
 
     // 读的时候锁已消失：重试一次独占创建

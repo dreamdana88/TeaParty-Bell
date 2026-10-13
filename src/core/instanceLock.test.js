@@ -140,6 +140,59 @@ try {
     assert(readdirSync(join(lockPath, "..")).every((f) => !f.includes(".stale.")), "接管后不残留 .stale 文件");
   }
 
+  // 残留 .takeover 守卫：清理后同一进程重试一次 acquire
+  const old = () => new Date(Date.now() - 60_000);
+  const staleSetup = () => {
+    const lockPath = freshLockPath();
+    mkdirSync(join(lockPath, ".."), { recursive: true });
+    writeFileSync(lockPath, JSON.stringify({ pid: deadPid(), startTime: null }));
+    writeFileSync(`${lockPath}.takeover`, "");
+    utimesSync(`${lockPath}.takeover`, old(), old());
+    return lockPath;
+  };
+  {
+    const lockPath = staleSetup();
+    let cleaned = 0;
+    const lock = createInstanceLock({ lockPath, onStaleGuardCleaned: () => { cleaned += 1; } });
+    let r = null;
+    try { r = lock.acquire(); } catch { /* */ }
+    assert(cleaned === 1 && r?.acquired === true, "残留守卫清理后同一进程获取到锁（不退出 78）");
+    assert(!existsSync(`${lockPath}.takeover`), "守卫已删除");
+    lock.release();
+  }
+  {
+    const lockPath = staleSetup();
+    const lock = createInstanceLock({
+      lockPath,
+      onStaleGuardCleaned: () => writeFileSync(lockPath, JSON.stringify({
+        pid: process.ppid, startTime: readProcessStartTime(process.ppid),
+      })),
+    });
+    let err = null;
+    try { lock.acquire(); } catch (e) { err = e; }
+    assert(err?.exitCode === 78 && err?.code === "INSTANCE_LOCK_BUSY", "清理守卫后重试遇到存活锁 → 78");
+  }
+  {
+    const lockPath = staleSetup();
+    const lock = createInstanceLock({
+      lockPath,
+      onStaleGuardCleaned: () => writeFileSync(`${lockPath}.takeover`, ""),
+    });
+    let err = null;
+    try { lock.acquire(); } catch (e) { err = e; }
+    assert(err?.exitCode === 1 && err?.code === "INSTANCE_LOCK_TAKEOVER_BUSY", "重试又遇到新守卫 → exit 1（可恢复，非 78）");
+  }
+  {
+    // 新鲜守卫（首次即遇到）：他人正在接管 → 78
+    const lockPath = freshLockPath();
+    mkdirSync(join(lockPath, ".."), { recursive: true });
+    writeFileSync(lockPath, JSON.stringify({ pid: deadPid(), startTime: null }));
+    writeFileSync(`${lockPath}.takeover`, "");
+    let err = null;
+    try { createInstanceLock({ lockPath }).acquire(); } catch (e) { err = e; }
+    assert(err?.exitCode === 78, "首次遇到新鲜守卫 → 78");
+  }
+
   // 并发接管同一过期锁：恰好一个胜者（循环多次）
   {
     const ROUNDS = 50;
