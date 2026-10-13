@@ -140,14 +140,6 @@ export function formatNaturalTime(iso, nowMs = Date.now()) {
 }
 
 /**
- * 兼容旧名：自然时间（无秒）。
- * @deprecated 面板请用 formatNaturalTime
- */
-export function formatUtc8(iso, nowMs = Date.now()) {
-  return formatNaturalTime(iso, nowMs);
-}
-
-/**
  * 状态主文案（Embed description 首行）。
  */
 export function resolveStatusHeadline(snap) {
@@ -165,11 +157,6 @@ export function resolveStatusHeadline(snap) {
   }
   if (snap.started) return "🟢 自动顶帖运行中";
   return "🔴 顶帖服务暂时不可用";
-}
-
-/** @deprecated 使用 resolveStatusHeadline */
-export function resolveRunStatusLabel(snap) {
-  return resolveStatusHeadline(snap);
 }
 
 /**
@@ -379,19 +366,6 @@ export function buildPanelMessage(snap, sessionId, opts = {}) {
     // 不重复发 notice content
     content: undefined,
   };
-}
-
-/**
- * 兼容旧测试：返回可检索的纯文本摘要（非发送用）。
- * @deprecated 面板发送请用 buildPanelMessage / buildPanelEmbed
- */
-export function buildPanelContent(snap, opts = {}) {
-  const embed = buildPanelEmbed(snap, opts);
-  const data = typeof embed.toJSON === "function" ? embed.toJSON() : embed.data;
-  const fields = (data.fields || [])
-    .map((f) => `${f.name}\n${f.value}`)
-    .join("\n");
-  return [data.title, data.description, fields].filter(Boolean).join("\n");
 }
 
 /**

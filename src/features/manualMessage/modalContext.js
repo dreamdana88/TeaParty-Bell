@@ -7,8 +7,6 @@ import {
 
 export const MANUAL_REPLY_MODAL_PREFIX = "manual:v1:reply";
 export const MANUAL_SEND_MODAL_PREFIX = "manual:v1:send";
-export const MANUAL_REPLY_CONTENT_CUSTOM_ID = "content";
-export const MANUAL_SEND_CONTENT_CUSTOM_ID = "content";
 export const MAX_MODAL_CUSTOM_ID_LENGTH = 100;
 export const MANUAL_REPLY_MODAL_TITLE = "让小G宝回复";
 export const MANUAL_SEND_MODAL_TITLE = "让小G宝发言";
@@ -63,25 +61,6 @@ export function parseManualModalContext(customId) {
   }
 
   return null;
-}
-
-/**
- * 保持 Stage B-2 的 Reply 解析返回形状。
- * @returns {{channelId: string, targetMessageId: string}|null}
- */
-export function parseReplyModalCustomId(customId) {
-  const context = parseManualModalContext(customId);
-  if (!context || context.action !== "reply") return null;
-  return { channelId: context.channelId, targetMessageId: context.targetMessageId };
-}
-
-/**
- * @returns {{channelId: string}|null}
- */
-export function parseSendModalCustomId(customId) {
-  const context = parseManualModalContext(customId);
-  if (!context || context.action !== "send") return null;
-  return { channelId: context.channelId };
 }
 
 function buildContentModal({ customId, title, label }) {

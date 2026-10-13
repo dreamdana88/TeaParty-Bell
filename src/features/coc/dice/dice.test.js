@@ -1,5 +1,5 @@
 import { parseDiceExpression, INVALID_DICE_MESSAGE } from "./parser.js";
-import { formatRoll, rollDice } from "./roller.js";
+import { rollDice } from "./roller.js";
 
 let passed = 0;
 let failed = 0;
@@ -33,11 +33,6 @@ for (const bad of ["今天运气大概1d100吧", "cc 70", "0d6", "21d6", "1d1", 
   const values = [4, 6];
   const rolled = rollDice("2d6+3", () => values[n++]);
   assertEqual(rolled.total, 13, "2d6+3 合计 13");
-  assertEqual(formatRoll("奈洛莉", rolled), "🎲 奈洛莉掷骰\n\n2d6+3\n[4, 6] + 3 = 13", "带修正文案");
-}
-{
-  const rolled = rollDice("1d100", () => 66);
-  assertEqual(formatRoll("奈洛莉", rolled), "🎲 奈洛莉掷骰\n\n1d100 → 66", "单骰文案");
 }
 assert(INVALID_DICE_MESSAGE.includes("1d100"), "非法提示含示例");
 

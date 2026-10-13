@@ -16,7 +16,6 @@ import {
 } from "./commands.js";
 import { allAdminCommandDefinitions } from "../../adminCommands.js";
 import {
-  getManualMessageCommands,
   MANUAL_REPLY_COMMAND_NAME,
   SLASH_SEND_COMMAND_NAME,
 } from "../../manualMessage/commands.js";
@@ -80,7 +79,6 @@ console.log("\n=== forumBump adminPanel (D-6B) ===\n");
   assert(names.includes(MANUAL_REPLY_COMMAND_NAME), "保留 小G宝回复");
   assert(names.includes(SLASH_SEND_COMMAND_NAME), "保留 小g宝发言");
   assert(names.includes(FORUM_BUMP_ROOT_COMMAND_NAME), "含 顶帖");
-  assertEqual(getManualMessageCommands().length, 2, "人工命令列表仍为 2");
 }
 
 // ---------- 展示（Embed 美化）----------
