@@ -6,7 +6,7 @@
 
 import { ChannelType, PermissionFlagsBits } from "discord.js";
 import { createForumBumpError, isForumBumpError } from "./errors.js";
-import { evaluateThreadCandidate, sortCandidates } from "./candidateRules.js";
+import { evaluateThreadCandidate } from "./candidateRules.js";
 import { buildScanReport } from "./report.js";
 
 const UNKNOWN_CHANNEL = 10003;
