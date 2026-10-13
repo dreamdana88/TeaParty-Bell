@@ -371,8 +371,14 @@ try {
     const busyCount = [r1, r2].filter((x) => x.role === "busy").length;
     assertEqual(winnerCount, 1, "winnerCount=1");
     assertEqual(busyCount, 1, "busyCount=1");
-    const busy = r1.role === "busy" ? r1 : r2;
-    assertEqual(busy.exitCode, 78, "败者 exitCode 78");
+    // 顺序无关：不假设哪个子进程胜出，只断言败者以 fail-closed 的锁错误退出。
+    // 败者通常为 INSTANCE_LOCK_BUSY/78；但两进程同时启动时，败者的
+    // cleanupOrphanTemps 可能恰好删掉胜者尚未 link 的临时文件（或反之），
+    // 使先失败的一方报 INSTANCE_LOCK_IO_FAILED/1。两种情况下互斥都成立。
+    const loser = r1.role === "busy" ? r1 : r2;
+    const loserOk = (loser.code === "INSTANCE_LOCK_BUSY" && loser.exitCode === 78)
+      || (loser.code === "INSTANCE_LOCK_IO_FAILED" && loser.exitCode === 1);
+    assert(loserOk, `败者为锁错误且非零退出 (got ${JSON.stringify({ code: loser.code, exitCode: loser.exitCode })})`);
     // 败者必须在 gate 前结束（gate 尚不存在）
     assert(!existsSync(gatePath), "败者结束时 gate 未开（持锁区间不重叠）");
 
@@ -394,9 +400,11 @@ try {
     });
     const codes = await Promise.all([waitExit(c1, 5000), waitExit(c2, 5000)]);
     const exitWins = codes.filter((c) => c === 0).length;
-    const exitBusy = codes.filter((c) => c === 78).length;
-    assertEqual(exitWins, 1, "进程 winner exit 0");
-    assertEqual(exitBusy, 1, "进程 busy exit 78");
+    const exitLosers = codes.filter((c) => c !== 0).length;
+    assertEqual(exitWins, 1, "恰好一个进程 exit 0（胜者）");
+    assertEqual(exitLosers, 1, "其余进程非零退出（败者）");
+    const loserExit = codes.find((c) => c !== 0);
+    assertEqual(loserExit, loser.exitCode, "败者进程退出码与其报告一致");
   }
 } finally {
   for (const d of dirs) {
