@@ -4,19 +4,8 @@
  * 不自动初始化；不调用 Discord；不生成冷却抖动。
  */
 
-import {
-  closeSync,
-  existsSync,
-  fsyncSync,
-  mkdirSync,
-  openSync,
-  readFileSync,
-  renameSync,
-  unlinkSync,
-  writeSync,
-} from "fs";
-import { dirname } from "path";
-import { randomBytes } from "crypto";
+import { existsSync, readFileSync } from "fs";
+import { writeJsonAtomic } from "../../utils/atomicJson.js";
 import {
   cloneState,
   createInitialState,
@@ -39,10 +28,6 @@ import {
 } from "./stateTransitions.js";
 import { planStartupRecovery } from "./stateRecovery.js";
 
-function defaultMakeTempName(statePath) {
-  const id = randomBytes(8).toString("hex");
-  return `${statePath}.tmp-${id}`;
-}
 
 function emptyResult(operation, extras = {}) {
   return {
@@ -72,23 +57,12 @@ export function createForumBumpStateStore({
   fs: fsOps,
   logger,
   clock = { now: () => Date.now() },
-  makeTempName = defaultMakeTempName,
 } = {}) {
   if (typeof statePath !== "string" || statePath.trim().length === 0) {
     throw new TypeError("createForumBumpStateStore 需要 statePath");
   }
 
-  const fs = fsOps ?? {
-    existsSync,
-    mkdirSync,
-    readFileSync,
-    openSync,
-    writeSync,
-    fsyncSync,
-    closeSync,
-    renameSync,
-    unlinkSync,
-  };
+  const fs = fsOps ?? { existsSync, readFileSync };
 
   /** @type {object|null} */
   let _state = null;
@@ -101,76 +75,15 @@ export function createForumBumpStateStore({
     return task;
   }
 
-  function _ensureDir() {
-    const dir = dirname(statePath);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-  }
-
   /**
    * 原子写：tmp → write → fsync(文件，失败则 fail closed) → close → rename
    * 目录 fsync 仍 best-effort。
    */
+  /** 原子写：失败 fail closed（不 rename），目录 fsync best-effort。 */
   function _atomicWrite(state) {
-    _ensureDir();
-    const tmpPath = makeTempName(statePath);
-    const json = `${JSON.stringify(state, null, 2)}\n`;
-    let fd = null;
     try {
-      fd = fs.openSync(tmpPath, "w");
-      fs.writeSync(fd, json, 0, "utf8");
-      // 文件级 fsync：失败必须 fail closed，不得 rename
-      try {
-        fs.fsyncSync(fd);
-      } catch (fsyncError) {
-        try {
-          fs.closeSync(fd);
-        } catch {
-          // ignore close after fsync failure
-        }
-        fd = null;
-        try {
-          if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
-        } catch {
-          // ignore cleanup
-        }
-        throw createStateError("STATE_WRITE_FAILED", fsyncError);
-      }
-      fs.closeSync(fd);
-      fd = null;
-      fs.renameSync(tmpPath, statePath);
-      // 目录 fsync best-effort：仅忽略平台不支持或目录 fsync 失败
-      try {
-        const dirFd = fs.openSync(dirname(statePath), "r");
-        try {
-          fs.fsyncSync(dirFd);
-        } catch {
-          // 目录 fsync 失败不破坏已成功 rename 的提交
-        } finally {
-          try {
-            fs.closeSync(dirFd);
-          } catch {
-            // ignore
-          }
-        }
-      } catch {
-        // 打开目录失败（平台限制）可忽略
-      }
+      writeJsonAtomic(statePath, state, { fs, fsyncDir: true });
     } catch (error) {
-      if (isForumBumpStateError(error) && error.code === "STATE_WRITE_FAILED") {
-        throw error;
-      }
-      try {
-        if (fd != null) fs.closeSync(fd);
-      } catch {
-        // ignore
-      }
-      try {
-        if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
-      } catch {
-        // ignore
-      }
       throw createStateError("STATE_WRITE_FAILED", error);
     }
   }
