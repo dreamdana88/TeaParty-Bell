@@ -46,11 +46,7 @@ function safeStartupErrorFields(error) {
 }
 
 function safeStartupLog(logger, message, error) {
-  try {
-    logger.error(message, safeStartupErrorFields(error));
-  } catch {
-    // 启动错误日志自身失败不能改变既定退出路径。
-  }
+  logger.error(message, safeStartupErrorFields(error));
 }
 
 async function safelyDestroyManualRouter(router, logger, message) {
@@ -297,35 +293,31 @@ export async function start(options = {}) {
   async function shutdown(signal, exitCode = EXIT_OK) {
     if (shuttingDown) return;
     shuttingDown = true;
-    try {
-      logger.info(`收到 ${signal} 信号，正在关闭...`, { exitCode });
-    } catch {
-      // ignore
-    }
+    logger.info(`收到 ${signal} 信号，正在关闭...`, { exitCode });
     // 先停 Admin Router（停止接收新操作），再停 Forum Runtime，再 destroy Discord
     try {
       if (cocRuntime) cocRuntime.stop();
     } catch (err) {
-      try { logger.error("CoC Runtime 停止异常", { message: err.message }); } catch { /* */ }
+      logger.error("CoC Runtime 停止异常", { message: err?.message });
     }
     try {
       if (forumBumpAdminRouter) forumBumpAdminRouter.destroy();
     } catch (err) {
-      try { logger.error("Forum Bump Admin Router 停止异常", { message: err.message }); } catch { /* */ }
+      logger.error("Forum Bump Admin Router 停止异常", { message: err?.message });
     }
     try {
       if (forumBumpRuntime) await forumBumpRuntime.stop();
     } catch (err) {
-      try { logger.error("Forum Bump Runtime 停止异常", { message: err.message }); } catch { /* */ }
+      logger.error("Forum Bump Runtime 停止异常", { message: err?.message });
     }
-    try { healthMonitor.stop(); } catch (err) { try { logger.error("Health Monitor 停止异常", { message: err.message }); } catch { /* */ } }
-    try { if (lifecycleLoggerCleanup) lifecycleLoggerCleanup.destroy(); } catch (err) { try { logger.error("Lifecycle Logger 清理异常", { message: err.message }); } catch { /* */ } }
-    try { if (observerCleanup) observerCleanup.destroy(); } catch (err) { try { logger.error("Observer 清理异常", { message: err.message }); } catch { /* */ } }
-    try { if (manualInteractionRouter) manualInteractionRouter.destroy(); } catch (err) { try { logger.error("Manual Interaction Router 清理异常", { message: err.message }); } catch { /* */ } }
-    try { await store.close(); } catch (err) { try { logger.error("Store 关闭异常", { message: err.message }); } catch { /* */ } }
-    try { await outbox.close(); } catch (err) { try { logger.error("Outbox 关闭异常", { message: err.message }); } catch { /* */ } }
-    try { await destroy(); } catch (err) { try { logger.error("Discord 断开异常", { message: err.message }); } catch { /* */ } }
-    try { instanceLock?.release(); } catch (err) { try { logger.error("实例锁释放异常", { message: err.message }); } catch { /* */ } }
+    try { healthMonitor.stop(); } catch (err) { logger.error("Health Monitor 停止异常", { message: err?.message }); }
+    try { if (lifecycleLoggerCleanup) lifecycleLoggerCleanup.destroy(); } catch (err) { logger.error("Lifecycle Logger 清理异常", { message: err?.message }); }
+    try { if (observerCleanup) observerCleanup.destroy(); } catch (err) { logger.error("Observer 清理异常", { message: err?.message }); }
+    try { if (manualInteractionRouter) manualInteractionRouter.destroy(); } catch (err) { logger.error("Manual Interaction Router 清理异常", { message: err?.message }); }
+    try { await store.close(); } catch (err) { logger.error("Store 关闭异常", { message: err?.message }); }
+    try { await outbox.close(); } catch (err) { logger.error("Outbox 关闭异常", { message: err?.message }); }
+    try { await destroy(); } catch (err) { logger.error("Discord 断开异常", { message: err?.message }); }
+    try { instanceLock?.release(); } catch (err) { logger.error("实例锁释放异常", { message: err?.message }); }
     exitFn(exitCode);
   }
 
@@ -340,14 +332,10 @@ export async function start(options = {}) {
       onCriticalFailure: (ctx) => {
         // 终止类告警写盘失败 → 幂等 shutdown exit 78
         void shutdown("forum_bump_critical", EXIT_PERMANENT);
-        try {
-          logger.error("[Bot] Forum Bump 致命失败，执行受控关闭", {
-            errorCode: ctx?.errorCode ?? "ALERT_PERSISTENCE_FAILED",
-            status: ctx?.status ?? null,
-          });
-        } catch {
-          // ignore
-        }
+        logger.error("[Bot] Forum Bump 致命失败，执行受控关闭", {
+          errorCode: ctx?.errorCode ?? "ALERT_PERSISTENCE_FAILED",
+          status: ctx?.status ?? null,
+        });
       },
     });
     const fbStart = await forumBumpRuntime.start();
@@ -389,7 +377,7 @@ export async function start(options = {}) {
       });
       forumBumpAdminRouter.start();
     } catch (adminErr) {
-      try { logger.error("Forum Bump Admin Router 启动失败", { message: adminErr?.message }); } catch { /* */ }
+      logger.error("Forum Bump Admin Router 启动失败", { message: adminErr?.message });
       // 面板失败不阻断 Bot；无 Admin 面板
       forumBumpAdminRouter = null;
     }
@@ -430,11 +418,7 @@ export async function start(options = {}) {
     try { if (forumBumpRuntime) await forumBumpRuntime.stop(); } catch { /* ignore */ }
     await safelyDestroyManualRouter(manualInteractionRouter, logger, "Router 启动后清理失败");
     try { instanceLock?.release(); } catch { /* ignore */ }
-    try {
-      logger.error("[Bot] 部分 Recovery 持久化失败", { count: readyResult.failedRecoveries.length });
-    } catch {
-      // 日志设施失败不能掩盖 EXIT_PERMANENT 路径。
-    }
+    logger.error("[Bot] 部分 Recovery 持久化失败", { count: readyResult.failedRecoveries.length });
     exitFn(EXIT_PERMANENT);
     return;
   }
