@@ -69,10 +69,15 @@ function validateAlertId(id) {
   }
 }
 
+function isTimestamp(v) {
+  return typeof v === "number" && Number.isFinite(v) && v > 0;
+}
+
 // ---- 工厂 ----
 
 export function createAlertOutbox(options) {
-  const { alertsDir, logger, fsOps } = options;
+  const { alertsDir, fsOps } = options;
+  const logger = options.logger ?? { info() {} };
   const fs = fsOps ?? {
     writeFileSync, renameSync, existsSync, unlinkSync, readdirSync,
   };
@@ -122,23 +127,12 @@ export function createAlertOutbox(options) {
       );
     }
 
-    // 删除 probe 文件
+    // 删除 probe 文件（rename 成功后 tmp 已不存在）
     try { fs.unlinkSync(probePath); } catch (e) {
-      try { if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath); } catch {}
       throw new OutboxError(
         `告警目录 probe 清理失败：${alertsDir}（${e.message}）`,
         "probe_cleanup_failed",
         { cause: e }
-      );
-    }
-
-    // 确认完全清理
-    if (fs.existsSync(tmpPath) || fs.existsSync(probePath)) {
-      try { if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath); } catch {}
-      try { if (fs.existsSync(probePath)) fs.unlinkSync(probePath); } catch {}
-      throw new OutboxError(
-        `告警目录 probe 残留未清理：${alertsDir}`,
-        "probe_cleanup_failed"
       );
     }
   }
@@ -187,10 +181,10 @@ export function createAlertOutbox(options) {
     if (!VALID_SEVERITIES.has(alert.severity)) throw E(`告警 severity 非法："${alert.severity}"`);
     if (!VALID_DELIVERY_STATUSES.has(alert.deliveryStatus)) throw E(`告警 deliveryStatus 非法："${alert.deliveryStatus}"`);
     if (!VALID_INCIDENT_STATUSES.has(alert.incidentStatus)) throw E(`告警 incidentStatus 非法："${alert.incidentStatus}"`);
-    if (typeof alert.startedAt !== "number" || !Number.isFinite(alert.startedAt) || alert.startedAt <= 0) throw E("告警缺少有效 startedAt");
-    if (typeof alert.occurredAt !== "number" || !Number.isFinite(alert.occurredAt) || alert.occurredAt <= 0) throw E("告警缺少有效 occurredAt");
-    if (typeof alert.updatedAt !== "number" || !Number.isFinite(alert.updatedAt) || alert.updatedAt <= 0) throw E("告警缺少有效 updatedAt");
-    if (alert.recoveryAt !== null && (typeof alert.recoveryAt !== "number" || !Number.isFinite(alert.recoveryAt) || alert.recoveryAt <= 0)) throw E("告警 recoveryAt 非法（必须为 null 或有效时间戳）");
+    for (const key of ["startedAt", "occurredAt", "updatedAt"]) {
+      if (!isTimestamp(alert[key])) throw E(`告警缺少有效 ${key}`);
+    }
+    if (alert.recoveryAt !== null && !isTimestamp(alert.recoveryAt)) throw E("告警 recoveryAt 非法（必须为 null 或有效时间戳）");
     if (typeof alert.message !== "string" || alert.message.length === 0) throw E("告警缺少有效 message");
     if (!alert.details || typeof alert.details !== "object" || Array.isArray(alert.details)) throw E("告警 details 必须为普通对象（非数组）");
     if (typeof alert.durationMs !== "number" || !Number.isFinite(alert.durationMs) || alert.durationMs < 0) throw E("告警 durationMs 非法（必须为非负有限数）");
@@ -242,7 +236,7 @@ export function createAlertOutbox(options) {
       const filePath = join(alertsDir, filename);
       alerts.push(_loadAlertFile(filePath));
     }
-    if (logger) logger.info("[AlertOutbox] 告警文件已加载", { count: alerts.length, alertsDir });
+    logger.info("[AlertOutbox] 告警文件已加载", { count: alerts.length, alertsDir });
     return alerts;
   }
 
@@ -266,7 +260,7 @@ export function createAlertOutbox(options) {
       _ensureDir();
       if (existsSync(filePath)) throw new OutboxError(`告警文件已存在，拒绝覆盖：${filePath}`, "file_exists");
       _saveAlertFile(clean);
-      if (logger) logger.info("[AlertOutbox] 告警已写入", { alertId: alert.id, incidentKey: alert.incidentKey, event: alert.event });
+      logger.info("[AlertOutbox] 告警已写入", { alertId: alert.id, incidentKey: alert.incidentKey, event: alert.event });
     });
   }
 
@@ -280,7 +274,7 @@ export function createAlertOutbox(options) {
       const merged = { ...rest, ...patch, updatedAt: Date.now() };
       _validateAlert({ ...merged, version: FILE_VERSION }, filePath);
       _saveAlertFile(merged);
-      if (logger) logger.info("[AlertOutbox] 告警已更新", { alertId, patch: Object.keys(patch) });
+      logger.info("[AlertOutbox] 告警已更新", { alertId, patch: Object.keys(patch) });
     });
   }
 
@@ -299,7 +293,6 @@ export function createAlertOutbox(options) {
   return {
     verifyWritable, loadAllAlerts, findAlert, findOpenIncidents, findPendingDelivery,
     writeAlert, updateAlert, markResolved, markDelivered, markDeliveryFailed, close,
-    _getAlertsDir: () => alertsDir,
   };
 }
 
