@@ -204,7 +204,7 @@ const scenarios = [
     crashAt: "before_send",
     recovery: "manual_review_required",
     pauseReason: "INFLIGHT_BEFORE_SEND",
-    alertKey: null,
+    alertKey: "forum_bump_scheduler_halted",
     sentMessageId: null,
     sends: 1,
     deletes: 0,
@@ -255,8 +255,8 @@ try {
     assertEqual(r1.disk.inFlight?.sentMessageId ?? null, sc.sentMessageId, `${tag} 保留 sentMessageId（不漏删）`);
     assertEqual(r1.disk.successCount, 0, `${tag} 不自动计入当日额度`);
     assert(r1.alerts.length >= 1, `${tag} 发出恢复告警`);
-    const a = r1.alerts[0];
-    if (sc.alertKey) assertEqual(a.key, sc.alertKey, `${tag} 告警 key`);
+    const a = r1.alerts[0] ?? {};
+    assertEqual(a.key, sc.alertKey, `${tag} 告警 key`);
     assertEqual(a.details?.inFlightPhase, sc.crashAt, `${tag} 告警 inFlightPhase`);
     assertEqual(a.details?.threadId, T, `${tag} 告警 threadId`);
     assertEqual(a.details?.sentMessageId ?? null, sc.sentMessageId, `${tag} 告警 sentMessageId`);
