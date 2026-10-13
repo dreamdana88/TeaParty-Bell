@@ -1,0 +1,3788 @@
+{
+  "open.running": [
+    {
+      "op": "deferReply",
+      "opts": {
+        "flags": 64
+      }
+    },
+    {
+      "op": "editReply",
+      "payload": {
+        "embeds": [
+          {
+            "color": 12105215,
+            "title": "🌸 小G宝顶帖控制台",
+            "description": "🟢 自动顶帖运行中",
+            "fields": [
+              {
+                "name": "今日进度",
+                "value": "0 / 3",
+                "inline": true
+              },
+              {
+                "name": "最近顶帖",
+                "value": "暂无",
+                "inline": true
+              },
+              {
+                "name": "下次顶帖",
+                "value": "等待调度",
+                "inline": true
+              },
+              {
+                "name": "📅 排班配置",
+                "value": "活跃时间：10:00–22:00\n自动间隔：约 240 分钟\n入选范围：30 天无回复",
+                "inline": false
+              },
+              {
+                "name": "📚 服务版块",
+                "value": "论坛A",
+                "inline": false
+              }
+            ]
+          }
+        ],
+        "components": [
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "label": "编辑配置",
+                "style": 1,
+                "disabled": false
+              },
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:pause:<sid>",
+                "label": "暂停顶帖",
+                "style": 4,
+                "disabled": false
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "open.runningWithHistory": [
+    {
+      "op": "deferReply",
+      "opts": {
+        "flags": 64
+      }
+    },
+    {
+      "op": "editReply",
+      "payload": {
+        "embeds": [
+          {
+            "color": 12105215,
+            "title": "🌸 小G宝顶帖控制台",
+            "description": "🟢 自动顶帖运行中",
+            "fields": [
+              {
+                "name": "今日进度",
+                "value": "2 / 3",
+                "inline": true
+              },
+              {
+                "name": "最近顶帖",
+                "value": "今天 11:10",
+                "inline": true
+              },
+              {
+                "name": "下次顶帖",
+                "value": "今天 15:30",
+                "inline": true
+              },
+              {
+                "name": "📅 排班配置",
+                "value": "活跃时间：10:00–22:00\n自动间隔：约 240 分钟\n入选范围：30 天无回复",
+                "inline": false
+              },
+              {
+                "name": "📚 服务版块",
+                "value": "论坛A",
+                "inline": false
+              }
+            ]
+          }
+        ],
+        "components": [
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "label": "编辑配置",
+                "style": 1,
+                "disabled": false
+              },
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:pause:<sid>",
+                "label": "暂停顶帖",
+                "style": 4,
+                "disabled": false
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "open.dailyLimitReached": [
+    {
+      "op": "deferReply",
+      "opts": {
+        "flags": 64
+      }
+    },
+    {
+      "op": "editReply",
+      "payload": {
+        "embeds": [
+          {
+            "color": 12105215,
+            "title": "🌸 小G宝顶帖控制台",
+            "description": "🟢 自动顶帖运行中",
+            "fields": [
+              {
+                "name": "今日进度",
+                "value": "3 / 3",
+                "inline": true
+              },
+              {
+                "name": "最近顶帖",
+                "value": "暂无",
+                "inline": true
+              },
+              {
+                "name": "下次顶帖",
+                "value": "等待调度",
+                "inline": true
+              },
+              {
+                "name": "📅 排班配置",
+                "value": "活跃时间：10:00–22:00\n自动间隔：约 240 分钟\n入选范围：30 天无回复",
+                "inline": false
+              },
+              {
+                "name": "📚 服务版块",
+                "value": "论坛A",
+                "inline": false
+              }
+            ]
+          }
+        ],
+        "components": [
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "label": "编辑配置",
+                "style": 1,
+                "disabled": false
+              },
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:pause:<sid>",
+                "label": "暂停顶帖",
+                "style": 4,
+                "disabled": false
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "open.adminPaused": [
+    {
+      "op": "deferReply",
+      "opts": {
+        "flags": 64
+      }
+    },
+    {
+      "op": "editReply",
+      "payload": {
+        "embeds": [
+          {
+            "color": 12105215,
+            "title": "🌸 小G宝顶帖控制台",
+            "description": "⏸️ 自动顶帖已暂停",
+            "fields": [
+              {
+                "name": "今日进度",
+                "value": "0 / 3",
+                "inline": true
+              },
+              {
+                "name": "最近顶帖",
+                "value": "暂无",
+                "inline": true
+              },
+              {
+                "name": "下次顶帖",
+                "value": "恢复后重新计算",
+                "inline": true
+              },
+              {
+                "name": "📅 排班配置",
+                "value": "活跃时间：10:00–22:00\n自动间隔：约 240 分钟\n入选范围：30 天无回复",
+                "inline": false
+              },
+              {
+                "name": "📚 服务版块",
+                "value": "论坛A",
+                "inline": false
+              }
+            ]
+          }
+        ],
+        "components": [
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "label": "编辑配置",
+                "style": 1,
+                "disabled": false
+              },
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:resume:<sid>",
+                "label": "恢复顶帖",
+                "style": 3,
+                "disabled": false
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "open.inflightBeforeSend": [
+    {
+      "op": "deferReply",
+      "opts": {
+        "flags": 64
+      }
+    },
+    {
+      "op": "editReply",
+      "payload": {
+        "embeds": [
+          {
+            "color": 12105215,
+            "title": "🌸 小G宝顶帖控制台",
+            "description": "⚠️ 自动顶帖因安全问题暂停\n\n⚠️ 上一次顶帖任务未正常完成，请检查运行状态\n\n因安全原因已暂停自动顶帖，请勿强制恢复。请联系维护者检查残留消息或状态。",
+            "fields": [
+              {
+                "name": "今日进度",
+                "value": "0 / 3",
+                "inline": true
+              },
+              {
+                "name": "最近顶帖",
+                "value": "暂无",
+                "inline": true
+              },
+              {
+                "name": "下次顶帖",
+                "value": "安全暂停，暂不排程",
+                "inline": true
+              },
+              {
+                "name": "📅 排班配置",
+                "value": "活跃时间：10:00–22:00\n自动间隔：约 240 分钟\n入选范围：30 天无回复",
+                "inline": false
+              },
+              {
+                "name": "📚 服务版块",
+                "value": "论坛A",
+                "inline": false
+              }
+            ]
+          }
+        ],
+        "components": [
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "label": "编辑配置",
+                "style": 1,
+                "disabled": false
+              },
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:resume:<sid>",
+                "label": "恢复顶帖",
+                "style": 2,
+                "disabled": true
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "open.inflightAfterSend": [
+    {
+      "op": "deferReply",
+      "opts": {
+        "flags": 64
+      }
+    },
+    {
+      "op": "editReply",
+      "payload": {
+        "embeds": [
+          {
+            "color": 12105215,
+            "title": "🌸 小G宝顶帖控制台",
+            "description": "⚠️ 自动顶帖因安全问题暂停\n\n⚠️ 上一次顶帖任务未正常完成，请检查运行状态\n\n因安全原因已暂停自动顶帖，请勿强制恢复。请联系维护者检查残留消息或状态。",
+            "fields": [
+              {
+                "name": "今日进度",
+                "value": "0 / 3",
+                "inline": true
+              },
+              {
+                "name": "最近顶帖",
+                "value": "暂无",
+                "inline": true
+              },
+              {
+                "name": "下次顶帖",
+                "value": "安全暂停，暂不排程",
+                "inline": true
+              },
+              {
+                "name": "📅 排班配置",
+                "value": "活跃时间：10:00–22:00\n自动间隔：约 240 分钟\n入选范围：30 天无回复",
+                "inline": false
+              },
+              {
+                "name": "📚 服务版块",
+                "value": "论坛A",
+                "inline": false
+              }
+            ]
+          }
+        ],
+        "components": [
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "label": "编辑配置",
+                "style": 1,
+                "disabled": false
+              },
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:resume:<sid>",
+                "label": "恢复顶帖",
+                "style": 2,
+                "disabled": true
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "open.inflightAfterDelete": [
+    {
+      "op": "deferReply",
+      "opts": {
+        "flags": 64
+      }
+    },
+    {
+      "op": "editReply",
+      "payload": {
+        "embeds": [
+          {
+            "color": 12105215,
+            "title": "🌸 小G宝顶帖控制台",
+            "description": "⚠️ 自动顶帖因安全问题暂停\n\n⚠️ 上一次顶帖任务未正常完成，请检查运行状态\n\n因安全原因已暂停自动顶帖，请勿强制恢复。请联系维护者检查残留消息或状态。",
+            "fields": [
+              {
+                "name": "今日进度",
+                "value": "0 / 3",
+                "inline": true
+              },
+              {
+                "name": "最近顶帖",
+                "value": "暂无",
+                "inline": true
+              },
+              {
+                "name": "下次顶帖",
+                "value": "安全暂停，暂不排程",
+                "inline": true
+              },
+              {
+                "name": "📅 排班配置",
+                "value": "活跃时间：10:00–22:00\n自动间隔：约 240 分钟\n入选范围：30 天无回复",
+                "inline": false
+              },
+              {
+                "name": "📚 服务版块",
+                "value": "论坛A",
+                "inline": false
+              }
+            ]
+          }
+        ],
+        "components": [
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "label": "编辑配置",
+                "style": 1,
+                "disabled": false
+              },
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:resume:<sid>",
+                "label": "恢复顶帖",
+                "style": 2,
+                "disabled": true
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "open.fatal": [
+    {
+      "op": "deferReply",
+      "opts": {
+        "flags": 64
+      }
+    },
+    {
+      "op": "editReply",
+      "payload": {
+        "embeds": [
+          {
+            "color": 12105215,
+            "title": "🌸 小G宝顶帖控制台",
+            "description": "🔴 顶帖服务暂时不可用\n\n顶帖服务遇到问题，已停止自动调度。请联系维护者检查运行日志。",
+            "fields": [
+              {
+                "name": "今日进度",
+                "value": "0 / 3",
+                "inline": true
+              },
+              {
+                "name": "最近顶帖",
+                "value": "暂无",
+                "inline": true
+              },
+              {
+                "name": "下次顶帖",
+                "value": "安全暂停，暂不排程",
+                "inline": true
+              },
+              {
+                "name": "📅 排班配置",
+                "value": "活跃时间：10:00–22:00\n自动间隔：约 240 分钟\n入选范围：30 天无回复",
+                "inline": false
+              },
+              {
+                "name": "📚 服务版块",
+                "value": "论坛A",
+                "inline": false
+              }
+            ]
+          }
+        ],
+        "components": [
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "label": "编辑配置",
+                "style": 1,
+                "disabled": true
+              },
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:pause:<sid>",
+                "label": "暂停顶帖",
+                "style": 4,
+                "disabled": true
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "open.dryRun": [
+    {
+      "op": "deferReply",
+      "opts": {
+        "flags": 64
+      }
+    },
+    {
+      "op": "editReply",
+      "payload": {
+        "embeds": [
+          {
+            "color": 12105215,
+            "title": "🌸 小G宝顶帖控制台",
+            "description": "🧪 当前为预览模式，不会真实顶帖",
+            "fields": [
+              {
+                "name": "今日进度",
+                "value": "0 / 3",
+                "inline": true
+              },
+              {
+                "name": "最近顶帖",
+                "value": "暂无",
+                "inline": true
+              },
+              {
+                "name": "下次顶帖",
+                "value": "等待调度",
+                "inline": true
+              },
+              {
+                "name": "📅 排班配置",
+                "value": "活跃时间：10:00–22:00\n自动间隔：约 240 分钟\n入选范围：30 天无回复",
+                "inline": false
+              },
+              {
+                "name": "📚 服务版块",
+                "value": "论坛A",
+                "inline": false
+              }
+            ]
+          }
+        ],
+        "components": [
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "label": "编辑配置",
+                "style": 1,
+                "disabled": false
+              },
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:pause:<sid>",
+                "label": "暂停顶帖",
+                "style": 4,
+                "disabled": false
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "open.dynamicConfigError": [
+    {
+      "op": "deferReply",
+      "opts": {
+        "flags": 64
+      }
+    },
+    {
+      "op": "editReply",
+      "payload": {
+        "embeds": [
+          {
+            "color": 12105215,
+            "title": "🌸 小G宝顶帖控制台",
+            "description": "🟢 自动顶帖运行中",
+            "fields": [
+              {
+                "name": "今日进度",
+                "value": "0 / 3",
+                "inline": true
+              },
+              {
+                "name": "最近顶帖",
+                "value": "暂无",
+                "inline": true
+              },
+              {
+                "name": "下次顶帖",
+                "value": "等待调度",
+                "inline": true
+              },
+              {
+                "name": "📅 排班配置",
+                "value": "活跃时间：10:00–22:00\n自动间隔：约 240 分钟\n入选范围：30 天无回复",
+                "inline": false
+              },
+              {
+                "name": "📚 服务版块",
+                "value": "论坛A",
+                "inline": false
+              }
+            ]
+          }
+        ],
+        "components": [
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "label": "编辑配置",
+                "style": 1,
+                "disabled": false
+              },
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:pause:<sid>",
+                "label": "暂停顶帖",
+                "style": 4,
+                "disabled": false
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "open.manyForums": [
+    {
+      "op": "deferReply",
+      "opts": {
+        "flags": 64
+      }
+    },
+    {
+      "op": "editReply",
+      "payload": {
+        "embeds": [
+          {
+            "color": 12105215,
+            "title": "🌸 小G宝顶帖控制台",
+            "description": "🟢 自动顶帖运行中",
+            "fields": [
+              {
+                "name": "今日进度",
+                "value": "0 / 3",
+                "inline": true
+              },
+              {
+                "name": "最近顶帖",
+                "value": "暂无",
+                "inline": true
+              },
+              {
+                "name": "下次顶帖",
+                "value": "等待调度",
+                "inline": true
+              },
+              {
+                "name": "📅 排班配置",
+                "value": "活跃时间：10:00–22:00\n自动间隔：约 240 分钟\n入选范围：30 天无回复",
+                "inline": false
+              },
+              {
+                "name": "📚 服务版块",
+                "value": "论坛A\n论坛B\n❔｜未知或不可用的 Forum",
+                "inline": false
+              }
+            ]
+          }
+        ],
+        "components": [
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "label": "编辑配置",
+                "style": 1,
+                "disabled": false
+              },
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:pause:<sid>",
+                "label": "暂停顶帖",
+                "style": 4,
+                "disabled": false
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "open.denied": [
+    {
+      "op": "reply",
+      "payload": {
+        "content": "只有管理员可以使用该操作。",
+        "flags": 64
+      }
+    }
+  ],
+  "pause.open": [
+    {
+      "op": "deferReply",
+      "opts": {
+        "flags": 64
+      }
+    },
+    {
+      "op": "editReply",
+      "payload": {
+        "embeds": [
+          {
+            "color": 12105215,
+            "title": "🌸 小G宝顶帖控制台",
+            "description": "🟢 自动顶帖运行中",
+            "fields": [
+              {
+                "name": "今日进度",
+                "value": "0 / 3",
+                "inline": true
+              },
+              {
+                "name": "最近顶帖",
+                "value": "暂无",
+                "inline": true
+              },
+              {
+                "name": "下次顶帖",
+                "value": "等待调度",
+                "inline": true
+              },
+              {
+                "name": "📅 排班配置",
+                "value": "活跃时间：10:00–22:00\n自动间隔：约 240 分钟\n入选范围：30 天无回复",
+                "inline": false
+              },
+              {
+                "name": "📚 服务版块",
+                "value": "论坛A",
+                "inline": false
+              }
+            ]
+          }
+        ],
+        "components": [
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "label": "编辑配置",
+                "style": 1,
+                "disabled": false
+              },
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:pause:<sid>",
+                "label": "暂停顶帖",
+                "style": 4,
+                "disabled": false
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "pause.click": [
+    {
+      "op": "deferUpdate"
+    },
+    {
+      "op": "editReply",
+      "payload": {
+        "embeds": [
+          {
+            "color": 12105215,
+            "title": "🌸 小G宝顶帖控制台",
+            "description": "⏸️ 自动顶帖已暂停\n\n已暂停自动顶帖。",
+            "fields": [
+              {
+                "name": "今日进度",
+                "value": "0 / 3",
+                "inline": true
+              },
+              {
+                "name": "最近顶帖",
+                "value": "暂无",
+                "inline": true
+              },
+              {
+                "name": "下次顶帖",
+                "value": "恢复后重新计算",
+                "inline": true
+              },
+              {
+                "name": "📅 排班配置",
+                "value": "活跃时间：10:00–22:00\n自动间隔：约 240 分钟\n入选范围：30 天无回复",
+                "inline": false
+              },
+              {
+                "name": "📚 服务版块",
+                "value": "论坛A",
+                "inline": false
+              }
+            ]
+          }
+        ],
+        "components": [
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "label": "编辑配置",
+                "style": 1,
+                "disabled": false
+              },
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:resume:<sid>",
+                "label": "恢复顶帖",
+                "style": 3,
+                "disabled": false
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "resume.click": [
+    {
+      "op": "deferUpdate"
+    },
+    {
+      "op": "editReply",
+      "payload": {
+        "embeds": [
+          {
+            "color": 12105215,
+            "title": "🌸 小G宝顶帖控制台",
+            "description": "🟢 自动顶帖运行中\n\n已恢复自动顶帖。",
+            "fields": [
+              {
+                "name": "今日进度",
+                "value": "0 / 3",
+                "inline": true
+              },
+              {
+                "name": "最近顶帖",
+                "value": "暂无",
+                "inline": true
+              },
+              {
+                "name": "下次顶帖",
+                "value": "等待调度",
+                "inline": true
+              },
+              {
+                "name": "📅 排班配置",
+                "value": "活跃时间：10:00–22:00\n自动间隔：约 240 分钟\n入选范围：30 天无回复",
+                "inline": false
+              },
+              {
+                "name": "📚 服务版块",
+                "value": "论坛A",
+                "inline": false
+              }
+            ]
+          }
+        ],
+        "components": [
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "label": "编辑配置",
+                "style": 1,
+                "disabled": false
+              },
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:pause:<sid>",
+                "label": "暂停顶帖",
+                "style": 4,
+                "disabled": false
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "resumeBlocked.open": [
+    {
+      "op": "deferReply",
+      "opts": {
+        "flags": 64
+      }
+    },
+    {
+      "op": "editReply",
+      "payload": {
+        "embeds": [
+          {
+            "color": 12105215,
+            "title": "🌸 小G宝顶帖控制台",
+            "description": "⚠️ 自动顶帖因安全问题暂停\n\n⚠️ 上一次顶帖任务未正常完成，请检查运行状态\n\n因安全原因已暂停自动顶帖，请勿强制恢复。请联系维护者检查残留消息或状态。",
+            "fields": [
+              {
+                "name": "今日进度",
+                "value": "0 / 3",
+                "inline": true
+              },
+              {
+                "name": "最近顶帖",
+                "value": "暂无",
+                "inline": true
+              },
+              {
+                "name": "下次顶帖",
+                "value": "安全暂停，暂不排程",
+                "inline": true
+              },
+              {
+                "name": "📅 排班配置",
+                "value": "活跃时间：10:00–22:00\n自动间隔：约 240 分钟\n入选范围：30 天无回复",
+                "inline": false
+              },
+              {
+                "name": "📚 服务版块",
+                "value": "论坛A",
+                "inline": false
+              }
+            ]
+          }
+        ],
+        "components": [
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "label": "编辑配置",
+                "style": 1,
+                "disabled": false
+              },
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:resume:<sid>",
+                "label": "恢复顶帖",
+                "style": 2,
+                "disabled": true
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "resumeBlocked.click": [
+    {
+      "op": "deferUpdate"
+    },
+    {
+      "op": "editReply",
+      "payload": {
+        "embeds": [
+          {
+            "color": 12105215,
+            "title": "🌸 小G宝顶帖控制台",
+            "description": "⚠️ 自动顶帖因安全问题暂停\n\n无法恢复：INFLIGHT_MESSAGE_MAY_EXIST\n\n⚠️ 上一次顶帖任务未正常完成，请检查运行状态\n\n因安全原因已暂停自动顶帖，请勿强制恢复。请联系维护者检查残留消息或状态。",
+            "fields": [
+              {
+                "name": "今日进度",
+                "value": "0 / 3",
+                "inline": true
+              },
+              {
+                "name": "最近顶帖",
+                "value": "暂无",
+                "inline": true
+              },
+              {
+                "name": "下次顶帖",
+                "value": "安全暂停，暂不排程",
+                "inline": true
+              },
+              {
+                "name": "📅 排班配置",
+                "value": "活跃时间：10:00–22:00\n自动间隔：约 240 分钟\n入选范围：30 天无回复",
+                "inline": false
+              },
+              {
+                "name": "📚 服务版块",
+                "value": "论坛A",
+                "inline": false
+              }
+            ]
+          }
+        ],
+        "components": [
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "label": "编辑配置",
+                "style": 1,
+                "disabled": false
+              },
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:resume:<sid>",
+                "label": "恢复顶帖",
+                "style": 2,
+                "disabled": true
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "edit.open": [
+    {
+      "op": "deferReply",
+      "opts": {
+        "flags": 64
+      }
+    },
+    {
+      "op": "editReply",
+      "payload": {
+        "embeds": [
+          {
+            "color": 12105215,
+            "title": "🌸 小G宝顶帖控制台",
+            "description": "🟢 自动顶帖运行中",
+            "fields": [
+              {
+                "name": "今日进度",
+                "value": "0 / 3",
+                "inline": true
+              },
+              {
+                "name": "最近顶帖",
+                "value": "暂无",
+                "inline": true
+              },
+              {
+                "name": "下次顶帖",
+                "value": "等待调度",
+                "inline": true
+              },
+              {
+                "name": "📅 排班配置",
+                "value": "活跃时间：10:00–22:00\n自动间隔：约 240 分钟\n入选范围：30 天无回复",
+                "inline": false
+              },
+              {
+                "name": "📚 服务版块",
+                "value": "论坛A",
+                "inline": false
+              }
+            ]
+          }
+        ],
+        "components": [
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "label": "编辑配置",
+                "style": 1,
+                "disabled": false
+              },
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:pause:<sid>",
+                "label": "暂停顶帖",
+                "style": 4,
+                "disabled": false
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "edit.click": [
+    {
+      "op": "showModal",
+      "modal": {
+        "custom_id": "fbump:v1:modal:modal:<sid>",
+        "title": "编辑顶帖配置",
+        "components": [
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 4,
+                "custom_id": "dailyLimit",
+                "label": "每日额度",
+                "style": 1,
+                "required": true,
+                "min_length": 1,
+                "max_length": 2,
+                "placeholder": "根据活跃时间自动限制，最多 30",
+                "value": "3"
+              }
+            ]
+          },
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 4,
+                "custom_id": "activeStart",
+                "label": "活跃开始时间（HH:mm，UTC+8）",
+                "style": 1,
+                "required": true,
+                "min_length": 4,
+                "max_length": 5,
+                "value": "10:00"
+              }
+            ]
+          },
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 4,
+                "custom_id": "activeEnd",
+                "label": "活跃结束时间（HH:mm，UTC+8）",
+                "style": 1,
+                "required": true,
+                "min_length": 4,
+                "max_length": 5,
+                "value": "22:00"
+              }
+            ]
+          },
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 4,
+                "custom_id": "silenceDays",
+                "label": "无回复天数（1–3650）",
+                "style": 1,
+                "required": true,
+                "min_length": 1,
+                "max_length": 4,
+                "value": "30"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "modal.invalid.dailyLimitZero": [
+    {
+      "op": "reply",
+      "payload": {
+        "content": "每日额度必须是至少为 1 的整数。",
+        "flags": 64
+      }
+    }
+  ],
+  "modal.invalid.dailyLimitTooHigh": [
+    {
+      "op": "reply",
+      "payload": {
+        "content": "每日额度最多为 30 次。",
+        "flags": 64
+      }
+    }
+  ],
+  "modal.invalid.dailyLimitNotNumber": [
+    {
+      "op": "reply",
+      "payload": {
+        "content": "每日额度必须是至少为 1 的整数。",
+        "flags": 64
+      }
+    }
+  ],
+  "modal.invalid.badStart": [
+    {
+      "op": "reply",
+      "payload": {
+        "content": "活跃时间必须为 HH:mm 格式。",
+        "flags": 64
+      }
+    }
+  ],
+  "modal.invalid.badEnd": [
+    {
+      "op": "reply",
+      "payload": {
+        "content": "活跃时间必须为 HH:mm 格式。",
+        "flags": 64
+      }
+    }
+  ],
+  "modal.invalid.startAfterEnd": [
+    {
+      "op": "reply",
+      "payload": {
+        "content": "开始时间必须早于结束时间（不支持跨午夜）。",
+        "flags": 64
+      }
+    }
+  ],
+  "modal.invalid.silenceZero": [
+    {
+      "op": "reply",
+      "payload": {
+        "content": "无回复天数必须是 1–3650 的整数。",
+        "flags": 64
+      }
+    }
+  ],
+  "modal.invalid.silenceTooHigh": [
+    {
+      "op": "reply",
+      "payload": {
+        "content": "无回复天数必须是 1–3650 的整数。",
+        "flags": 64
+      }
+    }
+  ],
+  "modal.valid": [
+    {
+      "op": "reply",
+      "payload": {
+        "content": "**选择服务 Forum 频道**\n请至少选择一个 GuildForum 频道，然后点击「保存配置」。\n\n当前草稿：额度 5，08:00–13:00，30 天无回复",
+        "components": [
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 8,
+                "custom_id": "fbump:v1:select:select:<sid>",
+                "placeholder": "选择服务 Forum 频道（可多选）",
+                "min_values": 1,
+                "max_values": 25,
+                "channel_types": [
+                  15
+                ],
+                "default_values": [
+                  {
+                    "id": "222222222222222222",
+                    "type": "channel"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:save:<sid>",
+                "label": "保存配置",
+                "style": 3
+              },
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:cancel:<sid>",
+                "label": "取消",
+                "style": 2
+              }
+            ]
+          }
+        ],
+        "flags": 64
+      }
+    }
+  ],
+  "save.click": [
+    {
+      "op": "deferUpdate"
+    },
+    {
+      "op": "editReply",
+      "payload": {
+        "embeds": [
+          {
+            "color": 12105215,
+            "title": "🌸 小G宝顶帖控制台",
+            "description": "🟢 自动顶帖运行中\n\n配置已保存。",
+            "fields": [
+              {
+                "name": "今日进度",
+                "value": "0 / 5",
+                "inline": true
+              },
+              {
+                "name": "最近顶帖",
+                "value": "暂无",
+                "inline": true
+              },
+              {
+                "name": "下次顶帖",
+                "value": "等待调度",
+                "inline": true
+              },
+              {
+                "name": "📅 排班配置",
+                "value": "活跃时间：08:00–13:00\n自动间隔：约 240 分钟\n入选范围：30 天无回复",
+                "inline": false
+              },
+              {
+                "name": "📚 服务版块",
+                "value": "论坛A",
+                "inline": false
+              }
+            ]
+          }
+        ],
+        "components": [
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "label": "编辑配置",
+                "style": 1,
+                "disabled": false
+              },
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:pause:<sid>",
+                "label": "暂停顶帖",
+                "style": 4,
+                "disabled": false
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "cancel.open": [
+    {
+      "op": "deferReply",
+      "opts": {
+        "flags": 64
+      }
+    },
+    {
+      "op": "editReply",
+      "payload": {
+        "embeds": [
+          {
+            "color": 12105215,
+            "title": "🌸 小G宝顶帖控制台",
+            "description": "🟢 自动顶帖运行中",
+            "fields": [
+              {
+                "name": "今日进度",
+                "value": "0 / 3",
+                "inline": true
+              },
+              {
+                "name": "最近顶帖",
+                "value": "暂无",
+                "inline": true
+              },
+              {
+                "name": "下次顶帖",
+                "value": "等待调度",
+                "inline": true
+              },
+              {
+                "name": "📅 排班配置",
+                "value": "活跃时间：10:00–22:00\n自动间隔：约 240 分钟\n入选范围：30 天无回复",
+                "inline": false
+              },
+              {
+                "name": "📚 服务版块",
+                "value": "论坛A",
+                "inline": false
+              }
+            ]
+          }
+        ],
+        "components": [
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "label": "编辑配置",
+                "style": 1,
+                "disabled": false
+              },
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:pause:<sid>",
+                "label": "暂停顶帖",
+                "style": 4,
+                "disabled": false
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "cancel.edit": [
+    {
+      "op": "showModal",
+      "modal": {
+        "custom_id": "fbump:v1:modal:modal:<sid>",
+        "title": "编辑顶帖配置",
+        "components": [
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 4,
+                "custom_id": "dailyLimit",
+                "label": "每日额度",
+                "style": 1,
+                "required": true,
+                "min_length": 1,
+                "max_length": 2,
+                "placeholder": "根据活跃时间自动限制，最多 30",
+                "value": "3"
+              }
+            ]
+          },
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 4,
+                "custom_id": "activeStart",
+                "label": "活跃开始时间（HH:mm，UTC+8）",
+                "style": 1,
+                "required": true,
+                "min_length": 4,
+                "max_length": 5,
+                "value": "10:00"
+              }
+            ]
+          },
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 4,
+                "custom_id": "activeEnd",
+                "label": "活跃结束时间（HH:mm，UTC+8）",
+                "style": 1,
+                "required": true,
+                "min_length": 4,
+                "max_length": 5,
+                "value": "22:00"
+              }
+            ]
+          },
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 4,
+                "custom_id": "silenceDays",
+                "label": "无回复天数（1–3650）",
+                "style": 1,
+                "required": true,
+                "min_length": 1,
+                "max_length": 4,
+                "value": "30"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "cancel.modal": [
+    {
+      "op": "reply",
+      "payload": {
+        "content": "**选择服务 Forum 频道**\n请至少选择一个 GuildForum 频道，然后点击「保存配置」。\n\n当前草稿：额度 5，08:00–13:00，30 天无回复",
+        "components": [
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 8,
+                "custom_id": "fbump:v1:select:select:<sid>",
+                "placeholder": "选择服务 Forum 频道（可多选）",
+                "min_values": 1,
+                "max_values": 25,
+                "channel_types": [
+                  15
+                ],
+                "default_values": [
+                  {
+                    "id": "222222222222222222",
+                    "type": "channel"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:save:<sid>",
+                "label": "保存配置",
+                "style": 3
+              },
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:cancel:<sid>",
+                "label": "取消",
+                "style": 2
+              }
+            ]
+          }
+        ],
+        "flags": 64
+      }
+    }
+  ],
+  "cancel.click": [
+    {
+      "op": "deferUpdate"
+    },
+    {
+      "op": "editReply",
+      "payload": {
+        "embeds": [
+          {
+            "color": 12105215,
+            "title": "🌸 小G宝顶帖控制台",
+            "description": "🟢 自动顶帖运行中\n\n已取消编辑。",
+            "fields": [
+              {
+                "name": "今日进度",
+                "value": "0 / 3",
+                "inline": true
+              },
+              {
+                "name": "最近顶帖",
+                "value": "暂无",
+                "inline": true
+              },
+              {
+                "name": "下次顶帖",
+                "value": "等待调度",
+                "inline": true
+              },
+              {
+                "name": "📅 排班配置",
+                "value": "活跃时间：10:00–22:00\n自动间隔：约 240 分钟\n入选范围：30 天无回复",
+                "inline": false
+              },
+              {
+                "name": "📚 服务版块",
+                "value": "论坛A",
+                "inline": false
+              }
+            ]
+          }
+        ],
+        "components": [
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "label": "编辑配置",
+                "style": 1,
+                "disabled": false
+              },
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:pause:<sid>",
+                "label": "暂停顶帖",
+                "style": 4,
+                "disabled": false
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "saveFail.DYNAMIC_CONFIG_WRITE_FAILED.open": [
+    {
+      "op": "deferReply",
+      "opts": {
+        "flags": 64
+      }
+    },
+    {
+      "op": "editReply",
+      "payload": {
+        "embeds": [
+          {
+            "color": 12105215,
+            "title": "🌸 小G宝顶帖控制台",
+            "description": "🟢 自动顶帖运行中",
+            "fields": [
+              {
+                "name": "今日进度",
+                "value": "0 / 3",
+                "inline": true
+              },
+              {
+                "name": "最近顶帖",
+                "value": "暂无",
+                "inline": true
+              },
+              {
+                "name": "下次顶帖",
+                "value": "等待调度",
+                "inline": true
+              },
+              {
+                "name": "📅 排班配置",
+                "value": "活跃时间：10:00–22:00\n自动间隔：约 240 分钟\n入选范围：30 天无回复",
+                "inline": false
+              },
+              {
+                "name": "📚 服务版块",
+                "value": "论坛A",
+                "inline": false
+              }
+            ]
+          }
+        ],
+        "components": [
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "label": "编辑配置",
+                "style": 1,
+                "disabled": false
+              },
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:pause:<sid>",
+                "label": "暂停顶帖",
+                "style": 4,
+                "disabled": false
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "saveFail.DYNAMIC_CONFIG_WRITE_FAILED.edit": [
+    {
+      "op": "showModal",
+      "modal": {
+        "custom_id": "fbump:v1:modal:modal:<sid>",
+        "title": "编辑顶帖配置",
+        "components": [
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 4,
+                "custom_id": "dailyLimit",
+                "label": "每日额度",
+                "style": 1,
+                "required": true,
+                "min_length": 1,
+                "max_length": 2,
+                "placeholder": "根据活跃时间自动限制，最多 30",
+                "value": "3"
+              }
+            ]
+          },
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 4,
+                "custom_id": "activeStart",
+                "label": "活跃开始时间（HH:mm，UTC+8）",
+                "style": 1,
+                "required": true,
+                "min_length": 4,
+                "max_length": 5,
+                "value": "10:00"
+              }
+            ]
+          },
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 4,
+                "custom_id": "activeEnd",
+                "label": "活跃结束时间（HH:mm，UTC+8）",
+                "style": 1,
+                "required": true,
+                "min_length": 4,
+                "max_length": 5,
+                "value": "22:00"
+              }
+            ]
+          },
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 4,
+                "custom_id": "silenceDays",
+                "label": "无回复天数（1–3650）",
+                "style": 1,
+                "required": true,
+                "min_length": 1,
+                "max_length": 4,
+                "value": "30"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "saveFail.DYNAMIC_CONFIG_WRITE_FAILED.modal": [
+    {
+      "op": "reply",
+      "payload": {
+        "content": "**选择服务 Forum 频道**\n请至少选择一个 GuildForum 频道，然后点击「保存配置」。\n\n当前草稿：额度 5，08:00–13:00，30 天无回复",
+        "components": [
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 8,
+                "custom_id": "fbump:v1:select:select:<sid>",
+                "placeholder": "选择服务 Forum 频道（可多选）",
+                "min_values": 1,
+                "max_values": 25,
+                "channel_types": [
+                  15
+                ],
+                "default_values": [
+                  {
+                    "id": "222222222222222222",
+                    "type": "channel"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:save:<sid>",
+                "label": "保存配置",
+                "style": 3
+              },
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:cancel:<sid>",
+                "label": "取消",
+                "style": 2
+              }
+            ]
+          }
+        ],
+        "flags": 64
+      }
+    }
+  ],
+  "saveFail.DYNAMIC_CONFIG_WRITE_FAILED.save": [
+    {
+      "op": "deferUpdate"
+    },
+    {
+      "op": "editReply",
+      "payload": {
+        "embeds": [
+          {
+            "color": 12105215,
+            "title": "🌸 小G宝顶帖控制台",
+            "description": "🟢 自动顶帖运行中\n\n操作失败，请稍后重试或重新打开顶帖面板。",
+            "fields": [
+              {
+                "name": "今日进度",
+                "value": "0 / 3",
+                "inline": true
+              },
+              {
+                "name": "最近顶帖",
+                "value": "暂无",
+                "inline": true
+              },
+              {
+                "name": "下次顶帖",
+                "value": "等待调度",
+                "inline": true
+              },
+              {
+                "name": "📅 排班配置",
+                "value": "活跃时间：10:00–22:00\n自动间隔：约 240 分钟\n入选范围：30 天无回复",
+                "inline": false
+              },
+              {
+                "name": "📚 服务版块",
+                "value": "论坛A",
+                "inline": false
+              }
+            ]
+          }
+        ],
+        "components": [
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "label": "编辑配置",
+                "style": 1,
+                "disabled": false
+              },
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:pause:<sid>",
+                "label": "暂停顶帖",
+                "style": 4,
+                "disabled": false
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "saveFail.DYNAMIC_CONFIG_REVISION_CONFLICT.open": [
+    {
+      "op": "deferReply",
+      "opts": {
+        "flags": 64
+      }
+    },
+    {
+      "op": "editReply",
+      "payload": {
+        "embeds": [
+          {
+            "color": 12105215,
+            "title": "🌸 小G宝顶帖控制台",
+            "description": "🟢 自动顶帖运行中",
+            "fields": [
+              {
+                "name": "今日进度",
+                "value": "0 / 3",
+                "inline": true
+              },
+              {
+                "name": "最近顶帖",
+                "value": "暂无",
+                "inline": true
+              },
+              {
+                "name": "下次顶帖",
+                "value": "等待调度",
+                "inline": true
+              },
+              {
+                "name": "📅 排班配置",
+                "value": "活跃时间：10:00–22:00\n自动间隔：约 240 分钟\n入选范围：30 天无回复",
+                "inline": false
+              },
+              {
+                "name": "📚 服务版块",
+                "value": "论坛A",
+                "inline": false
+              }
+            ]
+          }
+        ],
+        "components": [
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "label": "编辑配置",
+                "style": 1,
+                "disabled": false
+              },
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:pause:<sid>",
+                "label": "暂停顶帖",
+                "style": 4,
+                "disabled": false
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "saveFail.DYNAMIC_CONFIG_REVISION_CONFLICT.edit": [
+    {
+      "op": "showModal",
+      "modal": {
+        "custom_id": "fbump:v1:modal:modal:<sid>",
+        "title": "编辑顶帖配置",
+        "components": [
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 4,
+                "custom_id": "dailyLimit",
+                "label": "每日额度",
+                "style": 1,
+                "required": true,
+                "min_length": 1,
+                "max_length": 2,
+                "placeholder": "根据活跃时间自动限制，最多 30",
+                "value": "3"
+              }
+            ]
+          },
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 4,
+                "custom_id": "activeStart",
+                "label": "活跃开始时间（HH:mm，UTC+8）",
+                "style": 1,
+                "required": true,
+                "min_length": 4,
+                "max_length": 5,
+                "value": "10:00"
+              }
+            ]
+          },
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 4,
+                "custom_id": "activeEnd",
+                "label": "活跃结束时间（HH:mm，UTC+8）",
+                "style": 1,
+                "required": true,
+                "min_length": 4,
+                "max_length": 5,
+                "value": "22:00"
+              }
+            ]
+          },
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 4,
+                "custom_id": "silenceDays",
+                "label": "无回复天数（1–3650）",
+                "style": 1,
+                "required": true,
+                "min_length": 1,
+                "max_length": 4,
+                "value": "30"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "saveFail.DYNAMIC_CONFIG_REVISION_CONFLICT.modal": [
+    {
+      "op": "reply",
+      "payload": {
+        "content": "**选择服务 Forum 频道**\n请至少选择一个 GuildForum 频道，然后点击「保存配置」。\n\n当前草稿：额度 5，08:00–13:00，30 天无回复",
+        "components": [
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 8,
+                "custom_id": "fbump:v1:select:select:<sid>",
+                "placeholder": "选择服务 Forum 频道（可多选）",
+                "min_values": 1,
+                "max_values": 25,
+                "channel_types": [
+                  15
+                ],
+                "default_values": [
+                  {
+                    "id": "222222222222222222",
+                    "type": "channel"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:save:<sid>",
+                "label": "保存配置",
+                "style": 3
+              },
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:cancel:<sid>",
+                "label": "取消",
+                "style": 2
+              }
+            ]
+          }
+        ],
+        "flags": 64
+      }
+    }
+  ],
+  "saveFail.DYNAMIC_CONFIG_REVISION_CONFLICT.save": [
+    {
+      "op": "deferUpdate"
+    },
+    {
+      "op": "editReply",
+      "payload": {
+        "embeds": [
+          {
+            "color": 12105215,
+            "title": "🌸 小G宝顶帖控制台",
+            "description": "🟢 自动顶帖运行中\n\n配置已被其他操作更新，请重新打开顶帖面板。",
+            "fields": [
+              {
+                "name": "今日进度",
+                "value": "0 / 3",
+                "inline": true
+              },
+              {
+                "name": "最近顶帖",
+                "value": "暂无",
+                "inline": true
+              },
+              {
+                "name": "下次顶帖",
+                "value": "等待调度",
+                "inline": true
+              },
+              {
+                "name": "📅 排班配置",
+                "value": "活跃时间：10:00–22:00\n自动间隔：约 240 分钟\n入选范围：30 天无回复",
+                "inline": false
+              },
+              {
+                "name": "📚 服务版块",
+                "value": "论坛A",
+                "inline": false
+              }
+            ]
+          }
+        ],
+        "components": [
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "label": "编辑配置",
+                "style": 1,
+                "disabled": false
+              },
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:pause:<sid>",
+                "label": "暂停顶帖",
+                "style": 4,
+                "disabled": false
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "saveFail.DYNAMIC_CONFIG_INTERVAL_TOO_SHORT.open": [
+    {
+      "op": "deferReply",
+      "opts": {
+        "flags": 64
+      }
+    },
+    {
+      "op": "editReply",
+      "payload": {
+        "embeds": [
+          {
+            "color": 12105215,
+            "title": "🌸 小G宝顶帖控制台",
+            "description": "🟢 自动顶帖运行中",
+            "fields": [
+              {
+                "name": "今日进度",
+                "value": "0 / 3",
+                "inline": true
+              },
+              {
+                "name": "最近顶帖",
+                "value": "暂无",
+                "inline": true
+              },
+              {
+                "name": "下次顶帖",
+                "value": "等待调度",
+                "inline": true
+              },
+              {
+                "name": "📅 排班配置",
+                "value": "活跃时间：10:00–22:00\n自动间隔：约 240 分钟\n入选范围：30 天无回复",
+                "inline": false
+              },
+              {
+                "name": "📚 服务版块",
+                "value": "论坛A",
+                "inline": false
+              }
+            ]
+          }
+        ],
+        "components": [
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "label": "编辑配置",
+                "style": 1,
+                "disabled": false
+              },
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:pause:<sid>",
+                "label": "暂停顶帖",
+                "style": 4,
+                "disabled": false
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "saveFail.DYNAMIC_CONFIG_INTERVAL_TOO_SHORT.edit": [
+    {
+      "op": "showModal",
+      "modal": {
+        "custom_id": "fbump:v1:modal:modal:<sid>",
+        "title": "编辑顶帖配置",
+        "components": [
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 4,
+                "custom_id": "dailyLimit",
+                "label": "每日额度",
+                "style": 1,
+                "required": true,
+                "min_length": 1,
+                "max_length": 2,
+                "placeholder": "根据活跃时间自动限制，最多 30",
+                "value": "3"
+              }
+            ]
+          },
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 4,
+                "custom_id": "activeStart",
+                "label": "活跃开始时间（HH:mm，UTC+8）",
+                "style": 1,
+                "required": true,
+                "min_length": 4,
+                "max_length": 5,
+                "value": "10:00"
+              }
+            ]
+          },
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 4,
+                "custom_id": "activeEnd",
+                "label": "活跃结束时间（HH:mm，UTC+8）",
+                "style": 1,
+                "required": true,
+                "min_length": 4,
+                "max_length": 5,
+                "value": "22:00"
+              }
+            ]
+          },
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 4,
+                "custom_id": "silenceDays",
+                "label": "无回复天数（1–3650）",
+                "style": 1,
+                "required": true,
+                "min_length": 1,
+                "max_length": 4,
+                "value": "30"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "saveFail.DYNAMIC_CONFIG_INTERVAL_TOO_SHORT.modal": [
+    {
+      "op": "reply",
+      "payload": {
+        "content": "**选择服务 Forum 频道**\n请至少选择一个 GuildForum 频道，然后点击「保存配置」。\n\n当前草稿：额度 5，08:00–13:00，30 天无回复",
+        "components": [
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 8,
+                "custom_id": "fbump:v1:select:select:<sid>",
+                "placeholder": "选择服务 Forum 频道（可多选）",
+                "min_values": 1,
+                "max_values": 25,
+                "channel_types": [
+                  15
+                ],
+                "default_values": [
+                  {
+                    "id": "222222222222222222",
+                    "type": "channel"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:save:<sid>",
+                "label": "保存配置",
+                "style": 3
+              },
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:cancel:<sid>",
+                "label": "取消",
+                "style": 2
+              }
+            ]
+          }
+        ],
+        "flags": 64
+      }
+    }
+  ],
+  "saveFail.DYNAMIC_CONFIG_INTERVAL_TOO_SHORT.save": [
+    {
+      "op": "deferUpdate"
+    },
+    {
+      "op": "editReply",
+      "payload": {
+        "embeds": [
+          {
+            "color": 12105215,
+            "title": "🌸 小G宝顶帖控制台",
+            "description": "🟢 自动顶帖运行中\n\n当前活跃时段额度过高，请降低每日额度或延长活跃时间。",
+            "fields": [
+              {
+                "name": "今日进度",
+                "value": "0 / 3",
+                "inline": true
+              },
+              {
+                "name": "最近顶帖",
+                "value": "暂无",
+                "inline": true
+              },
+              {
+                "name": "下次顶帖",
+                "value": "等待调度",
+                "inline": true
+              },
+              {
+                "name": "📅 排班配置",
+                "value": "活跃时间：10:00–22:00\n自动间隔：约 240 分钟\n入选范围：30 天无回复",
+                "inline": false
+              },
+              {
+                "name": "📚 服务版块",
+                "value": "论坛A",
+                "inline": false
+              }
+            ]
+          }
+        ],
+        "components": [
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "label": "编辑配置",
+                "style": 1,
+                "disabled": false
+              },
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:pause:<sid>",
+                "label": "暂停顶帖",
+                "style": 4,
+                "disabled": false
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "saveFail.DYNAMIC_CONFIG_INTERVAL_INVALID.open": [
+    {
+      "op": "deferReply",
+      "opts": {
+        "flags": 64
+      }
+    },
+    {
+      "op": "editReply",
+      "payload": {
+        "embeds": [
+          {
+            "color": 12105215,
+            "title": "🌸 小G宝顶帖控制台",
+            "description": "🟢 自动顶帖运行中",
+            "fields": [
+              {
+                "name": "今日进度",
+                "value": "0 / 3",
+                "inline": true
+              },
+              {
+                "name": "最近顶帖",
+                "value": "暂无",
+                "inline": true
+              },
+              {
+                "name": "下次顶帖",
+                "value": "等待调度",
+                "inline": true
+              },
+              {
+                "name": "📅 排班配置",
+                "value": "活跃时间：10:00–22:00\n自动间隔：约 240 分钟\n入选范围：30 天无回复",
+                "inline": false
+              },
+              {
+                "name": "📚 服务版块",
+                "value": "论坛A",
+                "inline": false
+              }
+            ]
+          }
+        ],
+        "components": [
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "label": "编辑配置",
+                "style": 1,
+                "disabled": false
+              },
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:pause:<sid>",
+                "label": "暂停顶帖",
+                "style": 4,
+                "disabled": false
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "saveFail.DYNAMIC_CONFIG_INTERVAL_INVALID.edit": [
+    {
+      "op": "showModal",
+      "modal": {
+        "custom_id": "fbump:v1:modal:modal:<sid>",
+        "title": "编辑顶帖配置",
+        "components": [
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 4,
+                "custom_id": "dailyLimit",
+                "label": "每日额度",
+                "style": 1,
+                "required": true,
+                "min_length": 1,
+                "max_length": 2,
+                "placeholder": "根据活跃时间自动限制，最多 30",
+                "value": "3"
+              }
+            ]
+          },
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 4,
+                "custom_id": "activeStart",
+                "label": "活跃开始时间（HH:mm，UTC+8）",
+                "style": 1,
+                "required": true,
+                "min_length": 4,
+                "max_length": 5,
+                "value": "10:00"
+              }
+            ]
+          },
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 4,
+                "custom_id": "activeEnd",
+                "label": "活跃结束时间（HH:mm，UTC+8）",
+                "style": 1,
+                "required": true,
+                "min_length": 4,
+                "max_length": 5,
+                "value": "22:00"
+              }
+            ]
+          },
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 4,
+                "custom_id": "silenceDays",
+                "label": "无回复天数（1–3650）",
+                "style": 1,
+                "required": true,
+                "min_length": 1,
+                "max_length": 4,
+                "value": "30"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "saveFail.DYNAMIC_CONFIG_INTERVAL_INVALID.modal": [
+    {
+      "op": "reply",
+      "payload": {
+        "content": "**选择服务 Forum 频道**\n请至少选择一个 GuildForum 频道，然后点击「保存配置」。\n\n当前草稿：额度 5，08:00–13:00，30 天无回复",
+        "components": [
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 8,
+                "custom_id": "fbump:v1:select:select:<sid>",
+                "placeholder": "选择服务 Forum 频道（可多选）",
+                "min_values": 1,
+                "max_values": 25,
+                "channel_types": [
+                  15
+                ],
+                "default_values": [
+                  {
+                    "id": "222222222222222222",
+                    "type": "channel"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:save:<sid>",
+                "label": "保存配置",
+                "style": 3
+              },
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:cancel:<sid>",
+                "label": "取消",
+                "style": 2
+              }
+            ]
+          }
+        ],
+        "flags": 64
+      }
+    }
+  ],
+  "saveFail.DYNAMIC_CONFIG_INTERVAL_INVALID.save": [
+    {
+      "op": "deferUpdate"
+    },
+    {
+      "op": "editReply",
+      "payload": {
+        "embeds": [
+          {
+            "color": 12105215,
+            "title": "🌸 小G宝顶帖控制台",
+            "description": "🟢 自动顶帖运行中\n\n每日额度或活跃时间不合法。",
+            "fields": [
+              {
+                "name": "今日进度",
+                "value": "0 / 3",
+                "inline": true
+              },
+              {
+                "name": "最近顶帖",
+                "value": "暂无",
+                "inline": true
+              },
+              {
+                "name": "下次顶帖",
+                "value": "等待调度",
+                "inline": true
+              },
+              {
+                "name": "📅 排班配置",
+                "value": "活跃时间：10:00–22:00\n自动间隔：约 240 分钟\n入选范围：30 天无回复",
+                "inline": false
+              },
+              {
+                "name": "📚 服务版块",
+                "value": "论坛A",
+                "inline": false
+              }
+            ]
+          }
+        ],
+        "components": [
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "label": "编辑配置",
+                "style": 1,
+                "disabled": false
+              },
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:pause:<sid>",
+                "label": "暂停顶帖",
+                "style": 4,
+                "disabled": false
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "saveFail.DYNAMIC_CONFIG_PREFLIGHT_FAILED.open": [
+    {
+      "op": "deferReply",
+      "opts": {
+        "flags": 64
+      }
+    },
+    {
+      "op": "editReply",
+      "payload": {
+        "embeds": [
+          {
+            "color": 12105215,
+            "title": "🌸 小G宝顶帖控制台",
+            "description": "🟢 自动顶帖运行中",
+            "fields": [
+              {
+                "name": "今日进度",
+                "value": "0 / 3",
+                "inline": true
+              },
+              {
+                "name": "最近顶帖",
+                "value": "暂无",
+                "inline": true
+              },
+              {
+                "name": "下次顶帖",
+                "value": "等待调度",
+                "inline": true
+              },
+              {
+                "name": "📅 排班配置",
+                "value": "活跃时间：10:00–22:00\n自动间隔：约 240 分钟\n入选范围：30 天无回复",
+                "inline": false
+              },
+              {
+                "name": "📚 服务版块",
+                "value": "论坛A",
+                "inline": false
+              }
+            ]
+          }
+        ],
+        "components": [
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "label": "编辑配置",
+                "style": 1,
+                "disabled": false
+              },
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:pause:<sid>",
+                "label": "暂停顶帖",
+                "style": 4,
+                "disabled": false
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "saveFail.DYNAMIC_CONFIG_PREFLIGHT_FAILED.edit": [
+    {
+      "op": "showModal",
+      "modal": {
+        "custom_id": "fbump:v1:modal:modal:<sid>",
+        "title": "编辑顶帖配置",
+        "components": [
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 4,
+                "custom_id": "dailyLimit",
+                "label": "每日额度",
+                "style": 1,
+                "required": true,
+                "min_length": 1,
+                "max_length": 2,
+                "placeholder": "根据活跃时间自动限制，最多 30",
+                "value": "3"
+              }
+            ]
+          },
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 4,
+                "custom_id": "activeStart",
+                "label": "活跃开始时间（HH:mm，UTC+8）",
+                "style": 1,
+                "required": true,
+                "min_length": 4,
+                "max_length": 5,
+                "value": "10:00"
+              }
+            ]
+          },
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 4,
+                "custom_id": "activeEnd",
+                "label": "活跃结束时间（HH:mm，UTC+8）",
+                "style": 1,
+                "required": true,
+                "min_length": 4,
+                "max_length": 5,
+                "value": "22:00"
+              }
+            ]
+          },
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 4,
+                "custom_id": "silenceDays",
+                "label": "无回复天数（1–3650）",
+                "style": 1,
+                "required": true,
+                "min_length": 1,
+                "max_length": 4,
+                "value": "30"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "saveFail.DYNAMIC_CONFIG_PREFLIGHT_FAILED.modal": [
+    {
+      "op": "reply",
+      "payload": {
+        "content": "**选择服务 Forum 频道**\n请至少选择一个 GuildForum 频道，然后点击「保存配置」。\n\n当前草稿：额度 5，08:00–13:00，30 天无回复",
+        "components": [
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 8,
+                "custom_id": "fbump:v1:select:select:<sid>",
+                "placeholder": "选择服务 Forum 频道（可多选）",
+                "min_values": 1,
+                "max_values": 25,
+                "channel_types": [
+                  15
+                ],
+                "default_values": [
+                  {
+                    "id": "222222222222222222",
+                    "type": "channel"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:save:<sid>",
+                "label": "保存配置",
+                "style": 3
+              },
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:cancel:<sid>",
+                "label": "取消",
+                "style": 2
+              }
+            ]
+          }
+        ],
+        "flags": 64
+      }
+    }
+  ],
+  "saveFail.DYNAMIC_CONFIG_PREFLIGHT_FAILED.save": [
+    {
+      "op": "deferUpdate"
+    },
+    {
+      "op": "editReply",
+      "payload": {
+        "embeds": [
+          {
+            "color": 12105215,
+            "title": "🌸 小G宝顶帖控制台",
+            "description": "🟢 自动顶帖运行中\n\nForum 频道校验失败，请检查频道类型与权限。",
+            "fields": [
+              {
+                "name": "今日进度",
+                "value": "0 / 3",
+                "inline": true
+              },
+              {
+                "name": "最近顶帖",
+                "value": "暂无",
+                "inline": true
+              },
+              {
+                "name": "下次顶帖",
+                "value": "等待调度",
+                "inline": true
+              },
+              {
+                "name": "📅 排班配置",
+                "value": "活跃时间：10:00–22:00\n自动间隔：约 240 分钟\n入选范围：30 天无回复",
+                "inline": false
+              },
+              {
+                "name": "📚 服务版块",
+                "value": "论坛A",
+                "inline": false
+              }
+            ]
+          }
+        ],
+        "components": [
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "label": "编辑配置",
+                "style": 1,
+                "disabled": false
+              },
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:pause:<sid>",
+                "label": "暂停顶帖",
+                "style": 4,
+                "disabled": false
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "saveFail.DYNAMIC_CONFIG_INFLIGHT_BLOCKED.open": [
+    {
+      "op": "deferReply",
+      "opts": {
+        "flags": 64
+      }
+    },
+    {
+      "op": "editReply",
+      "payload": {
+        "embeds": [
+          {
+            "color": 12105215,
+            "title": "🌸 小G宝顶帖控制台",
+            "description": "🟢 自动顶帖运行中",
+            "fields": [
+              {
+                "name": "今日进度",
+                "value": "0 / 3",
+                "inline": true
+              },
+              {
+                "name": "最近顶帖",
+                "value": "暂无",
+                "inline": true
+              },
+              {
+                "name": "下次顶帖",
+                "value": "等待调度",
+                "inline": true
+              },
+              {
+                "name": "📅 排班配置",
+                "value": "活跃时间：10:00–22:00\n自动间隔：约 240 分钟\n入选范围：30 天无回复",
+                "inline": false
+              },
+              {
+                "name": "📚 服务版块",
+                "value": "论坛A",
+                "inline": false
+              }
+            ]
+          }
+        ],
+        "components": [
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "label": "编辑配置",
+                "style": 1,
+                "disabled": false
+              },
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:pause:<sid>",
+                "label": "暂停顶帖",
+                "style": 4,
+                "disabled": false
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "saveFail.DYNAMIC_CONFIG_INFLIGHT_BLOCKED.edit": [
+    {
+      "op": "showModal",
+      "modal": {
+        "custom_id": "fbump:v1:modal:modal:<sid>",
+        "title": "编辑顶帖配置",
+        "components": [
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 4,
+                "custom_id": "dailyLimit",
+                "label": "每日额度",
+                "style": 1,
+                "required": true,
+                "min_length": 1,
+                "max_length": 2,
+                "placeholder": "根据活跃时间自动限制，最多 30",
+                "value": "3"
+              }
+            ]
+          },
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 4,
+                "custom_id": "activeStart",
+                "label": "活跃开始时间（HH:mm，UTC+8）",
+                "style": 1,
+                "required": true,
+                "min_length": 4,
+                "max_length": 5,
+                "value": "10:00"
+              }
+            ]
+          },
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 4,
+                "custom_id": "activeEnd",
+                "label": "活跃结束时间（HH:mm，UTC+8）",
+                "style": 1,
+                "required": true,
+                "min_length": 4,
+                "max_length": 5,
+                "value": "22:00"
+              }
+            ]
+          },
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 4,
+                "custom_id": "silenceDays",
+                "label": "无回复天数（1–3650）",
+                "style": 1,
+                "required": true,
+                "min_length": 1,
+                "max_length": 4,
+                "value": "30"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "saveFail.DYNAMIC_CONFIG_INFLIGHT_BLOCKED.modal": [
+    {
+      "op": "reply",
+      "payload": {
+        "content": "**选择服务 Forum 频道**\n请至少选择一个 GuildForum 频道，然后点击「保存配置」。\n\n当前草稿：额度 5，08:00–13:00，30 天无回复",
+        "components": [
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 8,
+                "custom_id": "fbump:v1:select:select:<sid>",
+                "placeholder": "选择服务 Forum 频道（可多选）",
+                "min_values": 1,
+                "max_values": 25,
+                "channel_types": [
+                  15
+                ],
+                "default_values": [
+                  {
+                    "id": "222222222222222222",
+                    "type": "channel"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:save:<sid>",
+                "label": "保存配置",
+                "style": 3
+              },
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:cancel:<sid>",
+                "label": "取消",
+                "style": 2
+              }
+            ]
+          }
+        ],
+        "flags": 64
+      }
+    }
+  ],
+  "saveFail.DYNAMIC_CONFIG_INFLIGHT_BLOCKED.save": [
+    {
+      "op": "deferUpdate"
+    },
+    {
+      "op": "editReply",
+      "payload": {
+        "embeds": [
+          {
+            "color": 12105215,
+            "title": "🌸 小G宝顶帖控制台",
+            "description": "🟢 自动顶帖运行中\n\n当前有进行中的顶帖操作，请稍后再试。",
+            "fields": [
+              {
+                "name": "今日进度",
+                "value": "0 / 3",
+                "inline": true
+              },
+              {
+                "name": "最近顶帖",
+                "value": "暂无",
+                "inline": true
+              },
+              {
+                "name": "下次顶帖",
+                "value": "等待调度",
+                "inline": true
+              },
+              {
+                "name": "📅 排班配置",
+                "value": "活跃时间：10:00–22:00\n自动间隔：约 240 分钟\n入选范围：30 天无回复",
+                "inline": false
+              },
+              {
+                "name": "📚 服务版块",
+                "value": "论坛A",
+                "inline": false
+              }
+            ]
+          }
+        ],
+        "components": [
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "label": "编辑配置",
+                "style": 1,
+                "disabled": false
+              },
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:pause:<sid>",
+                "label": "暂停顶帖",
+                "style": 4,
+                "disabled": false
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "saveFail.STATE_RECOVERY_REQUIRED.open": [
+    {
+      "op": "deferReply",
+      "opts": {
+        "flags": 64
+      }
+    },
+    {
+      "op": "editReply",
+      "payload": {
+        "embeds": [
+          {
+            "color": 12105215,
+            "title": "🌸 小G宝顶帖控制台",
+            "description": "🟢 自动顶帖运行中",
+            "fields": [
+              {
+                "name": "今日进度",
+                "value": "0 / 3",
+                "inline": true
+              },
+              {
+                "name": "最近顶帖",
+                "value": "暂无",
+                "inline": true
+              },
+              {
+                "name": "下次顶帖",
+                "value": "等待调度",
+                "inline": true
+              },
+              {
+                "name": "📅 排班配置",
+                "value": "活跃时间：10:00–22:00\n自动间隔：约 240 分钟\n入选范围：30 天无回复",
+                "inline": false
+              },
+              {
+                "name": "📚 服务版块",
+                "value": "论坛A",
+                "inline": false
+              }
+            ]
+          }
+        ],
+        "components": [
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "label": "编辑配置",
+                "style": 1,
+                "disabled": false
+              },
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:pause:<sid>",
+                "label": "暂停顶帖",
+                "style": 4,
+                "disabled": false
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "saveFail.STATE_RECOVERY_REQUIRED.edit": [
+    {
+      "op": "showModal",
+      "modal": {
+        "custom_id": "fbump:v1:modal:modal:<sid>",
+        "title": "编辑顶帖配置",
+        "components": [
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 4,
+                "custom_id": "dailyLimit",
+                "label": "每日额度",
+                "style": 1,
+                "required": true,
+                "min_length": 1,
+                "max_length": 2,
+                "placeholder": "根据活跃时间自动限制，最多 30",
+                "value": "3"
+              }
+            ]
+          },
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 4,
+                "custom_id": "activeStart",
+                "label": "活跃开始时间（HH:mm，UTC+8）",
+                "style": 1,
+                "required": true,
+                "min_length": 4,
+                "max_length": 5,
+                "value": "10:00"
+              }
+            ]
+          },
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 4,
+                "custom_id": "activeEnd",
+                "label": "活跃结束时间（HH:mm，UTC+8）",
+                "style": 1,
+                "required": true,
+                "min_length": 4,
+                "max_length": 5,
+                "value": "22:00"
+              }
+            ]
+          },
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 4,
+                "custom_id": "silenceDays",
+                "label": "无回复天数（1–3650）",
+                "style": 1,
+                "required": true,
+                "min_length": 1,
+                "max_length": 4,
+                "value": "30"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "saveFail.STATE_RECOVERY_REQUIRED.modal": [
+    {
+      "op": "reply",
+      "payload": {
+        "content": "**选择服务 Forum 频道**\n请至少选择一个 GuildForum 频道，然后点击「保存配置」。\n\n当前草稿：额度 5，08:00–13:00，30 天无回复",
+        "components": [
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 8,
+                "custom_id": "fbump:v1:select:select:<sid>",
+                "placeholder": "选择服务 Forum 频道（可多选）",
+                "min_values": 1,
+                "max_values": 25,
+                "channel_types": [
+                  15
+                ],
+                "default_values": [
+                  {
+                    "id": "222222222222222222",
+                    "type": "channel"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:save:<sid>",
+                "label": "保存配置",
+                "style": 3
+              },
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:cancel:<sid>",
+                "label": "取消",
+                "style": 2
+              }
+            ]
+          }
+        ],
+        "flags": 64
+      }
+    }
+  ],
+  "saveFail.STATE_RECOVERY_REQUIRED.save": [
+    {
+      "op": "deferUpdate"
+    },
+    {
+      "op": "editReply",
+      "payload": {
+        "embeds": [
+          {
+            "color": 12105215,
+            "title": "🌸 小G宝顶帖控制台",
+            "description": "🟢 自动顶帖运行中\n\n当前为安全故障暂停，无法从面板直接恢复。",
+            "fields": [
+              {
+                "name": "今日进度",
+                "value": "0 / 3",
+                "inline": true
+              },
+              {
+                "name": "最近顶帖",
+                "value": "暂无",
+                "inline": true
+              },
+              {
+                "name": "下次顶帖",
+                "value": "等待调度",
+                "inline": true
+              },
+              {
+                "name": "📅 排班配置",
+                "value": "活跃时间：10:00–22:00\n自动间隔：约 240 分钟\n入选范围：30 天无回复",
+                "inline": false
+              },
+              {
+                "name": "📚 服务版块",
+                "value": "论坛A",
+                "inline": false
+              }
+            ]
+          }
+        ],
+        "components": [
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "label": "编辑配置",
+                "style": 1,
+                "disabled": false
+              },
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:pause:<sid>",
+                "label": "暂停顶帖",
+                "style": 4,
+                "disabled": false
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "saveFail.SOMETHING_UNKNOWN.open": [
+    {
+      "op": "deferReply",
+      "opts": {
+        "flags": 64
+      }
+    },
+    {
+      "op": "editReply",
+      "payload": {
+        "embeds": [
+          {
+            "color": 12105215,
+            "title": "🌸 小G宝顶帖控制台",
+            "description": "🟢 自动顶帖运行中",
+            "fields": [
+              {
+                "name": "今日进度",
+                "value": "0 / 3",
+                "inline": true
+              },
+              {
+                "name": "最近顶帖",
+                "value": "暂无",
+                "inline": true
+              },
+              {
+                "name": "下次顶帖",
+                "value": "等待调度",
+                "inline": true
+              },
+              {
+                "name": "📅 排班配置",
+                "value": "活跃时间：10:00–22:00\n自动间隔：约 240 分钟\n入选范围：30 天无回复",
+                "inline": false
+              },
+              {
+                "name": "📚 服务版块",
+                "value": "论坛A",
+                "inline": false
+              }
+            ]
+          }
+        ],
+        "components": [
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "label": "编辑配置",
+                "style": 1,
+                "disabled": false
+              },
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:pause:<sid>",
+                "label": "暂停顶帖",
+                "style": 4,
+                "disabled": false
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "saveFail.SOMETHING_UNKNOWN.edit": [
+    {
+      "op": "showModal",
+      "modal": {
+        "custom_id": "fbump:v1:modal:modal:<sid>",
+        "title": "编辑顶帖配置",
+        "components": [
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 4,
+                "custom_id": "dailyLimit",
+                "label": "每日额度",
+                "style": 1,
+                "required": true,
+                "min_length": 1,
+                "max_length": 2,
+                "placeholder": "根据活跃时间自动限制，最多 30",
+                "value": "3"
+              }
+            ]
+          },
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 4,
+                "custom_id": "activeStart",
+                "label": "活跃开始时间（HH:mm，UTC+8）",
+                "style": 1,
+                "required": true,
+                "min_length": 4,
+                "max_length": 5,
+                "value": "10:00"
+              }
+            ]
+          },
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 4,
+                "custom_id": "activeEnd",
+                "label": "活跃结束时间（HH:mm，UTC+8）",
+                "style": 1,
+                "required": true,
+                "min_length": 4,
+                "max_length": 5,
+                "value": "22:00"
+              }
+            ]
+          },
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 4,
+                "custom_id": "silenceDays",
+                "label": "无回复天数（1–3650）",
+                "style": 1,
+                "required": true,
+                "min_length": 1,
+                "max_length": 4,
+                "value": "30"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "saveFail.SOMETHING_UNKNOWN.modal": [
+    {
+      "op": "reply",
+      "payload": {
+        "content": "**选择服务 Forum 频道**\n请至少选择一个 GuildForum 频道，然后点击「保存配置」。\n\n当前草稿：额度 5，08:00–13:00，30 天无回复",
+        "components": [
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 8,
+                "custom_id": "fbump:v1:select:select:<sid>",
+                "placeholder": "选择服务 Forum 频道（可多选）",
+                "min_values": 1,
+                "max_values": 25,
+                "channel_types": [
+                  15
+                ],
+                "default_values": [
+                  {
+                    "id": "222222222222222222",
+                    "type": "channel"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:save:<sid>",
+                "label": "保存配置",
+                "style": 3
+              },
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:cancel:<sid>",
+                "label": "取消",
+                "style": 2
+              }
+            ]
+          }
+        ],
+        "flags": 64
+      }
+    }
+  ],
+  "saveFail.SOMETHING_UNKNOWN.save": [
+    {
+      "op": "deferUpdate"
+    },
+    {
+      "op": "editReply",
+      "payload": {
+        "embeds": [
+          {
+            "color": 12105215,
+            "title": "🌸 小G宝顶帖控制台",
+            "description": "🟢 自动顶帖运行中\n\n操作失败，请稍后重试或重新打开顶帖面板。",
+            "fields": [
+              {
+                "name": "今日进度",
+                "value": "0 / 3",
+                "inline": true
+              },
+              {
+                "name": "最近顶帖",
+                "value": "暂无",
+                "inline": true
+              },
+              {
+                "name": "下次顶帖",
+                "value": "等待调度",
+                "inline": true
+              },
+              {
+                "name": "📅 排班配置",
+                "value": "活跃时间：10:00–22:00\n自动间隔：约 240 分钟\n入选范围：30 天无回复",
+                "inline": false
+              },
+              {
+                "name": "📚 服务版块",
+                "value": "论坛A",
+                "inline": false
+              }
+            ]
+          }
+        ],
+        "components": [
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "label": "编辑配置",
+                "style": 1,
+                "disabled": false
+              },
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:pause:<sid>",
+                "label": "暂停顶帖",
+                "style": 4,
+                "disabled": false
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "session.open": [
+    {
+      "op": "deferReply",
+      "opts": {
+        "flags": 64
+      }
+    },
+    {
+      "op": "editReply",
+      "payload": {
+        "embeds": [
+          {
+            "color": 12105215,
+            "title": "🌸 小G宝顶帖控制台",
+            "description": "🟢 自动顶帖运行中",
+            "fields": [
+              {
+                "name": "今日进度",
+                "value": "0 / 3",
+                "inline": true
+              },
+              {
+                "name": "最近顶帖",
+                "value": "暂无",
+                "inline": true
+              },
+              {
+                "name": "下次顶帖",
+                "value": "等待调度",
+                "inline": true
+              },
+              {
+                "name": "📅 排班配置",
+                "value": "活跃时间：10:00–22:00\n自动间隔：约 240 分钟\n入选范围：30 天无回复",
+                "inline": false
+              },
+              {
+                "name": "📚 服务版块",
+                "value": "论坛A",
+                "inline": false
+              }
+            ]
+          }
+        ],
+        "components": [
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "label": "编辑配置",
+                "style": 1,
+                "disabled": false
+              },
+              {
+                "type": 2,
+                "custom_id": "fbump:v1:btn:pause:<sid>",
+                "label": "暂停顶帖",
+                "style": 4,
+                "disabled": false
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "session.unknown": [
+    {
+      "op": "reply",
+      "payload": {
+        "content": "面板已过期，请重新执行「/顶帖 面板」。",
+        "flags": 64
+      }
+    }
+  ],
+  "session.notOwner": [
+    {
+      "op": "reply",
+      "payload": {
+        "content": "该操作只能由打开面板的管理员继续，请重新打开顶帖面板。",
+        "flags": 64
+      }
+    }
+  ]
+}
