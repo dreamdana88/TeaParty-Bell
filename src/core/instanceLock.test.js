@@ -194,7 +194,7 @@ try {
   }
 
   // 非预期 errno → INSTANCE_LOCK_IO_FAILED / exit 1，不按 78、不接管
-  if (process.getuid?.() !== 0) {
+  if (typeof process.getuid === "function" && process.getuid() !== 0) {
     {
       // 接管守卫创建 EACCES：锁目录只读（锁文件可读、过期）
       const lockPath = freshLockPath();
@@ -226,7 +226,7 @@ try {
       assert(readFileSync(lockPath, "utf8") === body && files.length === 1, "读失败时锁文件原样保留，未被接管");
     }
   } else {
-    console.log("  (跳过 EACCES 用例：root 不受权限限制)");
+    console.log("  (跳过 POSIX chmod 用例：平台不支持 getuid，或 root 不受权限限制)");
   }
 
   // tryCreate 部分写失败留下空锁文件：过了 2s 宽限按损坏接管
