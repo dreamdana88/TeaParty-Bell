@@ -118,9 +118,10 @@ function makeRuntime(overrides = {}) {
   };
 }
 
+let ixSeq = 0;
 function baseInteraction(extra = {}) {
   const ix = {
-    id: `ix_${Math.random().toString(36).slice(2)}`,
+    id: `ix_${String(++ixSeq).padStart(4, "0")}`,
     guildId: G,
     channelId: "555555555555555555",
     user: { id: ACTOR, username: "admin", globalName: "管理员" },
@@ -185,8 +186,8 @@ function serialize(value) {
     if (v && typeof v === "object" && typeof v.toJSON === "function" && !Array.isArray(v)) return v.toJSON();
     return v;
   }) ?? "null");
-  // session id 每次随机：归一化
-  return JSON.parse(JSON.stringify(json).replace(/(fbump:v1:[a-z]+:[a-z]+:)[A-Za-z0-9_-]+/g, "$1<sid>"));
+  // session id 已由 pinSessionIds 固定，快照里保留真实（确定的）id
+  return json;
 }
 
 function record(ix) {
@@ -205,15 +206,50 @@ function sessionIdFrom(payload) {
   return m ? m[1] : null;
 }
 
+/**
+ * sessionStore 用 crypto.randomBytes 生成 id 且不可注入（不改生产代码）：
+ * 在测试里包一层，把真实 id 映射为确定的 16 位 hex（harness 序号 + session 序号）。
+ */
+let harnessSeq = 0;
+function pinSessionIds(real) {
+  const h = ++harnessSeq;
+  let n = 0;
+  const toReal = new Map();
+  const toFake = new Map();
+  const fake = (id) => toFake.get(id) ?? id;
+  const unfake = (id) => (typeof id === "string" ? (toReal.get(id) ?? `unknown:${id}`) : id);
+  const out = (s) => (s && typeof s === "object" && typeof s.sessionId === "string" ? { ...s, sessionId: fake(s.sessionId) } : s);
+  return {
+    createSession(args) {
+      const s = real.createSession(args);
+      const f = `${h.toString(16).padStart(4, "0")}${(++n).toString(16).padStart(12, "0")}`;
+      toReal.set(f, s.sessionId);
+      toFake.set(s.sessionId, f);
+      return out(s);
+    },
+    get: (id) => out(real.get(unfake(id))),
+    assertOwner: (id, ctx) => {
+      const r = real.assertOwner(unfake(id), ctx);
+      return r?.session ? { ...r, session: out(r.session) } : r;
+    },
+    updateDraft: (id, patch) => out(real.updateDraft(unfake(id), patch)),
+    touchRevision: (id, rev) => out(real.touchRevision(unfake(id), rev)),
+    deleteSession: (id) => real.deleteSession(unfake(id)),
+    clear: () => real.clear(),
+    size: () => real.size(),
+  };
+}
+
 function harness(runtimeOverrides = {}) {
   const runtime = makeRuntime(runtimeOverrides);
-  const store = createForumBumpPanelSessionStore({ now: () => Date.now() });
+  const store = pinSessionIds(createForumBumpPanelSessionStore({ now: () => FIXED_NOW }));
   const router = createForumBumpAdminRouter({
     client: makeClient(),
     guildId: G,
     forumBumpRuntime: runtime,
     logger: { info() {}, warn() {}, error() {} },
     sessionStore: store,
+    now: () => FIXED_NOW,
   });
   router.start();
   return { runtime, store, router };

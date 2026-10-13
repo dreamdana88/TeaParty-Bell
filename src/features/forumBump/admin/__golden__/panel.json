@@ -49,14 +49,14 @@
             "components": [
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "custom_id": "fbump:v1:btn:edit:0001000000000001",
                 "label": "编辑配置",
                 "style": 1,
                 "disabled": false
               },
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:pause:<sid>",
+                "custom_id": "fbump:v1:btn:pause:0001000000000001",
                 "label": "暂停顶帖",
                 "style": 4,
                 "disabled": false
@@ -117,14 +117,14 @@
             "components": [
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "custom_id": "fbump:v1:btn:edit:0002000000000001",
                 "label": "编辑配置",
                 "style": 1,
                 "disabled": false
               },
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:pause:<sid>",
+                "custom_id": "fbump:v1:btn:pause:0002000000000001",
                 "label": "暂停顶帖",
                 "style": 4,
                 "disabled": false
@@ -185,14 +185,14 @@
             "components": [
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "custom_id": "fbump:v1:btn:edit:0003000000000001",
                 "label": "编辑配置",
                 "style": 1,
                 "disabled": false
               },
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:pause:<sid>",
+                "custom_id": "fbump:v1:btn:pause:0003000000000001",
                 "label": "暂停顶帖",
                 "style": 4,
                 "disabled": false
@@ -253,14 +253,14 @@
             "components": [
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "custom_id": "fbump:v1:btn:edit:0004000000000001",
                 "label": "编辑配置",
                 "style": 1,
                 "disabled": false
               },
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:resume:<sid>",
+                "custom_id": "fbump:v1:btn:resume:0004000000000001",
                 "label": "恢复顶帖",
                 "style": 3,
                 "disabled": false
@@ -321,14 +321,14 @@
             "components": [
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "custom_id": "fbump:v1:btn:edit:0005000000000001",
                 "label": "编辑配置",
                 "style": 1,
                 "disabled": false
               },
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:resume:<sid>",
+                "custom_id": "fbump:v1:btn:resume:0005000000000001",
                 "label": "恢复顶帖",
                 "style": 2,
                 "disabled": true
@@ -389,14 +389,14 @@
             "components": [
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "custom_id": "fbump:v1:btn:edit:0006000000000001",
                 "label": "编辑配置",
                 "style": 1,
                 "disabled": false
               },
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:resume:<sid>",
+                "custom_id": "fbump:v1:btn:resume:0006000000000001",
                 "label": "恢复顶帖",
                 "style": 2,
                 "disabled": true
@@ -457,14 +457,14 @@
             "components": [
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "custom_id": "fbump:v1:btn:edit:0007000000000001",
                 "label": "编辑配置",
                 "style": 1,
                 "disabled": false
               },
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:resume:<sid>",
+                "custom_id": "fbump:v1:btn:resume:0007000000000001",
                 "label": "恢复顶帖",
                 "style": 2,
                 "disabled": true
@@ -525,14 +525,14 @@
             "components": [
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "custom_id": "fbump:v1:btn:edit:0008000000000001",
                 "label": "编辑配置",
                 "style": 1,
                 "disabled": true
               },
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:pause:<sid>",
+                "custom_id": "fbump:v1:btn:pause:0008000000000001",
                 "label": "暂停顶帖",
                 "style": 4,
                 "disabled": true
@@ -593,14 +593,14 @@
             "components": [
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "custom_id": "fbump:v1:btn:edit:0009000000000001",
                 "label": "编辑配置",
                 "style": 1,
                 "disabled": false
               },
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:pause:<sid>",
+                "custom_id": "fbump:v1:btn:pause:0009000000000001",
                 "label": "暂停顶帖",
                 "style": 4,
                 "disabled": false
@@ -661,14 +661,14 @@
             "components": [
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "custom_id": "fbump:v1:btn:edit:000a000000000001",
                 "label": "编辑配置",
                 "style": 1,
                 "disabled": false
               },
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:pause:<sid>",
+                "custom_id": "fbump:v1:btn:pause:000a000000000001",
                 "label": "暂停顶帖",
                 "style": 4,
                 "disabled": false
@@ -729,14 +729,14 @@
             "components": [
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "custom_id": "fbump:v1:btn:edit:000b000000000001",
                 "label": "编辑配置",
                 "style": 1,
                 "disabled": false
               },
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:pause:<sid>",
+                "custom_id": "fbump:v1:btn:pause:000b000000000001",
                 "label": "暂停顶帖",
                 "style": 4,
                 "disabled": false
@@ -806,14 +806,14 @@
             "components": [
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "custom_id": "fbump:v1:btn:edit:000d000000000001",
                 "label": "编辑配置",
                 "style": 1,
                 "disabled": false
               },
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:pause:<sid>",
+                "custom_id": "fbump:v1:btn:pause:000d000000000001",
                 "label": "暂停顶帖",
                 "style": 4,
                 "disabled": false
@@ -871,14 +871,14 @@
             "components": [
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "custom_id": "fbump:v1:btn:edit:000d000000000001",
                 "label": "编辑配置",
                 "style": 1,
                 "disabled": false
               },
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:resume:<sid>",
+                "custom_id": "fbump:v1:btn:resume:000d000000000001",
                 "label": "恢复顶帖",
                 "style": 3,
                 "disabled": false
@@ -936,14 +936,14 @@
             "components": [
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "custom_id": "fbump:v1:btn:edit:000d000000000001",
                 "label": "编辑配置",
                 "style": 1,
                 "disabled": false
               },
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:pause:<sid>",
+                "custom_id": "fbump:v1:btn:pause:000d000000000001",
                 "label": "暂停顶帖",
                 "style": 4,
                 "disabled": false
@@ -1004,14 +1004,14 @@
             "components": [
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "custom_id": "fbump:v1:btn:edit:000e000000000001",
                 "label": "编辑配置",
                 "style": 1,
                 "disabled": false
               },
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:resume:<sid>",
+                "custom_id": "fbump:v1:btn:resume:000e000000000001",
                 "label": "恢复顶帖",
                 "style": 2,
                 "disabled": true
@@ -1069,14 +1069,14 @@
             "components": [
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "custom_id": "fbump:v1:btn:edit:000e000000000001",
                 "label": "编辑配置",
                 "style": 1,
                 "disabled": false
               },
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:resume:<sid>",
+                "custom_id": "fbump:v1:btn:resume:000e000000000001",
                 "label": "恢复顶帖",
                 "style": 2,
                 "disabled": true
@@ -1137,14 +1137,14 @@
             "components": [
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "custom_id": "fbump:v1:btn:edit:000f000000000001",
                 "label": "编辑配置",
                 "style": 1,
                 "disabled": false
               },
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:pause:<sid>",
+                "custom_id": "fbump:v1:btn:pause:000f000000000001",
                 "label": "暂停顶帖",
                 "style": 4,
                 "disabled": false
@@ -1159,7 +1159,7 @@
     {
       "op": "showModal",
       "modal": {
-        "custom_id": "fbump:v1:modal:modal:<sid>",
+        "custom_id": "fbump:v1:modal:modal:000f000000000001",
         "title": "编辑顶帖配置",
         "components": [
           {
@@ -1310,7 +1310,7 @@
             "components": [
               {
                 "type": 8,
-                "custom_id": "fbump:v1:select:select:<sid>",
+                "custom_id": "fbump:v1:select:select:000f000000000001",
                 "placeholder": "选择服务 Forum 频道（可多选）",
                 "min_values": 1,
                 "max_values": 25,
@@ -1331,13 +1331,13 @@
             "components": [
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:save:<sid>",
+                "custom_id": "fbump:v1:btn:save:000f000000000001",
                 "label": "保存配置",
                 "style": 3
               },
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:cancel:<sid>",
+                "custom_id": "fbump:v1:btn:cancel:000f000000000001",
                 "label": "取消",
                 "style": 2
               }
@@ -1395,14 +1395,14 @@
             "components": [
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "custom_id": "fbump:v1:btn:edit:000f000000000002",
                 "label": "编辑配置",
                 "style": 1,
                 "disabled": false
               },
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:pause:<sid>",
+                "custom_id": "fbump:v1:btn:pause:000f000000000002",
                 "label": "暂停顶帖",
                 "style": 4,
                 "disabled": false
@@ -1463,14 +1463,14 @@
             "components": [
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "custom_id": "fbump:v1:btn:edit:0010000000000001",
                 "label": "编辑配置",
                 "style": 1,
                 "disabled": false
               },
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:pause:<sid>",
+                "custom_id": "fbump:v1:btn:pause:0010000000000001",
                 "label": "暂停顶帖",
                 "style": 4,
                 "disabled": false
@@ -1485,7 +1485,7 @@
     {
       "op": "showModal",
       "modal": {
-        "custom_id": "fbump:v1:modal:modal:<sid>",
+        "custom_id": "fbump:v1:modal:modal:0010000000000001",
         "title": "编辑顶帖配置",
         "components": [
           {
@@ -1564,7 +1564,7 @@
             "components": [
               {
                 "type": 8,
-                "custom_id": "fbump:v1:select:select:<sid>",
+                "custom_id": "fbump:v1:select:select:0010000000000001",
                 "placeholder": "选择服务 Forum 频道（可多选）",
                 "min_values": 1,
                 "max_values": 25,
@@ -1585,13 +1585,13 @@
             "components": [
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:save:<sid>",
+                "custom_id": "fbump:v1:btn:save:0010000000000001",
                 "label": "保存配置",
                 "style": 3
               },
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:cancel:<sid>",
+                "custom_id": "fbump:v1:btn:cancel:0010000000000001",
                 "label": "取消",
                 "style": 2
               }
@@ -1649,14 +1649,14 @@
             "components": [
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "custom_id": "fbump:v1:btn:edit:0010000000000002",
                 "label": "编辑配置",
                 "style": 1,
                 "disabled": false
               },
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:pause:<sid>",
+                "custom_id": "fbump:v1:btn:pause:0010000000000002",
                 "label": "暂停顶帖",
                 "style": 4,
                 "disabled": false
@@ -1717,14 +1717,14 @@
             "components": [
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "custom_id": "fbump:v1:btn:edit:0011000000000001",
                 "label": "编辑配置",
                 "style": 1,
                 "disabled": false
               },
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:pause:<sid>",
+                "custom_id": "fbump:v1:btn:pause:0011000000000001",
                 "label": "暂停顶帖",
                 "style": 4,
                 "disabled": false
@@ -1739,7 +1739,7 @@
     {
       "op": "showModal",
       "modal": {
-        "custom_id": "fbump:v1:modal:modal:<sid>",
+        "custom_id": "fbump:v1:modal:modal:0011000000000001",
         "title": "编辑顶帖配置",
         "components": [
           {
@@ -1818,7 +1818,7 @@
             "components": [
               {
                 "type": 8,
-                "custom_id": "fbump:v1:select:select:<sid>",
+                "custom_id": "fbump:v1:select:select:0011000000000001",
                 "placeholder": "选择服务 Forum 频道（可多选）",
                 "min_values": 1,
                 "max_values": 25,
@@ -1839,13 +1839,13 @@
             "components": [
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:save:<sid>",
+                "custom_id": "fbump:v1:btn:save:0011000000000001",
                 "label": "保存配置",
                 "style": 3
               },
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:cancel:<sid>",
+                "custom_id": "fbump:v1:btn:cancel:0011000000000001",
                 "label": "取消",
                 "style": 2
               }
@@ -1903,14 +1903,14 @@
             "components": [
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "custom_id": "fbump:v1:btn:edit:0011000000000002",
                 "label": "编辑配置",
                 "style": 1,
                 "disabled": false
               },
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:pause:<sid>",
+                "custom_id": "fbump:v1:btn:pause:0011000000000002",
                 "label": "暂停顶帖",
                 "style": 4,
                 "disabled": false
@@ -1971,14 +1971,14 @@
             "components": [
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "custom_id": "fbump:v1:btn:edit:0012000000000001",
                 "label": "编辑配置",
                 "style": 1,
                 "disabled": false
               },
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:pause:<sid>",
+                "custom_id": "fbump:v1:btn:pause:0012000000000001",
                 "label": "暂停顶帖",
                 "style": 4,
                 "disabled": false
@@ -1993,7 +1993,7 @@
     {
       "op": "showModal",
       "modal": {
-        "custom_id": "fbump:v1:modal:modal:<sid>",
+        "custom_id": "fbump:v1:modal:modal:0012000000000001",
         "title": "编辑顶帖配置",
         "components": [
           {
@@ -2072,7 +2072,7 @@
             "components": [
               {
                 "type": 8,
-                "custom_id": "fbump:v1:select:select:<sid>",
+                "custom_id": "fbump:v1:select:select:0012000000000001",
                 "placeholder": "选择服务 Forum 频道（可多选）",
                 "min_values": 1,
                 "max_values": 25,
@@ -2093,13 +2093,13 @@
             "components": [
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:save:<sid>",
+                "custom_id": "fbump:v1:btn:save:0012000000000001",
                 "label": "保存配置",
                 "style": 3
               },
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:cancel:<sid>",
+                "custom_id": "fbump:v1:btn:cancel:0012000000000001",
                 "label": "取消",
                 "style": 2
               }
@@ -2157,14 +2157,14 @@
             "components": [
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "custom_id": "fbump:v1:btn:edit:0012000000000002",
                 "label": "编辑配置",
                 "style": 1,
                 "disabled": false
               },
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:pause:<sid>",
+                "custom_id": "fbump:v1:btn:pause:0012000000000002",
                 "label": "暂停顶帖",
                 "style": 4,
                 "disabled": false
@@ -2225,14 +2225,14 @@
             "components": [
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "custom_id": "fbump:v1:btn:edit:0013000000000001",
                 "label": "编辑配置",
                 "style": 1,
                 "disabled": false
               },
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:pause:<sid>",
+                "custom_id": "fbump:v1:btn:pause:0013000000000001",
                 "label": "暂停顶帖",
                 "style": 4,
                 "disabled": false
@@ -2247,7 +2247,7 @@
     {
       "op": "showModal",
       "modal": {
-        "custom_id": "fbump:v1:modal:modal:<sid>",
+        "custom_id": "fbump:v1:modal:modal:0013000000000001",
         "title": "编辑顶帖配置",
         "components": [
           {
@@ -2326,7 +2326,7 @@
             "components": [
               {
                 "type": 8,
-                "custom_id": "fbump:v1:select:select:<sid>",
+                "custom_id": "fbump:v1:select:select:0013000000000001",
                 "placeholder": "选择服务 Forum 频道（可多选）",
                 "min_values": 1,
                 "max_values": 25,
@@ -2347,13 +2347,13 @@
             "components": [
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:save:<sid>",
+                "custom_id": "fbump:v1:btn:save:0013000000000001",
                 "label": "保存配置",
                 "style": 3
               },
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:cancel:<sid>",
+                "custom_id": "fbump:v1:btn:cancel:0013000000000001",
                 "label": "取消",
                 "style": 2
               }
@@ -2411,14 +2411,14 @@
             "components": [
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "custom_id": "fbump:v1:btn:edit:0013000000000002",
                 "label": "编辑配置",
                 "style": 1,
                 "disabled": false
               },
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:pause:<sid>",
+                "custom_id": "fbump:v1:btn:pause:0013000000000002",
                 "label": "暂停顶帖",
                 "style": 4,
                 "disabled": false
@@ -2479,14 +2479,14 @@
             "components": [
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "custom_id": "fbump:v1:btn:edit:0014000000000001",
                 "label": "编辑配置",
                 "style": 1,
                 "disabled": false
               },
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:pause:<sid>",
+                "custom_id": "fbump:v1:btn:pause:0014000000000001",
                 "label": "暂停顶帖",
                 "style": 4,
                 "disabled": false
@@ -2501,7 +2501,7 @@
     {
       "op": "showModal",
       "modal": {
-        "custom_id": "fbump:v1:modal:modal:<sid>",
+        "custom_id": "fbump:v1:modal:modal:0014000000000001",
         "title": "编辑顶帖配置",
         "components": [
           {
@@ -2580,7 +2580,7 @@
             "components": [
               {
                 "type": 8,
-                "custom_id": "fbump:v1:select:select:<sid>",
+                "custom_id": "fbump:v1:select:select:0014000000000001",
                 "placeholder": "选择服务 Forum 频道（可多选）",
                 "min_values": 1,
                 "max_values": 25,
@@ -2601,13 +2601,13 @@
             "components": [
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:save:<sid>",
+                "custom_id": "fbump:v1:btn:save:0014000000000001",
                 "label": "保存配置",
                 "style": 3
               },
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:cancel:<sid>",
+                "custom_id": "fbump:v1:btn:cancel:0014000000000001",
                 "label": "取消",
                 "style": 2
               }
@@ -2665,14 +2665,14 @@
             "components": [
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "custom_id": "fbump:v1:btn:edit:0014000000000002",
                 "label": "编辑配置",
                 "style": 1,
                 "disabled": false
               },
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:pause:<sid>",
+                "custom_id": "fbump:v1:btn:pause:0014000000000002",
                 "label": "暂停顶帖",
                 "style": 4,
                 "disabled": false
@@ -2733,14 +2733,14 @@
             "components": [
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "custom_id": "fbump:v1:btn:edit:0015000000000001",
                 "label": "编辑配置",
                 "style": 1,
                 "disabled": false
               },
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:pause:<sid>",
+                "custom_id": "fbump:v1:btn:pause:0015000000000001",
                 "label": "暂停顶帖",
                 "style": 4,
                 "disabled": false
@@ -2755,7 +2755,7 @@
     {
       "op": "showModal",
       "modal": {
-        "custom_id": "fbump:v1:modal:modal:<sid>",
+        "custom_id": "fbump:v1:modal:modal:0015000000000001",
         "title": "编辑顶帖配置",
         "components": [
           {
@@ -2834,7 +2834,7 @@
             "components": [
               {
                 "type": 8,
-                "custom_id": "fbump:v1:select:select:<sid>",
+                "custom_id": "fbump:v1:select:select:0015000000000001",
                 "placeholder": "选择服务 Forum 频道（可多选）",
                 "min_values": 1,
                 "max_values": 25,
@@ -2855,13 +2855,13 @@
             "components": [
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:save:<sid>",
+                "custom_id": "fbump:v1:btn:save:0015000000000001",
                 "label": "保存配置",
                 "style": 3
               },
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:cancel:<sid>",
+                "custom_id": "fbump:v1:btn:cancel:0015000000000001",
                 "label": "取消",
                 "style": 2
               }
@@ -2919,14 +2919,14 @@
             "components": [
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "custom_id": "fbump:v1:btn:edit:0015000000000002",
                 "label": "编辑配置",
                 "style": 1,
                 "disabled": false
               },
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:pause:<sid>",
+                "custom_id": "fbump:v1:btn:pause:0015000000000002",
                 "label": "暂停顶帖",
                 "style": 4,
                 "disabled": false
@@ -2987,14 +2987,14 @@
             "components": [
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "custom_id": "fbump:v1:btn:edit:0016000000000001",
                 "label": "编辑配置",
                 "style": 1,
                 "disabled": false
               },
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:pause:<sid>",
+                "custom_id": "fbump:v1:btn:pause:0016000000000001",
                 "label": "暂停顶帖",
                 "style": 4,
                 "disabled": false
@@ -3009,7 +3009,7 @@
     {
       "op": "showModal",
       "modal": {
-        "custom_id": "fbump:v1:modal:modal:<sid>",
+        "custom_id": "fbump:v1:modal:modal:0016000000000001",
         "title": "编辑顶帖配置",
         "components": [
           {
@@ -3088,7 +3088,7 @@
             "components": [
               {
                 "type": 8,
-                "custom_id": "fbump:v1:select:select:<sid>",
+                "custom_id": "fbump:v1:select:select:0016000000000001",
                 "placeholder": "选择服务 Forum 频道（可多选）",
                 "min_values": 1,
                 "max_values": 25,
@@ -3109,13 +3109,13 @@
             "components": [
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:save:<sid>",
+                "custom_id": "fbump:v1:btn:save:0016000000000001",
                 "label": "保存配置",
                 "style": 3
               },
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:cancel:<sid>",
+                "custom_id": "fbump:v1:btn:cancel:0016000000000001",
                 "label": "取消",
                 "style": 2
               }
@@ -3173,14 +3173,14 @@
             "components": [
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "custom_id": "fbump:v1:btn:edit:0016000000000002",
                 "label": "编辑配置",
                 "style": 1,
                 "disabled": false
               },
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:pause:<sid>",
+                "custom_id": "fbump:v1:btn:pause:0016000000000002",
                 "label": "暂停顶帖",
                 "style": 4,
                 "disabled": false
@@ -3241,14 +3241,14 @@
             "components": [
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "custom_id": "fbump:v1:btn:edit:0017000000000001",
                 "label": "编辑配置",
                 "style": 1,
                 "disabled": false
               },
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:pause:<sid>",
+                "custom_id": "fbump:v1:btn:pause:0017000000000001",
                 "label": "暂停顶帖",
                 "style": 4,
                 "disabled": false
@@ -3263,7 +3263,7 @@
     {
       "op": "showModal",
       "modal": {
-        "custom_id": "fbump:v1:modal:modal:<sid>",
+        "custom_id": "fbump:v1:modal:modal:0017000000000001",
         "title": "编辑顶帖配置",
         "components": [
           {
@@ -3342,7 +3342,7 @@
             "components": [
               {
                 "type": 8,
-                "custom_id": "fbump:v1:select:select:<sid>",
+                "custom_id": "fbump:v1:select:select:0017000000000001",
                 "placeholder": "选择服务 Forum 频道（可多选）",
                 "min_values": 1,
                 "max_values": 25,
@@ -3363,13 +3363,13 @@
             "components": [
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:save:<sid>",
+                "custom_id": "fbump:v1:btn:save:0017000000000001",
                 "label": "保存配置",
                 "style": 3
               },
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:cancel:<sid>",
+                "custom_id": "fbump:v1:btn:cancel:0017000000000001",
                 "label": "取消",
                 "style": 2
               }
@@ -3427,14 +3427,14 @@
             "components": [
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "custom_id": "fbump:v1:btn:edit:0017000000000002",
                 "label": "编辑配置",
                 "style": 1,
                 "disabled": false
               },
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:pause:<sid>",
+                "custom_id": "fbump:v1:btn:pause:0017000000000002",
                 "label": "暂停顶帖",
                 "style": 4,
                 "disabled": false
@@ -3495,14 +3495,14 @@
             "components": [
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "custom_id": "fbump:v1:btn:edit:0018000000000001",
                 "label": "编辑配置",
                 "style": 1,
                 "disabled": false
               },
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:pause:<sid>",
+                "custom_id": "fbump:v1:btn:pause:0018000000000001",
                 "label": "暂停顶帖",
                 "style": 4,
                 "disabled": false
@@ -3517,7 +3517,7 @@
     {
       "op": "showModal",
       "modal": {
-        "custom_id": "fbump:v1:modal:modal:<sid>",
+        "custom_id": "fbump:v1:modal:modal:0018000000000001",
         "title": "编辑顶帖配置",
         "components": [
           {
@@ -3596,7 +3596,7 @@
             "components": [
               {
                 "type": 8,
-                "custom_id": "fbump:v1:select:select:<sid>",
+                "custom_id": "fbump:v1:select:select:0018000000000001",
                 "placeholder": "选择服务 Forum 频道（可多选）",
                 "min_values": 1,
                 "max_values": 25,
@@ -3617,13 +3617,13 @@
             "components": [
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:save:<sid>",
+                "custom_id": "fbump:v1:btn:save:0018000000000001",
                 "label": "保存配置",
                 "style": 3
               },
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:cancel:<sid>",
+                "custom_id": "fbump:v1:btn:cancel:0018000000000001",
                 "label": "取消",
                 "style": 2
               }
@@ -3681,14 +3681,14 @@
             "components": [
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "custom_id": "fbump:v1:btn:edit:0018000000000002",
                 "label": "编辑配置",
                 "style": 1,
                 "disabled": false
               },
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:pause:<sid>",
+                "custom_id": "fbump:v1:btn:pause:0018000000000002",
                 "label": "暂停顶帖",
                 "style": 4,
                 "disabled": false
@@ -3749,14 +3749,14 @@
             "components": [
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:edit:<sid>",
+                "custom_id": "fbump:v1:btn:edit:0019000000000001",
                 "label": "编辑配置",
                 "style": 1,
                 "disabled": false
               },
               {
                 "type": 2,
-                "custom_id": "fbump:v1:btn:pause:<sid>",
+                "custom_id": "fbump:v1:btn:pause:0019000000000001",
                 "label": "暂停顶帖",
                 "style": 4,
                 "disabled": false
