@@ -279,18 +279,14 @@ export function createForumBumpService({
       base.cleanupRequired = false;
       base.errorCode = "CLIENT_NOT_READY";
       base.durationMs = Math.max(0, clock.now() - startedAt);
-      try {
-        logger?.warn?.("[ForumBump] client not ready", {
-          operation: "forum-bump",
-          status: "failed",
-          guildId,
-          forumChannelId,
-          threadId,
-          errorCode: "CLIENT_NOT_READY",
-        });
-      } catch {
-        // ignore
-      }
+      logger?.warn?.("[ForumBump] client not ready", {
+        operation: "forum-bump",
+        status: "failed",
+        guildId,
+        forumChannelId,
+        threadId,
+        errorCode: "CLIENT_NOT_READY",
+      });
       return base;
     }
 
@@ -395,20 +391,16 @@ export function createForumBumpService({
       base.skipReason = evaluation.skipReason;
       base.errorCode = mapSkipToErrorCode(evaluation.skipReason);
       base.durationMs = Math.max(0, clock.now() - startedAt);
-      try {
-        logger?.info?.("[ForumBump] bump skipped", {
-          operation: "forum-bump",
-          status: "skipped",
-          guildId,
-          forumChannelId,
-          threadId,
-          skipReason: evaluation.skipReason,
-          activityAt: evaluation.activityAt,
-          silenceDaysExact: evaluation.silenceDaysExact,
-        });
-      } catch {
-        // ignore
-      }
+      logger?.info?.("[ForumBump] bump skipped", {
+        operation: "forum-bump",
+        status: "skipped",
+        guildId,
+        forumChannelId,
+        threadId,
+        skipReason: evaluation.skipReason,
+        activityAt: evaluation.activityAt,
+        silenceDaysExact: evaluation.silenceDaysExact,
+      });
       return base;
     }
 
@@ -462,20 +454,16 @@ export function createForumBumpService({
       base.status = "failed";
       base.errorCode = "SEND_FAILED";
       base.durationMs = Math.max(0, clock.now() - startedAt);
-      try {
-        logger?.warn?.("[ForumBump] send failed", {
-          operation: "forum-bump",
-          status: "failed",
-          guildId,
-          forumChannelId,
-          threadId,
-          errorCode: "SEND_FAILED",
-          contentLength,
-          ...safeDiscordMeta(error),
-        });
-      } catch {
-        // ignore
-      }
+      logger?.warn?.("[ForumBump] send failed", {
+        operation: "forum-bump",
+        status: "failed",
+        guildId,
+        forumChannelId,
+        threadId,
+        errorCode: "SEND_FAILED",
+        contentLength,
+        ...safeDiscordMeta(error),
+      });
       return base;
     }
 
@@ -497,20 +485,16 @@ export function createForumBumpService({
           base.errorCode = "DELETE_FAILED";
         }
         base.durationMs = Math.max(0, clock.now() - startedAt);
-        try {
-          logger?.error?.("[ForumBump] send result missing message id", {
-            operation: "forum-bump",
-            status: "failed",
-            guildId,
-            forumChannelId,
-            threadId,
-            errorCode: base.errorCode,
-            cleanupRequired: base.cleanupRequired,
-            contentLength,
-          });
-        } catch {
-          // ignore
-        }
+        logger?.error?.("[ForumBump] send result missing message id", {
+          operation: "forum-bump",
+          status: "failed",
+          guildId,
+          forumChannelId,
+          threadId,
+          errorCode: base.errorCode,
+          cleanupRequired: base.cleanupRequired,
+          contentLength,
+        });
         return base;
       }
 
@@ -520,20 +504,16 @@ export function createForumBumpService({
       base.sentMessageId = null;
       base.errorCode = "SEND_RESULT_INVALID";
       base.durationMs = Math.max(0, clock.now() - startedAt);
-      try {
-        logger?.error?.("[ForumBump] send result missing message id and delete", {
-          operation: "forum-bump",
-          status: "failed",
-          guildId,
-          forumChannelId,
-          threadId,
-          errorCode: "SEND_RESULT_INVALID",
-          cleanupRequired: false,
-          contentLength,
-        });
-      } catch {
-        // ignore
-      }
+      logger?.error?.("[ForumBump] send result missing message id and delete", {
+        operation: "forum-bump",
+        status: "failed",
+        guildId,
+        forumChannelId,
+        threadId,
+        errorCode: "SEND_RESULT_INVALID",
+        cleanupRequired: false,
+        contentLength,
+      });
       return base;
     }
     base.sentMessageId = sentMessageId;
@@ -591,21 +571,17 @@ export function createForumBumpService({
       base.diagnosticsComplete = false;
       base.abortedAfterSend = abortedAfterSend;
       base.durationMs = Math.max(0, clock.now() - startedAt);
-      try {
-        logger?.error?.("[ForumBump] delete failed", {
-          operation: "forum-bump",
-          status: "failed",
-          guildId,
-          forumChannelId,
-          threadId,
-          sentMessageId,
-          cleanupRequired: true,
-          errorCode: "DELETE_FAILED",
-          ...safeDiscordMeta(error),
-        });
-      } catch {
-        // ignore
-      }
+      logger?.error?.("[ForumBump] delete failed", {
+        operation: "forum-bump",
+        status: "failed",
+        guildId,
+        forumChannelId,
+        threadId,
+        sentMessageId,
+        cleanupRequired: true,
+        errorCode: "DELETE_FAILED",
+        ...safeDiscordMeta(error),
+      });
       return base;
     }
 
@@ -658,24 +634,20 @@ export function createForumBumpService({
     base.abortedAfterSend = abortedAfterSend;
     base.durationMs = Math.max(0, clock.now() - startedAt);
 
-    try {
-      logger?.info?.("[ForumBump] bump succeeded", {
-        operation: "forum-bump",
-        status: "succeeded",
-        guildId,
-        forumChannelId,
-        threadId,
-        sentMessageId,
-        contentLength,
-        durationMs: base.durationMs,
-        cleanupRequired: false,
-        diagnosticsComplete,
-        warnings,
-        abortedAfterSend,
-      });
-    } catch {
-      // ignore
-    }
+    logger?.info?.("[ForumBump] bump succeeded", {
+      operation: "forum-bump",
+      status: "succeeded",
+      guildId,
+      forumChannelId,
+      threadId,
+      sentMessageId,
+      contentLength,
+      durationMs: base.durationMs,
+      cleanupRequired: false,
+      diagnosticsComplete,
+      warnings,
+      abortedAfterSend,
+    });
 
     // deleted used for lint; ensure path was taken
     void deleted;
