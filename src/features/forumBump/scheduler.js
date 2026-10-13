@@ -20,19 +20,11 @@ import {
 import { validateSchedulerConfig } from "./schedulerConfig.js";
 import { buildSafeInFlightSummary } from "./runtimeAlerts.js";
 
-function buildSafeInFlightSummaryFromState(state) {
-  return buildSafeInFlightSummary(state?.inFlight ?? null);
-}
-
 function defaultTimers() {
   return {
     setTimeout: (fn, ms) => setTimeout(fn, ms),
     clearTimeout: (h) => clearTimeout(h),
   };
-}
-
-function defaultRandom() {
-  return Math.random();
 }
 
 function defaultCreateOperationId() {
@@ -46,30 +38,20 @@ function defaultCreateOperationId() {
  * @param {string} [fallbackErrorCode="STATE_WRITE_FAILED"]
  * @returns {Promise<{ ok: boolean, result: object|null, errorCode: string|null }>}
  */
+const nonEmptyString = (v) => (typeof v === "string" && v ? v : null);
+
 export async function safeStateCall(fn, fallbackErrorCode = "STATE_WRITE_FAILED") {
   try {
     const result = await fn();
-    if (!result || result.success !== true) {
-      return {
-        ok: false,
-        result: result ?? null,
-        errorCode: (typeof result?.errorCode === "string" && result.errorCode)
-          ? result.errorCode
-          : fallbackErrorCode,
-      };
+    if (result?.success === true) {
+      return { ok: true, result, errorCode: null };
     }
-    return { ok: true, result, errorCode: null };
+    return { ok: false, result: result ?? null, errorCode: nonEmptyString(result?.errorCode) ?? fallbackErrorCode };
   } catch (error) {
-    const fromCode = typeof error?.code === "string" && error.code
-      ? error.code
-      : null;
-    const fromErrorCode = typeof error?.errorCode === "string" && error.errorCode
-      ? error.errorCode
-      : null;
     return {
       ok: false,
       result: null,
-      errorCode: fromCode || fromErrorCode || fallbackErrorCode,
+      errorCode: nonEmptyString(error?.code) ?? nonEmptyString(error?.errorCode) ?? fallbackErrorCode,
     };
   }
 }
@@ -94,7 +76,7 @@ export function createForumBumpScheduler({
   logger,
   clock = { now: () => Date.now() },
   timers = defaultTimers(),
-  random = defaultRandom,
+  random = () => Math.random(),
   createOperationId = defaultCreateOperationId,
   onCycleResult = null,
   config: rawConfig,
@@ -241,7 +223,7 @@ export function createForumBumpScheduler({
           if (gen !== timerGeneration) return;
 
           const n = clock.now();
-          if (plannedWake != null && n + 50 < plannedWake) {
+          if (n + 50 < plannedWake) {
             // 提前触发：重新 arm，不启动周期
             scheduleWake(plannedWake, reason);
             return;
@@ -300,7 +282,7 @@ export function createForumBumpScheduler({
   async function loadStateOrFail() {
     const call = await safeStateCall(() => stateStore.load(), "STATE_READ_FAILED");
     if (!call.ok) {
-      return { ok: false, errorCode: call.errorCode || "STATE_READ_FAILED", state: null };
+      return { ok: false, errorCode: call.errorCode, state: null };
     }
     return { ok: true, state: call.result.state, errorCode: null };
   }
@@ -357,6 +339,45 @@ export function createForumBumpScheduler({
     };
   }
 
+  /** deferUntil(now+delayMs) → 按新状态决策 → arm；defer 失败 state_failed。 */
+  async function deferAndArm(revision, delayMs, primaryErrorCode, reason, businessResult) {
+    const def = await deferOrStateFailed(revision, delayMs, primaryErrorCode);
+    if (!def.ok) return def.response;
+    const d = decideNextWakeAt({ nowMs: clock.now(), config, state: def.state, reason });
+    return armAfterBusiness(d, businessResult);
+  }
+
+  /** pause 成功返回 response；pause 失败返回 state_failed。 */
+  async function pauseThen(revision, reason, primaryErrorCode, response) {
+    const paused = await pauseOrStateFailed(revision, reason, primaryErrorCode);
+    return paused.status === "state_failed" ? paused : response;
+  }
+
+  /**
+   * 本次操作仍停在 before_send（消息未发出）时放弃 inFlight；写失败 state_failed。
+   * @returns {Promise<{ ok: true, state: object, revision: number } | { ok: false, response: object }>}
+   */
+  async function abandonOwnBeforeSend(state, revision, operationId, primaryErrorCode) {
+    if (state?.inFlight?.phase !== "before_send" || state.inFlight.operationId !== operationId) {
+      return { ok: true, state, revision };
+    }
+    const ab = await safeStateCall(() => stateStore.abandonBeforeSend({
+      expectedRevision: revision,
+      operationId,
+    }), "STATE_WRITE_FAILED");
+    if (!ab.ok) {
+      clearSchedule();
+      return {
+        ok: false,
+        response: haltNoTimer("state_failed", ab.errorCode, {
+          primaryErrorCode,
+          stateErrorCode: ab.errorCode,
+        }),
+      };
+    }
+    return { ok: true, state: ab.result.state, revision: ab.result.revision };
+  }
+
   /**
    * 周期业务已完成后 arm 下一次 timer；arm 失败则 fail-closed，不回滚磁盘业务状态。
    */
@@ -389,7 +410,7 @@ export function createForumBumpScheduler({
     if (!loaded.ok) {
       return {
         success: false,
-        errorCode: loaded.errorCode || "STATE_NOT_FOUND",
+        errorCode: loaded.errorCode,
         recoveryStatus: null,
         timerArmed: false,
         nextWakeAt: null,
@@ -403,7 +424,7 @@ export function createForumBumpScheduler({
     if (!recovery.ok) {
       return {
         success: false,
-        errorCode: recovery.errorCode || "STATE_RECOVERY_FAILED",
+        errorCode: recovery.errorCode,
         recoveryStatus: null,
         timerArmed: false,
         nextWakeAt: null,
@@ -416,7 +437,7 @@ export function createForumBumpScheduler({
       lastRunStatus = "recovery_required";
       clearSchedule();
       const recState = recoveryResult.state || loaded.result.state;
-      const inFlightSummary = buildSafeInFlightSummaryFromState(recState);
+      const inFlightSummary = buildSafeInFlightSummary(recState?.inFlight ?? null);
       return {
         success: true,
         started: true,
@@ -441,7 +462,7 @@ export function createForumBumpScheduler({
         errorCode: null,
         timerArmed: false,
         nextWakeAt: null,
-        inFlightSummary: buildSafeInFlightSummaryFromState(state),
+        inFlightSummary: buildSafeInFlightSummary(state?.inFlight ?? null),
         pauseReason: state.pauseReason ?? null,
       };
     }
@@ -581,7 +602,7 @@ export function createForumBumpScheduler({
 
     const load = await loadStateOrFail();
     if (!load.ok) {
-      return haltNoTimer("state_failed", load.errorCode || "STATE_READ_FAILED");
+      return haltNoTimer("state_failed", load.errorCode);
     }
     if (load.state?.inFlight) {
       const paused = await pauseOrStateFailed(
@@ -672,24 +693,11 @@ export function createForumBumpScheduler({
         clock,
       });
     } catch (error) {
-      const def = await deferOrStateFailed(
-        revision,
-        config.failureBackoffMs,
-        typeof error?.code === "string" ? error.code : "SCAN_FAILED",
-      );
-      if (!def.ok) return def.response;
-      state = def.state;
-      revision = def.revision;
-      const d = decideNextWakeAt({
-        nowMs: clock.now(),
-        config,
-        state,
-        reason: "failure_backoff",
-      });
-      return armAfterBusiness(d, {
+      const code = typeof error?.code === "string" ? error.code : "SCAN_FAILED";
+      return deferAndArm(revision, config.failureBackoffMs, code, "failure_backoff", {
         success: false,
         status: "scan_failed",
-        errorCode: typeof error?.code === "string" ? error.code : "SCAN_FAILED",
+        errorCode: code,
       });
     }
 
@@ -698,17 +706,7 @@ export function createForumBumpScheduler({
       || [];
     const first = candidates[0] || null;
     if (!first) {
-      const def = await deferOrStateFailed(revision, config.idlePollMs);
-      if (!def.ok) return def.response;
-      state = def.state;
-      revision = def.revision;
-      const d = decideNextWakeAt({
-        nowMs: clock.now(),
-        config,
-        state,
-        reason: "no_candidate",
-      });
-      return armAfterBusiness(d, {
+      return deferAndArm(revision, config.idlePollMs, null, "no_candidate", {
         success: true,
         status: "no_candidate",
         errorCode: null,
@@ -721,17 +719,7 @@ export function createForumBumpScheduler({
 
     // Dry Run：报告第一候选，仅 deferUntil，不 beginInFlight / 不 Bump
     if (config.mode === "dry_run") {
-      const def = await deferOrStateFailed(revision, config.idlePollMs);
-      if (!def.ok) return def.response;
-      state = def.state;
-      revision = def.revision;
-      const d = decideNextWakeAt({
-        nowMs: clock.now(),
-        config,
-        state,
-        reason: "no_candidate",
-      });
-      return armAfterBusiness(d, {
+      return deferAndArm(revision, config.idlePollMs, null, "no_candidate", {
         success: true,
         status: "dry_run_candidate",
         errorCode: null,
@@ -752,52 +740,44 @@ export function createForumBumpScheduler({
     }
 
     let lifecycleRevision = revision;
+    /** 写入一步 inFlight 进度；失败抛出（bumpService 据此 fail closed / 清理）。 */
+    const persistStep = async (write) => {
+      const call = await safeStateCall(() => write(lifecycleRevision), "STATE_WRITE_FAILED");
+      if (!call.ok) {
+        const err = new Error(call.errorCode);
+        err.code = call.errorCode;
+        throw err;
+      }
+      lifecycleRevision = call.result.revision;
+    };
     const lifecycle = {
       onBeforeSend: async () => {
         const startedAt = toUtcIso(clock.now());
-        const call = await safeStateCall(() => stateStore.beginInFlight({
-          expectedRevision: lifecycleRevision,
+        return persistStep((expectedRevision) => stateStore.beginInFlight({
+          expectedRevision,
           operationId,
           guildId: config.guildId,
           forumChannelId: first.forumChannelId,
           threadId: first.threadId,
           startedAt,
-        }), "STATE_WRITE_FAILED");
-        if (!call.ok) {
-          const err = new Error(call.errorCode || "STATE_WRITE_FAILED");
-          err.code = call.errorCode || "STATE_WRITE_FAILED";
-          throw err;
-        }
-        lifecycleRevision = call.result.revision;
+        }));
       },
       onMessageSent: async ({ sentMessageId }) => {
         const sentAt = toUtcIso(clock.now());
-        const call = await safeStateCall(() => stateStore.markMessageSent({
-          expectedRevision: lifecycleRevision,
+        return persistStep((expectedRevision) => stateStore.markMessageSent({
+          expectedRevision,
           operationId,
           sentMessageId,
           sentAt,
-        }), "STATE_WRITE_FAILED");
-        if (!call.ok) {
-          const err = new Error(call.errorCode || "STATE_WRITE_FAILED");
-          err.code = call.errorCode || "STATE_WRITE_FAILED";
-          throw err;
-        }
-        lifecycleRevision = call.result.revision;
+        }));
       },
       onMessageDeleted: async () => {
         const deletedAt = toUtcIso(clock.now());
-        const call = await safeStateCall(() => stateStore.markMessageDeleted({
-          expectedRevision: lifecycleRevision,
+        return persistStep((expectedRevision) => stateStore.markMessageDeleted({
+          expectedRevision,
           operationId,
           deletedAt,
-        }), "STATE_WRITE_FAILED");
-        if (!call.ok) {
-          const err = new Error(call.errorCode || "STATE_WRITE_FAILED");
-          err.code = call.errorCode || "STATE_WRITE_FAILED";
-          throw err;
-        }
-        lifecycleRevision = call.result.revision;
+        }));
       },
     };
 
@@ -825,13 +805,7 @@ export function createForumBumpScheduler({
     }
 
     if (bumpResult.status === "skipped") {
-      const def = await deferOrStateFailed(revision, config.idlePollMs, bumpResult.errorCode);
-      if (!def.ok) return def.response;
-      state = def.state;
-      const d = decideNextWakeAt({
-        nowMs: clock.now(), config, state, reason: "skipped",
-      });
-      return armAfterBusiness(d, {
+      return deferAndArm(revision, config.idlePollMs, bumpResult.errorCode, "skipped", {
         success: true,
         status: "skipped",
         errorCode: bumpResult.errorCode,
@@ -840,33 +814,13 @@ export function createForumBumpScheduler({
     }
 
     if (bumpResult.status === "cancelled" || bumpResult.errorCode === "BUMP_ABORTED") {
-      if (state?.inFlight?.phase === "before_send"
-        && state.inFlight.operationId === operationId) {
-        const ab = await safeStateCall(() => stateStore.abandonBeforeSend({
-          expectedRevision: revision,
-          operationId,
-        }), "STATE_WRITE_FAILED");
-        if (!ab.ok) {
-          clearSchedule();
-          return haltNoTimer("state_failed", ab.errorCode, {
-            primaryErrorCode: bumpResult.errorCode,
-            stateErrorCode: ab.errorCode,
-          });
-        }
-        state = ab.result.state;
-        revision = ab.result.revision;
-      }
+      const ab = await abandonOwnBeforeSend(state, revision, operationId, bumpResult.errorCode);
+      if (!ab.ok) return ab.response;
       if (stopping) {
         clearSchedule();
         return { success: true, status: "stopped", errorCode: null, nextWakeAt: null };
       }
-      const def = await deferOrStateFailed(revision, config.failureBackoffMs, bumpResult.errorCode);
-      if (!def.ok) return def.response;
-      state = def.state;
-      const d = decideNextWakeAt({
-        nowMs: clock.now(), config, state, reason: "failure_backoff",
-      });
-      return armAfterBusiness(d, {
+      return deferAndArm(ab.revision, config.failureBackoffMs, bumpResult.errorCode, "failure_backoff", {
         success: true,
         status: "cancelled",
         errorCode: bumpResult.errorCode,
@@ -879,29 +833,9 @@ export function createForumBumpScheduler({
     }
 
     if (bumpResult.errorCode === "SEND_FAILED") {
-      if (state?.inFlight?.phase === "before_send"
-        && state.inFlight.operationId === operationId) {
-        const ab = await safeStateCall(() => stateStore.abandonBeforeSend({
-          expectedRevision: revision,
-          operationId,
-        }), "STATE_WRITE_FAILED");
-        if (!ab.ok) {
-          clearSchedule();
-          return haltNoTimer("state_failed", ab.errorCode, {
-            primaryErrorCode: "SEND_FAILED",
-            stateErrorCode: ab.errorCode,
-          });
-        }
-        state = ab.result.state;
-        revision = ab.result.revision;
-      }
-      const def = await deferOrStateFailed(revision, config.failureBackoffMs, "SEND_FAILED");
-      if (!def.ok) return def.response;
-      state = def.state;
-      const d = decideNextWakeAt({
-        nowMs: clock.now(), config, state, reason: "failure_backoff",
-      });
-      return armAfterBusiness(d, {
+      const ab = await abandonOwnBeforeSend(state, revision, operationId, "SEND_FAILED");
+      if (!ab.ok) return ab.response;
+      return deferAndArm(ab.revision, config.failureBackoffMs, "SEND_FAILED", "failure_backoff", {
         success: false,
         status: "send_failed",
         errorCode: "SEND_FAILED",
@@ -909,50 +843,32 @@ export function createForumBumpScheduler({
     }
 
     if (bumpResult.cleanupRequired || bumpResult.errorCode === "DELETE_FAILED") {
-      const paused = await pauseOrStateFailed(
-        revision,
-        "BUMP_DELETE_FAILED",
-        "DELETE_FAILED",
-      );
-      if (paused.status === "state_failed") return paused;
-      return {
+      return pauseThen(revision, "BUMP_DELETE_FAILED", "DELETE_FAILED", {
         success: false,
         status: "cleanup_required",
         errorCode: "DELETE_FAILED",
         sentMessageId: bumpResult.sentMessageId,
         nextWakeAt: null,
-      };
+      });
     }
 
     if (bumpResult.errorCode === "SEND_RESULT_INVALID"
       || bumpResult.errorCode === "LIFECYCLE_AFTER_SEND_FAILED") {
-      const paused = await pauseOrStateFailed(
-        revision,
-        bumpResult.errorCode,
-        bumpResult.errorCode,
-      );
-      if (paused.status === "state_failed") return paused;
-      return {
+      return pauseThen(revision, bumpResult.errorCode, bumpResult.errorCode, {
         success: false,
         status: "halted",
         errorCode: bumpResult.errorCode,
         nextWakeAt: null,
-      };
+      });
     }
 
     if (bumpResult.errorCode === "LIFECYCLE_AFTER_DELETE_FAILED") {
-      const paused = await pauseOrStateFailed(
-        revision,
-        "LIFECYCLE_AFTER_DELETE_FAILED",
-        "LIFECYCLE_AFTER_DELETE_FAILED",
-      );
-      if (paused.status === "state_failed") return paused;
-      return {
+      return pauseThen(revision, "LIFECYCLE_AFTER_DELETE_FAILED", "LIFECYCLE_AFTER_DELETE_FAILED", {
         success: false,
         status: "halted",
         errorCode: "LIFECYCLE_AFTER_DELETE_FAILED",
         nextWakeAt: null,
-      };
+      });
     }
 
     if (bumpResult.success === true && bumpResult.status === "succeeded") {
@@ -962,36 +878,21 @@ export function createForumBumpScheduler({
       let jitterMs = 0;
       if (config.cooldownJitterMs > 0) {
         let randomValue;
+        let randomThrew = false;
         try {
           randomValue = random();
         } catch {
-          const paused = await pauseOrStateFailed(
-            revision,
-            "SCHEDULER_RANDOM_INVALID",
-            "SCHEDULER_RANDOM_INVALID",
-          );
-          if (paused.status === "state_failed") return paused;
-          return {
-            success: false,
-            status: "halted",
-            errorCode: "SCHEDULER_RANDOM_INVALID",
-            nextWakeAt: null,
-          };
+          randomThrew = true;
         }
-        const jitter = computeJitterMs(randomValue, config.cooldownJitterMs);
-        if (!jitter.ok) {
-          const paused = await pauseOrStateFailed(
-            revision,
-            "SCHEDULER_RANDOM_INVALID",
-            "SCHEDULER_RANDOM_INVALID",
-          );
-          if (paused.status === "state_failed") return paused;
-          return {
+        // random() 抛出与随机数非法同样处理：pause SCHEDULER_RANDOM_INVALID
+        const jitter = randomThrew ? null : computeJitterMs(randomValue, config.cooldownJitterMs);
+        if (!jitter?.ok) {
+          return pauseThen(revision, "SCHEDULER_RANDOM_INVALID", "SCHEDULER_RANDOM_INVALID", {
             success: false,
             status: "halted",
             errorCode: "SCHEDULER_RANDOM_INVALID",
             nextWakeAt: null,
-          };
+          });
         }
         jitterMs = jitter.jitterMs;
       }
@@ -1019,16 +920,14 @@ export function createForumBumpScheduler({
       }), "STATE_WRITE_FAILED");
       if (!complete.ok) {
         // Discord 已成功、磁盘停留 after_delete：禁止伪装成功；pause 后需人工对账
-        const primary = complete.errorCode || "STATE_WRITE_FAILED";
-        const paused = await pauseOrStateFailed(revision, primary, primary);
-        if (paused.status === "state_failed") return paused;
-        return {
+        const primary = complete.errorCode;
+        return pauseThen(revision, primary, primary, {
           success: false,
           status: "reconciliation_required",
           errorCode: primary,
           primaryErrorCode: primary,
           nextWakeAt: null,
-        };
+        });
       }
       state = complete.result.state;
       const cool = decideNextWakeAt({
@@ -1047,38 +946,23 @@ export function createForumBumpScheduler({
     }
 
     // generic failure before inflight
+    const failCode = bumpResult.errorCode || "BUMP_UNEXPECTED_FAILED";
     if (!state?.inFlight) {
-      const def = await deferOrStateFailed(
-        revision,
-        config.failureBackoffMs,
-        bumpResult.errorCode || "BUMP_UNEXPECTED_FAILED",
-      );
-      if (!def.ok) return def.response;
-      state = def.state;
-      const d = decideNextWakeAt({
-        nowMs: clock.now(), config, state, reason: "failure_backoff",
-      });
-      return armAfterBusiness(d, {
+      return deferAndArm(revision, config.failureBackoffMs, failCode, "failure_backoff", {
         success: false,
         status: "failed",
-        errorCode: bumpResult.errorCode || "BUMP_UNEXPECTED_FAILED",
+        errorCode: failCode,
       });
     }
 
     // unknown with inflight
-    const paused = await pauseOrStateFailed(
-      revision,
-      bumpResult.errorCode || "BUMP_UNEXPECTED_FAILED",
-      bumpResult.errorCode || "BUMP_UNEXPECTED_FAILED",
-    );
-    if (paused.status === "state_failed") return paused;
-    return {
+    return pauseThen(revision, failCode, failCode, {
       success: false,
       status: "halted",
-      errorCode: bumpResult.errorCode || "BUMP_UNEXPECTED_FAILED",
+      errorCode: failCode,
       nextWakeAt: null,
-    };
-  };
+    });
+  }
 
   /**
    * 等待当前 runOnce / 异常恢复结束（不取消进行中的 send/delete）。

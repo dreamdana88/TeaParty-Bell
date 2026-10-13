@@ -421,8 +421,10 @@ try {
       logger: { info() {}, warn() {} },
     });
     await store.load();
+    const snapBefore = JSON.stringify(store.getSnapshot());
     const r = await store.pause({ expectedRevision: 0, reason: "X" });
     assertEqual(r.errorCode, "STATE_WRITE_FAILED", "文件 fsync 失败 → WRITE_FAILED");
+    assertEqual(JSON.stringify(store.getSnapshot()), snapBefore, "写失败后 getSnapshot 不变");
     assertEqual(readFileSync(path, "utf8"), beforeRaw, "旧 state 完整不变");
     const leftoverTmp = tmpSeen.filter((p) => existsSync(p));
     assertEqual(leftoverTmp.length, 0, "临时文件已清理");
@@ -518,6 +520,39 @@ try {
     const finalDisk = JSON.parse(readFileSync(path, "utf8"));
     assertEqual(finalDisk.successCount, 1, "磁盘保持 A 成功计数");
     assertEqual(finalDisk.inFlight, null, "A complete 后 inFlight 空");
+  }
+
+  // 带 inFlight 时写失败：getSnapshot 保持写入前（before_send），不提前进入 after_send
+  {
+    const dir = makeTempDir();
+    dirs.push(dir);
+    const path = join(dir, "state.json");
+    const realFs = await import("fs");
+    let failRename = false;
+    const fakeFs = {
+      ...realFs,
+      renameSync: (...a) => {
+        if (failRename) throw new Error("rename failed");
+        return realFs.renameSync(...a);
+      },
+    };
+    const store = createForumBumpStateStore({ statePath: path, fs: fakeFs, logger: { info() {}, warn() {} } });
+    await store.initialize({ localDate: "2026-07-28" });
+    const b = await store.beginInFlight({
+      expectedRevision: 0, operationId: "op-w", guildId: G, forumChannelId: F, threadId: T, startedAt: TS,
+    });
+    assertEqual(b.success, true, "beginInFlight 成功");
+    const snapBefore = store.getSnapshot();
+    const diskBefore = readFileSync(path, "utf8");
+    failRename = true;
+    const r = await store.markMessageSent({ expectedRevision: b.revision, operationId: "op-w", sentMessageId: M, sentAt: TS2 });
+    assertEqual(r.errorCode, "STATE_WRITE_FAILED", "markMessageSent 写失败");
+    assertEqual(JSON.stringify(store.getSnapshot()), JSON.stringify(snapBefore), "写失败后 getSnapshot 深相等于写入前");
+    assertEqual(store.getSnapshot().inFlight.phase, "before_send", "内存仍为 before_send");
+    assertEqual(readFileSync(path, "utf8"), diskBefore, "磁盘不变");
+    const s1 = store.getSnapshot();
+    s1.inFlight.phase = "after_delete";
+    assertEqual(store.getSnapshot().inFlight.phase, "before_send", "getSnapshot 返回副本");
   }
 
 } finally {

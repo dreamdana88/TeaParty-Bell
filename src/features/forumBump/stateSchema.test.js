@@ -139,5 +139,32 @@ try {
 
 assert(createStateError("STATE_NOT_FOUND").safeMessage.length > 0, "safeMessage");
 
+// validateState 返回新对象（含新的 inFlight），调用方修改结果不影响入参
+{
+  const input = {
+    ...base,
+    inFlight: {
+      operationId: "op1",
+      guildId: "111111111111111111",
+      forumChannelId: "222222222222222222",
+      threadId: "333333333333333333",
+      phase: "before_send",
+      sentMessageId: null,
+      startedAt: "2026-07-28T00:00:00.000Z",
+      updatedAt: "2026-07-28T00:00:00.000Z",
+    },
+  };
+  const snapshot = JSON.stringify(input);
+  const out = validateState(input);
+  assert(out !== input, "validateState 返回新对象");
+  assert(out.inFlight !== input.inFlight, "validateState 返回新的 inFlight 对象");
+  assertEqual(JSON.stringify(out), snapshot, "validateState 结果与入参内容一致");
+  out.successCount = 99;
+  out.inFlight.phase = "after_send";
+  assertEqual(JSON.stringify(input), snapshot, "修改结果不影响入参");
+  const plain = validateState(base);
+  assert(plain !== base && plain.inFlight === null, "无 inFlight 时同样返回新对象");
+}
+
 console.log(`\nForumBump stateSchema: ${passed} passed / ${failed} failed`);
 if (failed > 0) process.exitCode = 1;
