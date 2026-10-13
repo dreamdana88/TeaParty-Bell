@@ -118,23 +118,15 @@ export function createForumBumpScheduler({
       const ret = onCycleResult(result);
       if (ret && typeof ret.then === "function") {
         ret.catch((error) => {
-          try {
-            logger?.error?.("[ForumBumpScheduler] onCycleResult async failed", {
-              errorName: typeof error?.name === "string" ? error.name : "Error",
-            });
-          } catch {
-            // ignore
-          }
+          logger?.error?.("[ForumBumpScheduler] onCycleResult async failed", {
+            errorName: typeof error?.name === "string" ? error.name : "Error",
+          });
         });
       }
     } catch (error) {
-      try {
-        logger?.error?.("[ForumBumpScheduler] onCycleResult failed", {
-          errorName: typeof error?.name === "string" ? error.name : "Error",
-        });
-      } catch {
-        // ignore
-      }
+      logger?.error?.("[ForumBumpScheduler] onCycleResult failed", {
+        errorName: typeof error?.name === "string" ? error.name : "Error",
+      });
     }
   }
 
@@ -182,14 +174,10 @@ export function createForumBumpScheduler({
   }
 
   function logTimerUnexpected(error) {
-    try {
-      logger?.error?.("[ForumBumpScheduler] timer unexpected", {
-        errorCode: typeof error?.code === "string" ? error.code : "SCHEDULER_UNEXPECTED_FAILED",
-        errorName: typeof error?.name === "string" ? error.name : "Error",
-      });
-    } catch {
-      // ignore
-    }
+    logger?.error?.("[ForumBumpScheduler] timer unexpected", {
+      errorCode: typeof error?.code === "string" ? error.code : "SCHEDULER_UNEXPECTED_FAILED",
+      errorName: typeof error?.name === "string" ? error.name : "Error",
+    });
   }
 
   /**
@@ -278,13 +266,14 @@ export function createForumBumpScheduler({
     }
 
     try {
+      // toUtcIso 对非有限 targetMs 会抛 RangeError；timer 已 arm，不得因日志改变结果
       logger?.info?.("[ForumBumpScheduler] timer scheduled", {
         reason,
         nextWakeAt: toUtcIso(targetMs),
         delayMs: delay,
       });
     } catch {
-      // ignore logging failure
+      // ignore
     }
     return { ok: true };
   }
@@ -584,14 +573,10 @@ export function createForumBumpScheduler({
   }
 
   async function handleUnexpected(error) {
-    try {
-      logger?.error?.("[ForumBumpScheduler] unexpected failure", {
-        errorCode: typeof error?.code === "string" ? error.code : "SCHEDULER_UNEXPECTED_FAILED",
-        errorName: typeof error?.name === "string" ? error.name : "Error",
-      });
-    } catch {
-      // ignore
-    }
+    logger?.error?.("[ForumBumpScheduler] unexpected failure", {
+      errorCode: typeof error?.code === "string" ? error.code : "SCHEDULER_UNEXPECTED_FAILED",
+      errorName: typeof error?.name === "string" ? error.name : "Error",
+    });
     clearSchedule();
 
     const load = await loadStateOrFail();
