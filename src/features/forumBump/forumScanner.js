@@ -223,16 +223,12 @@ export async function fetchAllPublicArchivedThreads(forum, fetchArchivedPage, lo
       all.push(thread);
     }
 
-    try {
-      logger?.info?.("[ForumBump] archived page", {
-        forumId: forum.id,
-        pageNumber,
-        pageItemCount: pageThreads.length,
-        hasMore,
-      });
-    } catch {
-      // ignore
-    }
+    logger?.info?.("[ForumBump] archived page", {
+      forumId: forum.id,
+      pageNumber,
+      pageItemCount: pageThreads.length,
+      hasMore,
+    });
 
     if (!hasMore) break;
 
@@ -334,14 +330,10 @@ export async function scanForumCandidates({
   }
 
   for (const forum of forums) {
-    try {
-      logger?.info?.("[ForumBump] scanning forum", {
-        forumId: forum.id,
-        forumName: typeof forum.name === "string" ? forum.name : null,
-      });
-    } catch {
-      // ignore
-    }
+    logger?.info?.("[ForumBump] scanning forum", {
+      forumId: forum.id,
+      forumName: typeof forum.name === "string" ? forum.name : null,
+    });
 
     let activeThreads;
     try {
@@ -427,18 +419,14 @@ export async function scanForumCandidates({
   // 附带完整候选排序（供测试统计）；CLI 输出仍以 report.candidates 展示裁剪
   report._allEligibleSorted = sortCandidates(allRecords.filter((r) => r.eligible));
 
-  try {
-    logger?.info?.("[ForumBump] scan complete", {
-      operation: "forum-scan",
-      dryRun: true,
-      guildId,
-      totalThreads: report.summary.totalThreads,
-      eligibleCount: report.summary.eligibleCount,
-      durationMs,
-    });
-  } catch {
-    // ignore
-  }
+  logger?.info?.("[ForumBump] scan complete", {
+    operation: "forum-scan",
+    dryRun: true,
+    guildId,
+    totalThreads: report.summary.totalThreads,
+    eligibleCount: report.summary.eligibleCount,
+    durationMs,
+  });
 
   return report;
 }
