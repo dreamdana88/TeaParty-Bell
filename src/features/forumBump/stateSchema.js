@@ -174,7 +174,7 @@ export function validateState(data) {
   }
 
   if (data.version !== FORUM_BUMP_STATE_VERSION) {
-    if (typeof data.version === "number" && Number.isInteger(data.version) && data.version !== FORUM_BUMP_STATE_VERSION) {
+    if (Number.isInteger(data.version)) {
       throw createStateError("STATE_VERSION_UNSUPPORTED");
     }
     throw createStateError("STATE_INVALID");
@@ -233,10 +233,7 @@ export function validateInFlight(inflight) {
     }
   }
 
-  if (typeof inflight.operationId !== "string" || inflight.operationId.trim().length === 0) {
-    throw createStateError("STATE_INVALID");
-  }
-  if (!/^[a-zA-Z0-9_.:-]{1,128}$/.test(inflight.operationId)) {
+  if (typeof inflight.operationId !== "string" || !/^[a-zA-Z0-9_.:-]{1,128}$/.test(inflight.operationId)) {
     throw createStateError("STATE_INVALID");
   }
   if (!isDiscordSnowflake(inflight.guildId)

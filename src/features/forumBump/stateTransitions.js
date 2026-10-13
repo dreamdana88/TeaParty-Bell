@@ -12,6 +12,7 @@ import {
   validateState,
 } from "./stateSchema.js";
 
+// 各转换先经 validateState 得到新副本 current，可直接在其上修改；ok() 输出时再拷贝一次。
 function ok(state, changed = true) {
   return { ok: true, changed, state: cloneState(state), errorCode: null };
 }
@@ -44,7 +45,7 @@ export function beginInFlightTransition(state, input) {
     startedAt,
   } = input ?? {};
 
-  if (typeof operationId !== "string" || operationId.trim().length === 0
+  if (typeof operationId !== "string"
     || !/^[a-zA-Z0-9_.:-]{1,128}$/.test(operationId)
     || !isDiscordSnowflake(guildId)
     || !isDiscordSnowflake(forumChannelId)
@@ -59,8 +60,7 @@ export function beginInFlightTransition(state, input) {
     return fail("STATE_INFLIGHT_EXISTS");
   }
 
-  const next = cloneState(current);
-  next.inFlight = {
+  current.inFlight = {
     operationId,
     guildId,
     forumChannelId,
@@ -70,8 +70,8 @@ export function beginInFlightTransition(state, input) {
     startedAt,
     updatedAt: startedAt,
   };
-  validateInFlight(next.inFlight);
-  return ok(next);
+  validateInFlight(current.inFlight);
+  return ok(current);
 }
 
 /**
@@ -91,12 +91,11 @@ export function markMessageSentTransition(state, input) {
     return fail("STATE_TRANSITION_INVALID", { phase: current.inFlight.phase });
   }
 
-  const next = cloneState(current);
-  next.inFlight.phase = "after_send";
-  next.inFlight.sentMessageId = sentMessageId;
-  next.inFlight.updatedAt = sentAt;
-  validateInFlight(next.inFlight);
-  return ok(next);
+  current.inFlight.phase = "after_send";
+  current.inFlight.sentMessageId = sentMessageId;
+  current.inFlight.updatedAt = sentAt;
+  validateInFlight(current.inFlight);
+  return ok(current);
 }
 
 /**
@@ -114,15 +113,11 @@ export function markMessageDeletedTransition(state, input) {
   if (current.inFlight.phase !== "after_send") {
     return fail("STATE_TRANSITION_INVALID", { phase: current.inFlight.phase });
   }
-  if (!isDiscordSnowflake(current.inFlight.sentMessageId)) {
-    return fail("STATE_TRANSITION_INVALID");
-  }
 
-  const next = cloneState(current);
-  next.inFlight.phase = "after_delete";
-  next.inFlight.updatedAt = deletedAt;
-  validateInFlight(next.inFlight);
-  return ok(next);
+  current.inFlight.phase = "after_delete";
+  current.inFlight.updatedAt = deletedAt;
+  validateInFlight(current.inFlight);
+  return ok(current);
 }
 
 /**
@@ -161,17 +156,16 @@ export function completeSuccessTransition(state, input) {
     return fail("STATE_DATE_ROLLBACK");
   }
 
-  const next = cloneState(current);
-  if (localDate > next.localDate) {
+  if (localDate > current.localDate) {
     // 跨日：先归零再 +1
-    next.localDate = localDate;
-    next.successCount = 0;
+    current.localDate = localDate;
+    current.successCount = 0;
   }
-  next.successCount += 1;
-  next.lastSuccessAt = successAt;
-  next.nextEligibleAt = nextEligibleAt;
-  next.inFlight = null;
-  return ok(next);
+  current.successCount += 1;
+  current.lastSuccessAt = successAt;
+  current.nextEligibleAt = nextEligibleAt;
+  current.inFlight = null;
+  return ok(current);
 }
 
 /**
@@ -187,10 +181,9 @@ export function pauseTransition(state, input) {
   if (current.paused === true && current.pauseReason === reason) {
     return ok(current, false);
   }
-  const next = cloneState(current);
-  next.paused = true;
-  next.pauseReason = reason;
-  return ok(next);
+  current.paused = true;
+  current.pauseReason = reason;
+  return ok(current);
 }
 
 /**
@@ -204,16 +197,11 @@ export function resumeTransition(state) {
   if (current.inFlight) {
     return fail("STATE_RECOVERY_REQUIRED");
   }
-  const next = cloneState(current);
-  next.paused = false;
-  next.pauseReason = null;
-  return ok(next);
+  current.paused = false;
+  current.pauseReason = null;
+  return ok(current);
 }
 
-/**
- * @param {object} state
- * @param {object} input
- */
 /**
  * 放弃 before_send 阶段的 inFlight（确认未发出合法消息）。
  * @param {object} state
@@ -230,9 +218,8 @@ export function abandonBeforeSendTransition(state, input) {
   if (current.inFlight.phase !== "before_send") {
     return fail("STATE_TRANSITION_INVALID", { phase: current.inFlight.phase });
   }
-  const next = cloneState(current);
-  next.inFlight = null;
-  return ok(next);
+  current.inFlight = null;
+  return ok(current);
 }
 
 /**
@@ -252,17 +239,12 @@ export function deferUntilTransition(state, input) {
   if (current.inFlight) {
     return fail("STATE_INFLIGHT_EXISTS");
   }
-  if (current.nextEligibleAt != null) {
-    if (!isValidIsoTimestamp(current.nextEligibleAt)) {
-      return fail("STATE_INVALID");
-    }
-    if (Date.parse(current.nextEligibleAt) >= Date.parse(nextEligibleAt)) {
-      return ok(current, false);
-    }
+  if (current.nextEligibleAt !== null
+    && Date.parse(current.nextEligibleAt) >= Date.parse(nextEligibleAt)) {
+    return ok(current, false);
   }
-  const next = cloneState(current);
-  next.nextEligibleAt = nextEligibleAt;
-  return ok(next);
+  current.nextEligibleAt = nextEligibleAt;
+  return ok(current);
 }
 
 /**
@@ -287,9 +269,8 @@ export function restoreNextEligibleAtTransition(state, input) {
   if (current.nextEligibleAt === target) {
     return ok(current, false);
   }
-  const next = cloneState(current);
-  next.nextEligibleAt = target;
-  return ok(next);
+  current.nextEligibleAt = target;
+  return ok(current);
 }
 
 export function rolloverLocalDateTransition(state, input) {
@@ -304,11 +285,10 @@ export function rolloverLocalDateTransition(state, input) {
   if (localDate < current.localDate) {
     return fail("STATE_DATE_ROLLBACK");
   }
-  const next = cloneState(current);
-  next.localDate = localDate;
-  next.successCount = 0;
+  current.localDate = localDate;
+  current.successCount = 0;
   // 保留 lastSuccessAt / nextEligibleAt / paused / pauseReason / inFlight
-  return ok(next);
+  return ok(current);
 }
 
 /**
@@ -359,10 +339,21 @@ export function applyStartupRecoveryPause(state) {
   if (current.paused) {
     return { ...ok(current, false), classification };
   }
-  const next = cloneState(current);
-  next.paused = true;
-  next.pauseReason = classification.suggestedPauseReason;
-  return { ...ok(next, true), classification };
+  current.paused = true;
+  current.pauseReason = classification.suggestedPauseReason;
+  return { ...ok(current, true), classification };
 }
 
-export { createStateError };
+/**
+ * recoverOnStartup 用：计算应写入的下一状态与恢复元数据。
+ * @param {object} state
+ */
+export function planStartupRecovery(state) {
+  const result = applyStartupRecoveryPause(state);
+  return {
+    nextState: result.state,
+    changed: result.changed,
+    recoveryStatus: result.classification.recoveryStatus,
+    cleanupRequired: result.classification.cleanupRequired,
+  };
+}

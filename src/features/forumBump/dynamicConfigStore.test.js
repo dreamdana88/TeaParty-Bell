@@ -50,6 +50,15 @@ function validDoc(extra = {}) {
   assertEqual(d.dailyLimit, 3, "dailyLimit");
 }
 
+// 稀疏数组的空槽也必须拒绝，不能被 Array.every 跳过。
+for (const forumChannelIds of [new Array(1), [F, , F2]]) {
+  let error;
+  try { validateDynamicConfig({ ...validDoc(), forumChannelIds }); }
+  catch (e) { error = e; }
+  assertEqual(error?.code, "DYNAMIC_CONFIG_INVALID", "频道数组空槽 INVALID");
+  assertEqual(error?.context?.field, "forumChannelIds", "频道数组空槽错误字段");
+}
+
 // 未知字段拒绝
 {
   try {

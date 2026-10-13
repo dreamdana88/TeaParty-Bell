@@ -1,10 +1,10 @@
 import { createInitialState } from "./stateSchema.js";
-import { planStartupRecovery } from "./stateRecovery.js";
 import {
   beginInFlightTransition,
   markMessageDeletedTransition,
   markMessageSentTransition,
   pauseTransition,
+  planStartupRecovery,
 } from "./stateTransitions.js";
 
 let passed = 0;

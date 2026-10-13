@@ -22,14 +22,14 @@ import {
   markMessageDeletedTransition,
   markMessageSentTransition,
   pauseTransition,
+  planStartupRecovery,
   restoreNextEligibleAtTransition,
   resumeTransition,
   rolloverLocalDateTransition,
 } from "./stateTransitions.js";
-import { planStartupRecovery } from "./stateRecovery.js";
 
 
-function emptyResult(operation, extras = {}) {
+function result(operation, fields = {}) {
   return {
     operation,
     success: false,
@@ -40,9 +40,28 @@ function emptyResult(operation, extras = {}) {
     errorCode: null,
     recoveryStatus: null,
     cleanupRequired: false,
-    ...extras,
+    ...fields,
   };
 }
+
+function errorCodeOf(error, fallback) {
+  return isForumBumpStateError(error) ? error.code : fallback;
+}
+
+/** 方法名 → 纯状态转换；参数对象原样传给转换函数。 */
+const TRANSITIONS = {
+  beginInFlight: beginInFlightTransition,
+  markMessageSent: markMessageSentTransition,
+  markMessageDeleted: markMessageDeletedTransition,
+  completeSuccess: completeSuccessTransition,
+  pause: pauseTransition,
+  resume: resumeTransition,
+  rolloverLocalDate: rolloverLocalDateTransition,
+  abandonBeforeSend: abandonBeforeSendTransition,
+  deferUntil: deferUntilTransition,
+  // 配置补偿专用：可回写更早的 nextEligibleAt 或 null
+  restoreNextEligibleAt: restoreNextEligibleAtTransition,
+};
 
 /**
  * @param {object} options
@@ -50,7 +69,6 @@ function emptyResult(operation, extras = {}) {
  * @param {object} [options.fs]
  * @param {object} [options.logger]
  * @param {{ now: () => number }} [options.clock]
- * @param {(statePath: string) => string} [options.makeTempName]
  */
 export function createForumBumpStateStore({
   statePath,
@@ -66,26 +84,13 @@ export function createForumBumpStateStore({
 
   /** @type {object|null} */
   let _state = null;
-  /** @type {Promise<void>} */
-  let _writeQueue = Promise.resolve();
+  let _queue = Promise.resolve();
 
+  /** 所有读写串行执行。 */
   function _enqueue(operation) {
-    const task = _writeQueue.then(operation);
-    _writeQueue = task.then(() => {}, () => {});
+    const task = _queue.then(operation);
+    _queue = task.then(() => {}, () => {});
     return task;
-  }
-
-  /**
-   * 原子写：tmp → write → fsync(文件，失败则 fail closed) → close → rename
-   * 目录 fsync 仍 best-effort。
-   */
-  /** 原子写：失败 fail closed（不 rename），目录 fsync best-effort。 */
-  function _atomicWrite(state) {
-    try {
-      writeJsonAtomic(statePath, state, { fs, fsyncDir: true });
-    } catch (error) {
-      throw createStateError("STATE_WRITE_FAILED", error);
-    }
   }
 
   function _readAndValidateFromDisk() {
@@ -107,27 +112,44 @@ export function createForumBumpStateStore({
     } catch (error) {
       throw createStateError("STATE_PARSE_FAILED", error);
     }
+    // 版本号先于字段校验判定，未来版本即使字段不同也报 VERSION_UNSUPPORTED
     if (data && typeof data === "object" && !Array.isArray(data)
-      && "version" in data
-      && data.version !== FORUM_BUMP_STATE_VERSION
-      && typeof data.version === "number") {
+      && typeof data.version === "number" && data.version !== FORUM_BUMP_STATE_VERSION) {
       throw createStateError("STATE_VERSION_UNSUPPORTED");
     }
     return validateState(data);
   }
 
-  async function _applyTransition(operation, expectedRevision, transitionFn) {
+  /** 原子写；失败 fail closed（不 rename、内存状态不变）。 */
+  function _write(doc) {
+    try {
+      writeJsonAtomic(statePath, doc, { fs, fsyncDir: true });
+    } catch (error) {
+      throw createStateError("STATE_WRITE_FAILED", error);
+    }
+  }
+
+  /** 校验并写入 revision+1 的新状态。 */
+  function _commit(nextState, previousRevision) {
+    const next = cloneState(nextState);
+    next.revision = previousRevision + 1;
+    validateState(next);
+    _write(next);
+    _state = next;
+    return next;
+  }
+
+  function _applyTransition(operation, args, transitionFn) {
+    const { expectedRevision } = args;
     return _enqueue(async () => {
       const started = clock.now();
       try {
         if (!Number.isInteger(expectedRevision) || expectedRevision < 0) {
           throw createStateError("STATE_ARGUMENT_INVALID", undefined, { operation, expectedRevision });
         }
-
         // 写入前从磁盘重新读取并严格校验，不得仅信内存 _state.revision
         const diskState = _readAndValidateFromDisk();
         _state = diskState;
-
         if (diskState.revision !== expectedRevision) {
           throw createStateError("STATE_REVISION_CONFLICT", undefined, {
             operation,
@@ -136,38 +158,22 @@ export function createForumBumpStateStore({
           });
         }
 
-        const result = transitionFn(diskState);
-        if (!result.ok) {
-          throw createStateError(result.errorCode, undefined, result.context ?? { operation });
+        const t = transitionFn(diskState, args);
+        if (!t.ok) {
+          throw createStateError(t.errorCode, undefined, t.context ?? { operation });
         }
-
-        if (!result.changed) {
-          const snap = cloneState(diskState);
-          logger?.info?.("[ForumBumpState] noop", {
-            operation,
-            revision: snap.revision,
-            changed: false,
-          });
-          return {
-            operation,
+        if (!t.changed) {
+          logger?.info?.("[ForumBumpState] noop", { operation, revision: diskState.revision, changed: false });
+          return result(operation, {
             success: true,
-            changed: false,
-            state: snap,
-            previousRevision: snap.revision,
-            revision: snap.revision,
-            errorCode: null,
-            recoveryStatus: null,
-            cleanupRequired: false,
-          };
+            state: cloneState(diskState),
+            previousRevision: diskState.revision,
+            revision: diskState.revision,
+          });
         }
 
         const previousRevision = diskState.revision;
-        const next = cloneState(result.state);
-        next.revision = previousRevision + 1;
-        validateState(next);
-        _atomicWrite(next);
-        _state = next;
-
+        const next = _commit(t.state, previousRevision);
         logger?.info?.("[ForumBumpState] updated", {
           operation,
           previousRevision,
@@ -179,217 +185,85 @@ export function createForumBumpStateStore({
           inFlightPhase: next.inFlight?.phase ?? null,
           durationMs: Math.max(0, clock.now() - started),
         });
-
-        return {
-          operation,
+        return result(operation, {
           success: true,
           changed: true,
-          state: cloneState(_state),
+          state: cloneState(next),
           previousRevision,
-          revision: _state.revision,
-          errorCode: null,
-          recoveryStatus: null,
-          cleanupRequired: false,
-        };
+          revision: next.revision,
+        });
       } catch (error) {
-        const code = isForumBumpStateError(error) ? error.code : "STATE_WRITE_FAILED";
+        const code = errorCodeOf(error, "STATE_WRITE_FAILED");
         logger?.warn?.("[ForumBumpState] operation failed", {
           operation,
           errorCode: code,
           expectedRevision: expectedRevision ?? null,
         });
-        return {
-          ...emptyResult(operation),
+        return result(operation, {
           errorCode: code,
           state: _state ? cloneState(_state) : null,
           previousRevision: _state?.revision ?? null,
           revision: _state?.revision ?? null,
-        };
+        });
       }
     });
   }
 
-  async function initialize({ localDate } = {}) {
+  function initialize({ localDate } = {}) {
     return _enqueue(async () => {
       try {
         if (fs.existsSync(statePath)) {
           throw createStateError("STATE_ALREADY_EXISTS");
         }
         const initial = createInitialState(localDate);
-        _atomicWrite(initial);
+        _write(initial);
         _state = cloneState(initial);
         logger?.info?.("[ForumBumpState] initialized", {
           operation: "initialize",
           revision: 0,
           localDate: initial.localDate,
         });
-        return {
-          operation: "initialize",
-          success: true,
-          changed: true,
-          state: cloneState(_state),
-          previousRevision: null,
-          revision: 0,
-          errorCode: null,
-          recoveryStatus: null,
-          cleanupRequired: false,
-        };
+        return result("initialize", { success: true, changed: true, state: cloneState(_state), revision: 0 });
       } catch (error) {
-        const code = isForumBumpStateError(error) ? error.code : "STATE_WRITE_FAILED";
-        return {
-          ...emptyResult("initialize"),
-          errorCode: code,
-        };
+        return result("initialize", { errorCode: errorCodeOf(error, "STATE_WRITE_FAILED") });
       }
     });
   }
 
-  async function load() {
+  function load() {
     return _enqueue(async () => {
       try {
-        const loaded = _readAndValidateFromDisk();
-        _state = loaded;
-        return {
-          operation: "load",
-          success: true,
-          changed: false,
-          state: cloneState(_state),
-          previousRevision: null,
-          revision: _state.revision,
-          errorCode: null,
-          recoveryStatus: null,
-          cleanupRequired: false,
-        };
+        _state = _readAndValidateFromDisk();
+        return result("load", { success: true, state: cloneState(_state), revision: _state.revision });
       } catch (error) {
         _state = null;
-        const code = isForumBumpStateError(error) ? error.code : "STATE_READ_FAILED";
-        return {
-          ...emptyResult("load"),
-          errorCode: code,
-        };
+        return result("load", { errorCode: errorCodeOf(error, "STATE_READ_FAILED") });
       }
     });
   }
 
   function getSnapshot() {
-    if (!_state) return null;
-    return cloneState(_state);
+    return _state ? cloneState(_state) : null;
   }
 
-  async function beginInFlight({
-    expectedRevision,
-    operationId,
-    guildId,
-    forumChannelId,
-    threadId,
-    startedAt,
-  } = {}) {
-    return _applyTransition("beginInFlight", expectedRevision, (state) =>
-      beginInFlightTransition(state, {
-        operationId,
-        guildId,
-        forumChannelId,
-        threadId,
-        startedAt,
-      }));
-  }
-
-  async function markMessageSent({
-    expectedRevision,
-    operationId,
-    sentMessageId,
-    sentAt,
-  } = {}) {
-    return _applyTransition("markMessageSent", expectedRevision, (state) =>
-      markMessageSentTransition(state, { operationId, sentMessageId, sentAt }));
-  }
-
-  async function markMessageDeleted({
-    expectedRevision,
-    operationId,
-    deletedAt,
-  } = {}) {
-    return _applyTransition("markMessageDeleted", expectedRevision, (state) =>
-      markMessageDeletedTransition(state, { operationId, deletedAt }));
-  }
-
-  async function completeSuccess({
-    expectedRevision,
-    operationId,
-    localDate,
-    successAt,
-    nextEligibleAt,
-  } = {}) {
-    return _applyTransition("completeSuccess", expectedRevision, (state) =>
-      completeSuccessTransition(state, {
-        operationId,
-        localDate,
-        successAt,
-        nextEligibleAt,
-      }));
-  }
-
-  async function pause({ expectedRevision, reason } = {}) {
-    return _applyTransition("pause", expectedRevision, (state) =>
-      pauseTransition(state, { reason }));
-  }
-
-  async function resume({ expectedRevision } = {}) {
-    return _applyTransition("resume", expectedRevision, (state) =>
-      resumeTransition(state));
-  }
-
-  async function rolloverLocalDate({ expectedRevision, localDate } = {}) {
-    return _applyTransition("rolloverLocalDate", expectedRevision, (state) =>
-      rolloverLocalDateTransition(state, { localDate }));
-  }
-
-  async function abandonBeforeSend({ expectedRevision, operationId } = {}) {
-    return _applyTransition("abandonBeforeSend", expectedRevision, (state) =>
-      abandonBeforeSendTransition(state, { operationId }));
-  }
-
-  async function deferUntil({ expectedRevision, nextEligibleAt } = {}) {
-    return _applyTransition("deferUntil", expectedRevision, (state) =>
-      deferUntilTransition(state, { nextEligibleAt }));
-  }
-
-  /**
-   * 配置补偿专用：可回写更早的 nextEligibleAt 或 null。
-   */
-  async function restoreNextEligibleAt({ expectedRevision, nextEligibleAt } = {}) {
-    return _applyTransition("restoreNextEligibleAt", expectedRevision, (state) =>
-      restoreNextEligibleAtTransition(state, { nextEligibleAt }));
-  }
-
-  async function recoverOnStartup() {
+  function recoverOnStartup() {
     return _enqueue(async () => {
       try {
         // 始终从磁盘重读，避免缓存掩盖损坏
-        const loaded = _readAndValidateFromDisk();
-        _state = loaded;
+        _state = _readAndValidateFromDisk();
         const plan = planStartupRecovery(_state);
-        if (!plan.changed) {
-          return {
-            operation: "recoverOnStartup",
-            success: true,
-            changed: false,
-            state: cloneState(_state),
-            previousRevision: _state.revision,
-            revision: _state.revision,
-            errorCode: null,
-            recoveryStatus: plan.recoveryStatus,
-            cleanupRequired: plan.cleanupRequired,
-          };
-        }
-
+        const meta = { recoveryStatus: plan.recoveryStatus, cleanupRequired: plan.cleanupRequired };
         const previousRevision = _state.revision;
-        const next = cloneState(plan.nextState);
-        next.revision = previousRevision + 1;
-        validateState(next);
-        _atomicWrite(next);
-        _state = next;
-
+        if (!plan.changed) {
+          return result("recoverOnStartup", {
+            success: true,
+            state: cloneState(_state),
+            previousRevision,
+            revision: previousRevision,
+            ...meta,
+          });
+        }
+        const next = _commit(plan.nextState, previousRevision);
         logger?.warn?.("[ForumBumpState] recovery pause applied", {
           operation: "recoverOnStartup",
           recoveryStatus: plan.recoveryStatus,
@@ -398,45 +272,31 @@ export function createForumBumpStateStore({
           revision: next.revision,
           inFlightPhase: next.inFlight?.phase ?? null,
         });
-
-        return {
-          operation: "recoverOnStartup",
+        return result("recoverOnStartup", {
           success: true,
           changed: true,
-          state: cloneState(_state),
+          state: cloneState(next),
           previousRevision,
-          revision: _state.revision,
-          errorCode: null,
-          recoveryStatus: plan.recoveryStatus,
-          cleanupRequired: plan.cleanupRequired,
-        };
+          revision: next.revision,
+          ...meta,
+        });
       } catch (error) {
         _state = null;
-        const code = isForumBumpStateError(error) ? error.code : "STATE_READ_FAILED";
-        return {
-          ...emptyResult("recoverOnStartup"),
-          errorCode: code,
-          recoveryStatus: null,
-          cleanupRequired: false,
-        };
+        return result("recoverOnStartup", { errorCode: errorCodeOf(error, "STATE_READ_FAILED") });
       }
     });
   }
+
+  const transitions = Object.fromEntries(Object.entries(TRANSITIONS).map(([operation, fn]) => [
+    operation,
+    async (args = {}) => _applyTransition(operation, args, fn),
+  ]));
 
   return {
     initialize,
     load,
     getSnapshot,
-    beginInFlight,
-    markMessageSent,
-    markMessageDeleted,
-    completeSuccess,
-    pause,
-    resume,
-    rolloverLocalDate,
-    abandonBeforeSend,
-    deferUntil,
-    restoreNextEligibleAt,
+    ...transitions,
     recoverOnStartup,
   };
 }
