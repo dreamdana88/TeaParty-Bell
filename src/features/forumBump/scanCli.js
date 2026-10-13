@@ -181,6 +181,9 @@ async function safelyDestroy(destroyFn, logger) {
   }
 }
 
+/**
+ * @param {object} [options]
+ */
 export async function runForumScan({
   argv = [],
   loadConfigFn = loadConfig,
