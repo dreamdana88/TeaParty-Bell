@@ -193,6 +193,26 @@ try {
     assert(err?.exitCode === 78, "首次遇到新鲜守卫 → 78");
   }
 
+  // tryCreate 部分写失败留下空锁文件：过了 2s 宽限按损坏接管
+  {
+    const lockPath = freshLockPath();
+    mkdirSync(join(lockPath, ".."), { recursive: true });
+    writeFileSync(lockPath, "");
+    utimesSync(lockPath, old(), old());
+    const { r, content } = acquireFresh(lockPath);
+    assert(r.reclaimed && content.pid === process.pid, "空锁文件（宽限已过）被接管");
+  }
+  {
+    const lockPath = freshLockPath();
+    mkdirSync(join(lockPath, ".."), { recursive: true });
+    writeFileSync(lockPath, "");
+    const t0 = Date.now();
+    const { r, content } = acquireFresh(lockPath);
+    const waited = Date.now() - t0;
+    assert(r.reclaimed && content.pid === process.pid && waited >= 1900,
+      `新建的空锁文件等宽限期过后才被接管（waited=${waited}ms）`);
+  }
+
   // 并发接管同一过期锁：恰好一个胜者（循环多次）
   {
     const ROUNDS = 50;
