@@ -365,4 +365,16 @@ export function applyStartupRecoveryPause(state) {
   return { ...ok(next, true), classification };
 }
 
-export { createStateError };
+/**
+ * recoverOnStartup 用：计算应写入的下一状态与恢复元数据。
+ * @param {object} state
+ */
+export function planStartupRecovery(state) {
+  const result = applyStartupRecoveryPause(state);
+  return {
+    nextState: result.state,
+    changed: result.changed,
+    recoveryStatus: result.classification.recoveryStatus,
+    cleanupRequired: result.classification.cleanupRequired,
+  };
+}

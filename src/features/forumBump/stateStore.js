@@ -22,11 +22,11 @@ import {
   markMessageDeletedTransition,
   markMessageSentTransition,
   pauseTransition,
+  planStartupRecovery,
   restoreNextEligibleAtTransition,
   resumeTransition,
   rolloverLocalDateTransition,
 } from "./stateTransitions.js";
-import { planStartupRecovery } from "./stateRecovery.js";
 
 
 function emptyResult(operation, extras = {}) {
