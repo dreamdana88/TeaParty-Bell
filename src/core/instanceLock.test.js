@@ -2,7 +2,7 @@
  * 单实例锁：对外行为测试（真实子进程）。
  */
 import { spawn, spawnSync } from "child_process";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { pathToFileURL, fileURLToPath } from "url";
@@ -191,6 +191,42 @@ try {
     let err = null;
     try { createInstanceLock({ lockPath }).acquire(); } catch (e) { err = e; }
     assert(err?.exitCode === 78, "首次遇到新鲜守卫 → 78");
+  }
+
+  // 非预期 errno → INSTANCE_LOCK_IO_FAILED / exit 1，不按 78、不接管
+  if (process.getuid?.() !== 0) {
+    {
+      // 接管守卫创建 EACCES：锁目录只读（锁文件可读、过期）
+      const lockPath = freshLockPath();
+      const dir = join(lockPath, "..");
+      mkdirSync(dir, { recursive: true });
+      const staleBody = JSON.stringify({ pid: deadPid(), startTime: null });
+      writeFileSync(lockPath, staleBody);
+      chmodSync(dir, 0o555);
+      let err = null;
+      try { createInstanceLock({ lockPath }).acquire(); } catch (e) { err = e; } finally { chmodSync(dir, 0o755); }
+      assert(err?.exitCode === 1 && err?.code === "INSTANCE_LOCK_IO_FAILED" && err.message.includes("接管守卫"),
+        `守卫创建 EACCES → IO_FAILED / exit 1（got ${err?.code}/${err?.exitCode}）`);
+      assert(readFileSync(lockPath, "utf8") === staleBody && !existsSync(`${lockPath}.takeover`), "锁文件未被改动，无守卫残留");
+    }
+    {
+      // 读锁 EACCES：不得当作损坏接管
+      const lockPath = freshLockPath();
+      mkdirSync(join(lockPath, ".."), { recursive: true });
+      const body = JSON.stringify({ pid: process.ppid, startTime: readProcessStartTime(process.ppid) });
+      writeFileSync(lockPath, body);
+      const oldTime = old();
+      utimesSync(lockPath, oldTime, oldTime);
+      chmodSync(lockPath, 0o000);
+      let err = null;
+      try { createInstanceLock({ lockPath }).acquire(); } catch (e) { err = e; } finally { chmodSync(lockPath, 0o644); }
+      assert(err?.exitCode === 1 && err?.code === "INSTANCE_LOCK_IO_FAILED" && err.message.includes("无法读取"),
+        `读锁 EACCES → IO_FAILED / exit 1（got ${err?.code}/${err?.exitCode}）`);
+      const files = readdirSync(join(lockPath, ".."));
+      assert(readFileSync(lockPath, "utf8") === body && files.length === 1, "读失败时锁文件原样保留，未被接管");
+    }
+  } else {
+    console.log("  (跳过 EACCES 用例：root 不受权限限制)");
   }
 
   // tryCreate 部分写失败留下空锁文件：过了 2s 宽限按损坏接管

@@ -64,6 +64,15 @@ function busy(message) {
   return new InstanceLockError(message, "INSTANCE_LOCK_BUSY");
 }
 
+/** 非预期 errno：IO 故障，exit 1（可恢复），绝不按 78 / 占用处理。 */
+function ioFailed(what, err) {
+  return new InstanceLockError(
+    `${what}：${err?.code ?? err?.message ?? "unknown"}`,
+    "INSTANCE_LOCK_IO_FAILED",
+    1,
+  );
+}
+
 /**
  * @param {object} options
  * @param {string} options.lockPath
@@ -84,14 +93,13 @@ export function createInstanceLock({ lockPath, onStaleGuardCleaned = null } = {}
       fd = openSync(lockPath, "wx");
     } catch (err) {
       if (err?.code === "EEXIST") return false;
-      throw new InstanceLockError(
-        `无法创建实例锁：${err?.code ?? err?.message ?? "unknown"}`,
-        "INSTANCE_LOCK_IO_FAILED",
-        1,
-      );
+      throw ioFailed("无法创建实例锁", err);
     }
     try {
       writeSync(fd, `${JSON.stringify({ pid, startTime })}\n`);
+    } catch (err) {
+      // 留下的空文件由其他进程在宽限期后按损坏接管
+      throw ioFailed("无法写入实例锁", err);
     } finally {
       closeSync(fd);
     }
@@ -105,7 +113,8 @@ export function createInstanceLock({ lockPath, onStaleGuardCleaned = null } = {}
       raw = readFileSync(lockPath, "utf8");
     } catch (err) {
       if (err?.code === "ENOENT") return { raw: null, owner: null };
-      return { raw: "", owner: null };
+      // 读不了 ≠ 损坏：持有者可能仍存活，绝不接管
+      throw ioFailed("无法读取实例锁", err);
     }
     try {
       const data = JSON.parse(raw);
@@ -155,7 +164,7 @@ export function createInstanceLock({ lockPath, onStaleGuardCleaned = null } = {}
     try {
       guardFd = openSync(guardPath, "wx");
     } catch (err) {
-      if (err?.code !== "EEXIST") throw busy("实例锁竞争失败");
+      if (err?.code !== "EEXIST") throw ioFailed("无法创建实例锁接管守卫", err);
       // 守卫残留（接管者在极短窗口内崩溃）：清理后在本进程重试一次 acquire。
       // 不能以 78 退出：部署模板 RestartPreventExitStatus=78 会让服务永久停止。
       let cleaned = false;
@@ -164,8 +173,9 @@ export function createInstanceLock({ lockPath, onStaleGuardCleaned = null } = {}
           unlinkSync(guardPath);
           cleaned = true;
         }
-      } catch {
-        // 守卫已被他人删除 / 无法 stat：按未清理处理
+      } catch (cleanupErr) {
+        // ENOENT：守卫已被他人删除，按未清理处理；其他 errno 为 IO 故障
+        if (cleanupErr?.code !== "ENOENT") throw ioFailed("无法清理残留接管守卫", cleanupErr);
       }
       if (isRetry) {
         // 重试仍遇到守卫：可恢复状况，exit 1 交给进程管理器重启
@@ -190,7 +200,7 @@ export function createInstanceLock({ lockPath, onStaleGuardCleaned = null } = {}
         renameSync(lockPath, stalePath);
         renamed = true;
       } catch (err) {
-        if (err?.code !== "ENOENT") throw busy("实例锁竞争失败");
+        if (err?.code !== "ENOENT") throw ioFailed("无法移走过期实例锁", err);
         // 已被他人移走：重试一次独占创建
       }
       const created = tryCreate();
@@ -207,7 +217,11 @@ export function createInstanceLock({ lockPath, onStaleGuardCleaned = null } = {}
 
   function acquire() {
     if (held) return { acquired: true, lockPath, pid, reentrant: true };
-    mkdirSync(dirname(lockPath), { recursive: true });
+    try {
+      mkdirSync(dirname(lockPath), { recursive: true });
+    } catch (err) {
+      throw ioFailed("无法创建实例锁目录", err);
+    }
     const first = acquireOnce(false);
     // 仅在清理了残留守卫后重试一次（有界，不循环）
     return first === RETRY ? acquireOnce(true) : first;
@@ -239,7 +253,12 @@ export function createInstanceLock({ lockPath, onStaleGuardCleaned = null } = {}
   function release() {
     if (!held) return { released: false };
     held = false;
-    const { owner } = readLock();
+    let owner = null;
+    try {
+      ({ owner } = readLock());
+    } catch {
+      return { released: false, reason: "read_failed" };
+    }
     if (owner?.pid === pid) {
       try { unlinkSync(lockPath); } catch { /* ignore */ }
       return { released: true };
