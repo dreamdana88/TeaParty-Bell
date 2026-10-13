@@ -1435,6 +1435,119 @@ console.log("\n=== 测试 37：无 store → handleBoostEvent 仍正常工作（
   assertEqual(mockSender.calls.length, 2, "无 store 时 sender 再调一次（无持久化去重）");
 }
 
+// 使用真实 Provider + Mock HTTP/Discord，覆盖完整故障切换链路。
+console.log("\n=== 备用 API 故障切换 ===\n");
+{
+  const savedFetch = globalThis.fetch;
+  const primaryKey = "primary-secret";
+  const fallbackKey = "fallback-secret";
+  const config = {
+    ...TEST_CONFIG,
+    testMode: false,
+    aiChatCompletionsUrl: "https://primary.test/v1/chat/completions",
+    aiApiKey: primaryKey,
+    aiAuthHeader: "X-Primary-Key",
+    aiAuthScheme: "Token",
+    aiModel: "primary-model",
+    aiTimeoutMs: 10,
+    aiExtraHeaders: { "X-Primary-Only": "private-header" },
+    aiExtraBody: { primary_only: true },
+    fallbackAi: {
+      aiChatCompletionsUrl: "https://direct.test/v1/chat/completions",
+      aiApiKey: fallbackKey,
+      aiRequireApiKey: true,
+      aiModel: "fallback-model",
+      aiTimeoutMs: 10,
+      aiReasoningEffort: null,
+    },
+  };
+  const completion = (text) => new Response(JSON.stringify({
+    choices: [{ message: { content: text } }],
+  }));
+  const failures = {
+    timeout: (_url, init) => new Promise((_resolve, reject) => {
+      init.signal.addEventListener("abort", () => reject(new DOMException("timeout", "AbortError")), { once: true });
+    }),
+    network: () => { throw new TypeError("fetch failed"); },
+    http: () => new Response(JSON.stringify({ error: { message: `Bearer ${primaryKey} ${fallbackKey}` } }), { status: 503 }),
+    empty: () => completion("  "),
+    invalid_response: () => new Response("not json"),
+    invalid_copy: () => completion("@everyone"),
+  };
+
+  async function run(primary, fallback, { enabled = true, sendFails = false, duplicate = false } = {}) {
+    const requests = [];
+    const sender = makeMockSender();
+    const logger = makeMockLogger();
+    const store = makeMockStore();
+    globalThis.fetch = async (url, init) => {
+      requests.push({ url, headers: init.headers, body: JSON.parse(init.body) });
+      return url === config.aiChatCompletionsUrl ? primary(url, init) : fallback(url, init);
+    };
+    const handler = createBoostThanksHandler({
+      config: { ...config, fallbackAi: enabled ? config.fallbackAi : null },
+      client: MOCK_CLIENT,
+      logger,
+      store,
+      senderOverride: async (...args) => {
+        const sent = await sender.sendMessage(...args);
+        if (sendFails) throw new Error("Discord unavailable");
+        return sent;
+      },
+    });
+    const result = await handler.handleBoostEvent(TEST_EVENT);
+    if (duplicate) await handler.handleBoostEvent(TEST_EVENT);
+    assert(!JSON.stringify(logger.calls).includes(primaryKey) && !JSON.stringify(logger.calls).includes(fallbackKey), "日志不含两路 Key 或上游凭证原文");
+    return { result, requests, sender, logger, store };
+  }
+
+  try {
+    const main = await run(() => completion("愿你吃好睡好"), () => { throw new Error("备用不应调用"); });
+    assertEqual(main.result, true, "主 API 成功正常发送");
+    assertEqual(main.requests.length, 1, "主成功不调用备用");
+    assert(main.logger.calls.some(c => c.level === "info" && c.data?.source === "primary"), "记录主 API 成功");
+
+    for (const [reason, fail] of Object.entries(failures)) {
+      const r = await run(fail, () => completion("愿你自由快乐"), { duplicate: true });
+      assertEqual(r.result, true, `${reason} 后备用成功`);
+      assertEqual(r.requests.length, 2, `${reason} 每路仅请求一次，重复事件不重新请求`);
+      assertEqual(r.sender.calls.length, 1, `${reason} 只成功发送一条消息`);
+      assertIncludes(r.sender.calls[0].content, "愿你自由快乐", `${reason} 使用备用正文且允许无 Emoji`);
+      assertEqual(r.requests[1].url, config.fallbackAi.aiChatCompletionsUrl, `${reason} 请求独立备用地址`);
+      assertEqual(JSON.stringify(r.requests[0].body.messages), JSON.stringify(r.requests[1].body.messages), `${reason} 两路提示词与风格完全一致`);
+      assertEqual(r.requests[1].headers.Authorization, `Bearer ${fallbackKey}`, `${reason} 备用独立鉴权`);
+      assert(!("X-Primary-Key" in r.requests[1].headers) && !("X-Primary-Only" in r.requests[1].headers), `${reason} 不继承主请求头`);
+      assert(!("primary_only" in r.requests[1].body) && !("reasoning_effort" in r.requests[1].body), `${reason} 不继承主扩展参数`);
+      assertEqual(r.requests[1].body.model, "fallback-model", `${reason} 使用备用模型`);
+      assert(r.logger.calls.some(c => c.level === "warn" && c.data?.source === "primary"), `${reason} 记录主失败`);
+      assert(r.logger.calls.some(c => c.level === "info" && c.data?.source === "fallback"), `${reason} 记录备用成功`);
+    }
+
+    for (const [reason, fail] of Object.entries(failures)) {
+      const r = await run(failures.http, fail);
+      assertEqual(r.result, false, `备用 ${reason} 失败后返回失败`);
+      assertEqual(r.requests.length, 2, `备用 ${reason} 失败后不重试`);
+      assertEqual(r.sender.calls.length, 0, `备用 ${reason} 失败后无固定兜底、不发送`);
+      assert(r.store.calls.some(c => c.method === "markFailedPreSend"), `备用 ${reason} 保留失败状态供人工处理`);
+    }
+
+    const disabled = await run(failures.network, () => completion("备用"), { enabled: false });
+    assertEqual(disabled.requests.length, 1, "未配置备用时只有主请求");
+    assertEqual(disabled.result, false, "未配置备用时主失败保持原行为");
+    assertEqual(disabled.sender.calls.length, 0, "未配置备用时失败不发送");
+
+    for (const primary of [() => completion("主正文"), failures.network]) {
+      const r = await run(primary, () => completion("备用正文"), { sendFails: true, duplicate: true });
+      assertEqual(r.result, false, "Discord 失败返回失败");
+      assertEqual(r.requests.length, primary === failures.network ? 2 : 1, "Discord 失败不触发切换或重新生成");
+      assertEqual(r.sender.calls.length, 1, "Discord 失败只发送一次，重复事件不重发");
+      assert(r.store.calls.some(c => c.method === "markUncertain"), "Discord 失败保留 uncertain 状态");
+    }
+  } finally {
+    globalThis.fetch = savedFetch;
+  }
+}
+
 // ============================================================
 console.log(`\n========================================`);
 console.log(`测试结果：${passed} passed, ${failed} failed`);

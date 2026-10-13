@@ -20,6 +20,7 @@ const UPSTREAM_ERROR_MAX_LEN = 500;
  * @param {string} config.aiAuthScheme
  * @param {Record<string, string>} [config.aiExtraHeaders]
  * @param {Record<string, unknown>} [config.aiExtraBody]
+ * @param {null} [config.aiReasoningEffort] - null 时不默认发送 reasoning_effort
  * @param {{ fetchImpl?: typeof fetch, setTimeoutImpl?: typeof setTimeout, clearTimeoutImpl?: typeof clearTimeout }} [dependencies]
  */
 export function createOpenAICompatibleProvider(config, dependencies = {}) {
@@ -49,10 +50,12 @@ export function createOpenAICompatibleProvider(config, dependencies = {}) {
       throw providerError("AI Provider API Key 未配置", "missing_api_key");
     }
 
+    const reasoningEffort = options.reasoningEffort ??
+      (config.aiReasoningEffort === null ? null : "high");
     const body = {
       model,
       messages,
-      reasoning_effort: options.reasoningEffort ?? "high",
+      ...(reasoningEffort === null ? {} : { reasoning_effort: reasoningEffort }),
       stream: false,
       ...extraBody,
     };

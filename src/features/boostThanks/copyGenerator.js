@@ -23,6 +23,8 @@ import { dirname, resolve } from "path";
 import { fileURLToPath } from "url";
 
 import { createAiProvider } from "../../ai/index.js";
+import { AiProviderError } from "../../ai/aiProviderError.js";
+import { logger as defaultLogger } from "../../utils/logger.js";
 
 // ---- 路径 ----
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -122,8 +124,9 @@ export function getStyleKeys() {
 
 // ---- 工厂 ----
 
-export function createCopyGenerator(config, aiOverride) {
+export function createCopyGenerator(config, aiOverride, logger = defaultLogger) {
   const ai = aiOverride ?? createAiProvider(config);
+  const fallbackAi = config.fallbackAi ? createAiProvider(config.fallbackAi) : null;
   const systemPrompt = _loadPrompt();
 
   /**
@@ -167,14 +170,35 @@ export function createCopyGenerator(config, aiOverride) {
       { role: "user", content: userMessage },
     ];
 
-    // ---- 3. 调用 AI（不限制 max_tokens；输出预算交给通用 Provider / 上游模型）----
-    const rawText = await ai.generateText(messages);
-
-    // ---- 4. 校验输出 ----
-    const trimmed = rawText.trim();
-    _validateCopy(trimmed);
-
-    return trimmed;
+    // 同一份提示词与校验；每路只请求一次，切换仅发生在文案生成阶段。
+    for (const [source, provider] of [["primary", ai], ["fallback", fallbackAi]]) {
+      if (!provider) continue;
+      let stage = "request";
+      try {
+        const rawText = await provider.generateText(messages);
+        stage = "validation";
+        const trimmed = rawText.trim();
+        _validateCopy(trimmed);
+        logger.info("[BoostThanks] AI 正文生成成功", { source });
+        return trimmed;
+      } catch (error) {
+        logger.warn("[BoostThanks] AI 正文生成失败", {
+          source,
+          code: error.code ?? stage,
+          httpStatus: error.httpStatus,
+          reason: stage === "validation" ? error.message : undefined,
+        });
+        if (error.name === "AbortError" || error.code === "cancelled") throw error;
+        if (source === "primary" && fallbackAi) continue;
+        // 上游错误原文可能包含凭证，勿传入 Handler 日志或持久化状态。
+        if (error instanceof AiProviderError) {
+          throw new AiProviderError("AI 正文生成失败", error.code, {
+            httpStatus: error.httpStatus,
+          });
+        }
+        throw error;
+      }
+    }
   }
 
   return { generateCopy };

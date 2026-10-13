@@ -76,6 +76,7 @@ export function loadConfig() {
 
     // AI Provider（新 AI_* 配置优先；旧 DEEPSEEK_* 仅作兼容读取）
     ...loadAiProviderConfig(process.env),
+    fallbackAi: loadFallbackAiConfig(process.env),
 
     // 应用行为
     testMode: stringToBool(process.env.TEST_MODE, false),
@@ -202,6 +203,29 @@ function loadLegacyAiProviderConfig(env, hasLegacyAiConfig) {
     aiExtraHeaders: {},
     aiExtraBody: {},
     aiConfigSource: "legacy_deepseek",
+  };
+}
+
+function loadFallbackAiConfig(env) {
+  const baseUrl = normalizedEnv(env, "FALLBACK_API_BASE_URL");
+  const apiKey = normalizedEnv(env, "FALLBACK_API_KEY");
+  const model = normalizedEnv(env, "FALLBACK_API_MODEL");
+  if (!baseUrl && !apiKey && !model) return null;
+  if (!baseUrl || !apiKey || !model) {
+    throw new ConfigError(
+      "备用 API 配置不完整：必须设置 FALLBACK_API_BASE_URL、FALLBACK_API_KEY 和 FALLBACK_API_MODEL。",
+      "incomplete_fallback_ai_config",
+      78,
+    );
+  }
+  return {
+    aiChatCompletionsUrl: buildChatCompletionsUrl(baseUrl),
+    aiApiKey: apiKey,
+    aiRequireApiKey: true,
+    aiModel: model,
+    aiTimeoutMs: validatePositiveInt(env.FALLBACK_API_TIMEOUT_MS, 30000),
+    aiBackendLabel: "Fallback API",
+    aiReasoningEffort: null,
   };
 }
 

@@ -48,6 +48,7 @@ function clearAiEnv() {
     "AI_TIMEOUT_MS", "AI_AUTH_HEADER", "AI_AUTH_SCHEME", "AI_BACKEND_LABEL",
     "AI_EXTRA_HEADERS_JSON", "AI_EXTRA_BODY_JSON",
     "DEEPSEEK_API_KEY", "DEEPSEEK_BASE_URL", "DEEPSEEK_MODEL", "DEEPSEEK_TIMEOUT_MS",
+    "FALLBACK_API_BASE_URL", "FALLBACK_API_KEY", "FALLBACK_API_MODEL", "FALLBACK_API_TIMEOUT_MS",
   ]) setEnv(key, null);
 }
 
@@ -171,6 +172,24 @@ for (const [key, value, code] of [
   restoreEnv(); setRequired(); setEnv("AI_BASE_URL", "https://proxy.example/v1"); setEnv("AI_MODEL", "m"); setEnv(key, value);
   try { loadConfig(); assert(false, `${key} 非法值应拒绝`); }
   catch (err) { assert(err instanceof ConfigError && err.code === code, `${key} 非法值拒绝`); }
+}
+
+{ restoreEnv(); setRequired();
+  assertEqual(loadConfig().fallbackAi, null, "未配置备用 API 时禁用");
+  setEnv("FALLBACK_API_BASE_URL", "https://direct.example/v1/");
+  setEnv("FALLBACK_API_KEY", "fallback-key");
+  setEnv("FALLBACK_API_MODEL", "fallback-model");
+  const c = loadConfig();
+  assertEqual(c.fallbackAi.aiChatCompletionsUrl, "https://direct.example/v1/chat/completions", "备用地址独立拼接");
+  assertEqual(c.fallbackAi.aiApiKey, "fallback-key", "备用使用独立 Key");
+  assertEqual(c.fallbackAi.aiModel, "fallback-model", "备用使用独立模型");
+  assertEqual(c.fallbackAi.aiTimeoutMs, 30000, "备用超时默认 30 秒");
+  assertEqual(c.fallbackAi.aiReasoningEffort, null, "备用不默认传 reasoning_effort");
+  setEnv("FALLBACK_API_TIMEOUT_MS", "1234");
+  assertEqual(loadConfig().fallbackAi.aiTimeoutMs, 1234, "备用自定义超时");
+  setEnv("FALLBACK_API_KEY", null);
+  try { loadConfig(); assert(false, "备用缺少 Key 应报错"); }
+  catch (err) { assertEqual(err.code, "incomplete_fallback_ai_config", "备用配置不完整报错"); }
 }
 
 restoreEnv();

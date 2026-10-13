@@ -48,7 +48,8 @@ export function createBoostThanksHandler(opts) {
   // AI 文案生成器（支持测试注入）
   const copyGenerator = createCopyGenerator(
     config,
-    opts.aiOverride ?? undefined
+    opts.aiOverride ?? undefined,
+    logger,
   );
 
   // Discord 发送（支持测试注入）
