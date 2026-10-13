@@ -36,14 +36,3 @@ export const adminCommandDefinitions = Object.freeze([
   slashSendCommand.toJSON(),
 ]);
 
-export function getManualReplyCommandJson() {
-  return messageReplyCommand.toJSON();
-}
-
-export function getManualMessageCommands() {
-  return adminCommandDefinitions.map((definition) => ({ ...definition }));
-}
-
-export function getAdminCommandDefinitions() {
-  return adminCommandDefinitions.map((definition) => ({ ...definition }));
-}

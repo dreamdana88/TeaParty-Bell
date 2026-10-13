@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, readdirSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { parseBonusPenalty, rollBonusPenalty } from "./dice/bonusPenalty.js";
-import { formatRoll, rollDice } from "./dice/roller.js";
+import { rollDice } from "./dice/roller.js";
 import { formatBonusPenalty, formatTextDice } from "./textDice.js";
 import { createCocSessionService } from "./sessionService.js";
 import { createCocSessionStore } from "./sessionStore.js";

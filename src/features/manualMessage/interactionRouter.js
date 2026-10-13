@@ -493,11 +493,3 @@ export function createManualInteractionRouter({
 
   return { start, destroy };
 }
-
-export const MANUAL_INTERACTION_ROUTER_MESSAGES = Object.freeze({
-  REPLY_SUCCESS_MESSAGE,
-  DUPLICATE_MESSAGE,
-  INVALID_CONTEXT_MESSAGE,
-  REPLY_GENERIC_FAILURE_MESSAGE,
-  SEND_GENERIC_FAILURE_MESSAGE,
-});

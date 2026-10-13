@@ -9,7 +9,7 @@
 - 管理员套皮回复和直接发言
 - CoC 最小开团：招募、私密房间、KP / PL / OB 颜色、临时角色名、`/r` 掷骰、结束并在 48 小时后删频道
 
-角色卡网站不在这个仓库里，见 [docs/coc-b-line.md](docs/coc-b-line.md)。
+角色卡网站不在这个仓库里（B 线文档未收录在本仓库）。
 
 ## 常用命令
 
@@ -26,9 +26,9 @@ npm run commands:register -- --confirm-guild <服务器ID>
 
 B8 第一阶段已实现招募期间 PL 的档案馆选卡与本局快照，以及 `/coc 建卡` 链接入口。只通过本机 HTTP 读取长期卡，不读取档案馆 SQLite，不执行本局资源修改或技能自动检定。部署配置、命令同步和验收边界见 [B8 第一阶段交付](docs/coc-b8-phase1.md)。
 
-- 跑团最小版：[docs/coc-mvp-0.1.md](docs/coc-mvp-0.1.md)
-- 完整规划：[BOT_CONSTRUCTION_PLAN3.md](BOT_CONSTRUCTION_PLAN3.md)
-- 角色卡 B 线：[docs/coc-b-line.md](docs/coc-b-line.md)
+- 跑团最小版：`docs/coc-mvp-0.1.md`（未收录在本仓库）
+- 完整规划：`BOT_CONSTRUCTION_PLAN3.md`（未收录在本仓库）
+- 角色卡 B 线：`docs/coc-b-line.md`（未收录在本仓库）
 
 ## License
 

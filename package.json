@@ -9,13 +9,10 @@
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
     "test": "node scripts/run-tests.mjs",
-    "test:ai": "node scripts/test-ai.js",
     "export:emojis": "node scripts/export-guild-emojis.js",
     "commands:register": "node scripts/register-admin-commands.js",
-    "forum:poc": "node scripts/forum-poc.js",
     "forum:scan": "node scripts/forum-scan.js",
     "forum:state": "node scripts/forum-bump-state.js",
-    "test:copy": "node scripts/test-copy.js",
     "test:send": "node scripts/test-send.js"
   },
   "keywords": ["discord", "bot", "teaparty"],

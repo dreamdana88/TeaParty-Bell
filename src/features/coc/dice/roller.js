@@ -32,20 +32,3 @@ export function rollDice(input, randomIntFn = secureRandomInt) {
     total: subtotal + parsed.modifier,
   };
 }
-
-/**
- * @param {string} speaker
- * @param {{ notation: string, count: number, rolls: number[], modifier: number, total: number }} result
- */
-export function formatRoll(speaker, result) {
-  const name = speaker.trim() || "调查员";
-  if (result.count === 1 && result.modifier === 0) {
-    return `🎲 ${name}掷骰\n\n${result.notation} → ${result.total}`;
-  }
-  if (result.modifier === 0) {
-    return `🎲 ${name}掷骰\n\n${result.notation} → [${result.rolls.join(", ")}] = ${result.total}`;
-  }
-  const sign = result.modifier > 0 ? "+" : "−";
-  const abs = Math.abs(result.modifier);
-  return `🎲 ${name}掷骰\n\n${result.notation}\n[${result.rolls.join(", ")}] ${sign} ${abs} = ${result.total}`;
-}

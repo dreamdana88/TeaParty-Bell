@@ -4,8 +4,6 @@ import {
   createSendModalCustomId,
   MAX_MODAL_CUSTOM_ID_LENGTH,
   parseManualModalContext,
-  parseReplyModalCustomId,
-  parseSendModalCustomId,
 } from "./modalContext.js";
 
 const CHANNEL_ID = "123456789012345678";
@@ -25,11 +23,6 @@ function assertEqual(actual, expected, label) {
 
 console.log("\n=== Manual Reply Modal Context ===\n");
 
-assertEqual(JSON.stringify(parseReplyModalCustomId(VALID_ID)), JSON.stringify({
-  channelId: CHANNEL_ID,
-  targetMessageId: MESSAGE_ID,
-}), "有效 customId 严格解析");
-assertEqual(JSON.stringify(parseSendModalCustomId(VALID_SEND_ID)), JSON.stringify({ channelId: CHANNEL_ID }), "有效 send customId 严格解析");
 assertEqual(JSON.stringify(parseManualModalContext(VALID_ID)), JSON.stringify({
   version: "v1", action: "reply", channelId: CHANNEL_ID, targetMessageId: MESSAGE_ID,
 }), "reply context round-trip");
@@ -50,7 +43,6 @@ for (const [value, label] of [
   ["manual:v1:send:" + CHANNEL_ID + ":" + "x".repeat(MAX_MODAL_CUSTOM_ID_LENGTH), "超过 customId 长度限制"],
   [null, "customId 非字符串"],
 ]) {
-  assertEqual(parseReplyModalCustomId(value), null, `${label} 拒绝`);
   assertEqual(parseManualModalContext(value), null, `${label} generic parser 拒绝`);
 }
 
