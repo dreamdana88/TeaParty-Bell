@@ -21,11 +21,7 @@ import {
   forceRefreshThreadSnapshot,
 } from "./threadSnapshot.js";
 
-function defaultClock() {
-  return { now: () => Date.now() };
-}
-
-async function defaultSleep(ms) {
+function defaultSleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
@@ -188,15 +184,16 @@ function validateArgs({ guildId, forumChannelId, threadId, policy, signal }) {
   return null;
 }
 
+const SKIP_ERROR_CODES = Object.freeze({
+  [SKIP_REASONS.THREAD_WRONG_GUILD]: "WRONG_GUILD",
+  [SKIP_REASONS.THREAD_WRONG_PARENT]: "WRONG_FORUM",
+  [SKIP_REASONS.THREAD_WRONG_TYPE]: "WRONG_THREAD_TYPE",
+});
+
+/** 跳过原因 → errorCode：三种结构性原因有专用码，其余原样。 */
 function mapSkipToErrorCode(skipReason) {
   if (!skipReason) return null;
-  if (Object.values(SKIP_REASONS).includes(skipReason)) {
-    if (skipReason === SKIP_REASONS.THREAD_WRONG_GUILD) return "WRONG_GUILD";
-    if (skipReason === SKIP_REASONS.THREAD_WRONG_PARENT) return "WRONG_FORUM";
-    if (skipReason === SKIP_REASONS.THREAD_WRONG_TYPE) return "WRONG_THREAD_TYPE";
-    return skipReason;
-  }
-  return skipReason;
+  return Object.hasOwn(SKIP_ERROR_CODES, skipReason) ? SKIP_ERROR_CODES[skipReason] : skipReason;
 }
 
 async function tryDeleteOnce(sentMessage) {
@@ -227,7 +224,7 @@ function safeDiscordMeta(error) {
 export function createForumBumpService({
   client,
   logger,
-  clock = defaultClock(),
+  clock = { now: () => Date.now() },
   sleep = defaultSleep,
   content = FORUM_BUMP_CONTENT,
 } = {}) {
@@ -254,12 +251,18 @@ export function createForumBumpService({
     base.forumChannelId = forumChannelId ?? null;
     base.threadId = threadId ?? null;
 
-    const argError = validateArgs({ guildId, forumChannelId, threadId, policy, signal });
-    if (argError) {
-      base.status = "failed";
-      base.errorCode = argError;
+    /** 写入结果字段与耗时并返回（base 默认 status=failed / success=false / cleanupRequired=false）。 */
+    const finish = (fields) => {
+      Object.assign(base, fields);
       base.durationMs = Math.max(0, clock.now() - startedAt);
       return base;
+    };
+    const cancelled = () => finish({ status: "cancelled", errorCode: "BUMP_ABORTED" });
+    const skip = (skipReason, errorCode) => finish({ status: "skipped", skipped: true, skipReason, errorCode });
+
+    const argError = validateArgs({ guildId, forumChannelId, threadId, policy, signal });
+    if (argError) {
+      return finish({ errorCode: argError });
     }
 
     const silenceDays = policy.silenceDays;
@@ -267,18 +270,11 @@ export function createForumBumpService({
     const skipPinned = policy.skipPinned !== false;
 
     if (isAborted(signal)) {
-      base.status = "cancelled";
-      base.errorCode = "BUMP_ABORTED";
-      base.durationMs = Math.max(0, clock.now() - startedAt);
-      return base;
+      return cancelled();
     }
 
     if (!isClientReadyForBump(client)) {
-      base.status = "failed";
-      base.success = false;
-      base.cleanupRequired = false;
-      base.errorCode = "CLIENT_NOT_READY";
-      base.durationMs = Math.max(0, clock.now() - startedAt);
+      finish({ errorCode: "CLIENT_NOT_READY" });
       logger?.warn?.("[ForumBump] client not ready", {
         operation: "forum-bump",
         status: "failed",
@@ -309,49 +305,24 @@ export function createForumBumpService({
       before = captureThreadSnapshot(thread, parentForum, clock);
       base.before = before;
     } catch (error) {
-      base.status = "failed";
-      base.errorCode = error?.code === "THREAD_NOT_FOUND" ? "THREAD_NOT_FOUND" : "THREAD_REFRESH_FAILED";
-      base.durationMs = Math.max(0, clock.now() - startedAt);
-      return base;
+      return finish({ errorCode: error?.code === "THREAD_NOT_FOUND" ? "THREAD_NOT_FOUND" : "THREAD_REFRESH_FAILED" });
     }
 
     // ---- structural target checks ----
     const actualGuildId = thread.guildId ?? thread.guild?.id ?? null;
     if (actualGuildId !== guildId) {
-      base.status = "skipped";
-      base.skipped = true;
-      base.skipReason = SKIP_REASONS.THREAD_WRONG_GUILD;
-      base.errorCode = "WRONG_GUILD";
-      base.durationMs = Math.max(0, clock.now() - startedAt);
-      return base;
+      return skip(SKIP_REASONS.THREAD_WRONG_GUILD, "WRONG_GUILD");
     }
 
     const actualParentId = thread.parentId ?? thread.parent?.id ?? null;
-    if (actualParentId !== forumChannelId) {
-      base.status = "skipped";
-      base.skipped = true;
-      base.skipReason = SKIP_REASONS.THREAD_WRONG_PARENT;
-      base.errorCode = "WRONG_FORUM";
-      base.durationMs = Math.max(0, clock.now() - startedAt);
-      return base;
+    if (actualParentId !== forumChannelId
+      || !parentForum || parentForum.type !== ChannelType.GuildForum) {
+      return skip(SKIP_REASONS.THREAD_WRONG_PARENT, "WRONG_FORUM");
     }
 
-    if (!parentForum || parentForum.type !== ChannelType.GuildForum) {
-      base.status = "skipped";
-      base.skipped = true;
-      base.skipReason = SKIP_REASONS.THREAD_WRONG_PARENT;
-      base.errorCode = "WRONG_FORUM";
-      base.durationMs = Math.max(0, clock.now() - startedAt);
-      return base;
-    }
-
-    if (thread.type !== ChannelType.PublicThread && thread.type !== 11) {
-      base.status = "skipped";
-      base.skipped = true;
-      base.skipReason = SKIP_REASONS.THREAD_WRONG_TYPE;
-      base.errorCode = "WRONG_THREAD_TYPE";
-      base.durationMs = Math.max(0, clock.now() - startedAt);
-      return base;
+    // ChannelType.PublicThread === 11
+    if (thread.type !== ChannelType.PublicThread) {
+      return skip(SKIP_REASONS.THREAD_WRONG_TYPE, "WRONG_THREAD_TYPE");
     }
 
     // ---- eligibility (D-1 rules) ----
@@ -386,11 +357,7 @@ export function createForumBumpService({
     base.silenceDaysExact = evaluation.silenceDaysExact;
 
     if (!evaluation.eligible) {
-      base.status = "skipped";
-      base.skipped = true;
-      base.skipReason = evaluation.skipReason;
-      base.errorCode = mapSkipToErrorCode(evaluation.skipReason);
-      base.durationMs = Math.max(0, clock.now() - startedAt);
+      skip(evaluation.skipReason, mapSkipToErrorCode(evaluation.skipReason));
       logger?.info?.("[ForumBump] bump skipped", {
         operation: "forum-bump",
         status: "skipped",
@@ -405,10 +372,7 @@ export function createForumBumpService({
     }
 
     if (isAborted(signal)) {
-      base.status = "cancelled";
-      base.errorCode = "BUMP_ABORTED";
-      base.durationMs = Math.max(0, clock.now() - startedAt);
-      return base;
+      return cancelled();
     }
 
     // ---- lifecycle: onBeforeSend（资格通过后、send 前）----
@@ -420,21 +384,13 @@ export function createForumBumpService({
           threadId,
           before,
         });
-      } catch (error) {
-        base.status = "failed";
-        base.success = false;
-        base.cleanupRequired = false;
-        base.errorCode = "LIFECYCLE_BEFORE_SEND_FAILED";
-        base.durationMs = Math.max(0, clock.now() - startedAt);
-        return base;
+      } catch {
+        return finish({ errorCode: "LIFECYCLE_BEFORE_SEND_FAILED" });
       }
     }
 
     if (isAborted(signal)) {
-      base.status = "cancelled";
-      base.errorCode = "BUMP_ABORTED";
-      base.durationMs = Math.max(0, clock.now() - startedAt);
-      return base;
+      return cancelled();
     }
 
     // ---- send ----
@@ -451,9 +407,7 @@ export function createForumBumpService({
         },
       });
     } catch (error) {
-      base.status = "failed";
-      base.errorCode = "SEND_FAILED";
-      base.durationMs = Math.max(0, clock.now() - startedAt);
+      finish({ errorCode: "SEND_FAILED" });
       logger?.warn?.("[ForumBump] send failed", {
         operation: "forum-bump",
         status: "failed",
@@ -474,17 +428,10 @@ export function createForumBumpService({
       // send 已返回对象但缺少合法 id：尝试清理一次，不得当普通 SEND_FAILED 直接返回。
       if (sentMessage && typeof sentMessage.delete === "function") {
         const cleaned = await tryDeleteOnce(sentMessage);
-        base.status = "failed";
-        base.success = false;
-        base.sentMessageId = null;
-        if (cleaned) {
-          base.cleanupRequired = false;
-          base.errorCode = "SEND_RESULT_INVALID";
-        } else {
-          base.cleanupRequired = true;
-          base.errorCode = "DELETE_FAILED";
-        }
-        base.durationMs = Math.max(0, clock.now() - startedAt);
+        finish({
+          cleanupRequired: !cleaned,
+          errorCode: cleaned ? "SEND_RESULT_INVALID" : "DELETE_FAILED",
+        });
         logger?.error?.("[ForumBump] send result missing message id", {
           operation: "forum-bump",
           status: "failed",
@@ -498,12 +445,7 @@ export function createForumBumpService({
         return base;
       }
 
-      base.status = "failed";
-      base.success = false;
-      base.cleanupRequired = false;
-      base.sentMessageId = null;
-      base.errorCode = "SEND_RESULT_INVALID";
-      base.durationMs = Math.max(0, clock.now() - startedAt);
+      finish({ errorCode: "SEND_RESULT_INVALID" });
       logger?.error?.("[ForumBump] send result missing message id and delete", {
         operation: "forum-bump",
         status: "failed",
@@ -529,48 +471,32 @@ export function createForumBumpService({
         });
       } catch {
         const cleaned = await tryDeleteOnce(sentMessage);
-        base.status = "failed";
-        base.success = false;
-        base.cleanupRequired = !cleaned;
-        base.errorCode = cleaned ? "LIFECYCLE_AFTER_SEND_FAILED" : "DELETE_FAILED";
-        base.diagnosticsComplete = false;
-        base.durationMs = Math.max(0, clock.now() - startedAt);
-        return base;
+        return finish({
+          cleanupRequired: !cleaned,
+          errorCode: cleaned ? "LIFECYCLE_AFTER_SEND_FAILED" : "DELETE_FAILED",
+        });
       }
     }
 
     // ---- afterSend snapshot (diagnostic only) ----
     const warnings = [];
-    let afterSend = null;
     try {
-      const refreshed = await forceRefreshThreadSnapshot(client, threadId, clock);
-      afterSend = refreshed.snapshot;
+      base.afterSend = (await forceRefreshThreadSnapshot(client, threadId, clock)).snapshot;
     } catch {
       warnings.push("AFTER_SEND_SNAPSHOT_FAILED");
-      afterSend = null;
     }
-    base.afterSend = afterSend;
 
     // ---- wait then delete (abort → skip remaining wait, still delete) ----
     await sleepMaybeAbort(sleep, FORUM_BUMP_DELETE_DELAY_MS, signal);
     const abortedAfterSend = isAborted(signal);
 
-    let deleted = false;
     try {
       if (typeof sentMessage.delete !== "function") {
         throw new Error("message.delete unavailable");
       }
       await sentMessage.delete();
-      deleted = true;
     } catch (error) {
-      base.status = "failed";
-      base.success = false;
-      base.cleanupRequired = true;
-      base.errorCode = "DELETE_FAILED";
-      base.warnings = warnings;
-      base.diagnosticsComplete = false;
-      base.abortedAfterSend = abortedAfterSend;
-      base.durationMs = Math.max(0, clock.now() - startedAt);
+      finish({ cleanupRequired: true, errorCode: "DELETE_FAILED", warnings, abortedAfterSend });
       logger?.error?.("[ForumBump] delete failed", {
         operation: "forum-bump",
         status: "failed",
@@ -595,15 +521,7 @@ export function createForumBumpService({
           sentMessageId,
         });
       } catch {
-        base.status = "failed";
-        base.success = false;
-        base.cleanupRequired = false;
-        base.errorCode = "LIFECYCLE_AFTER_DELETE_FAILED";
-        base.warnings = warnings;
-        base.diagnosticsComplete = false;
-        base.abortedAfterSend = abortedAfterSend;
-        base.durationMs = Math.max(0, clock.now() - startedAt);
-        return base;
+        return finish({ errorCode: "LIFECYCLE_AFTER_DELETE_FAILED", warnings, abortedAfterSend });
       }
     }
 
@@ -611,28 +529,22 @@ export function createForumBumpService({
     await sleepMaybeAbort(sleep, FORUM_BUMP_AFTER_DELETE_SETTLE_MS, signal);
 
     let afterDelete = null;
-    let diagnosticsComplete = true;
     try {
-      const refreshed = await forceRefreshThreadSnapshot(client, threadId, clock);
-      afterDelete = refreshed.snapshot;
+      afterDelete = (await forceRefreshThreadSnapshot(client, threadId, clock)).snapshot;
     } catch {
       warnings.push("AFTER_DELETE_SNAPSHOT_FAILED");
-      afterDelete = null;
-      diagnosticsComplete = false;
     }
+    // 任一诊断快照失败 → diagnosticsComplete=false
+    const diagnosticsComplete = warnings.length === 0;
 
-    if (warnings.includes("AFTER_SEND_SNAPSHOT_FAILED")) {
-      diagnosticsComplete = false;
-    }
-
-    base.status = "succeeded";
-    base.success = true;
-    base.cleanupRequired = false;
-    base.diagnosticsComplete = diagnosticsComplete;
-    base.afterDelete = afterDelete;
-    base.warnings = warnings;
-    base.abortedAfterSend = abortedAfterSend;
-    base.durationMs = Math.max(0, clock.now() - startedAt);
+    finish({
+      status: "succeeded",
+      success: true,
+      diagnosticsComplete,
+      afterDelete,
+      warnings,
+      abortedAfterSend,
+    });
 
     logger?.info?.("[ForumBump] bump succeeded", {
       operation: "forum-bump",
@@ -648,9 +560,6 @@ export function createForumBumpService({
       warnings,
       abortedAfterSend,
     });
-
-    // deleted used for lint; ensure path was taken
-    void deleted;
     return base;
   }
 
