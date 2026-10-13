@@ -41,15 +41,17 @@ function makeTimers() {
   };
 }
 
-async function setup(root) {
+async function setup(root, { fresh = true } = {}) {
   const stateDir = join(root, "state");
   const cfgDir = join(root, "cfg");
-  mkdirSync(stateDir);
-  mkdirSync(cfgDir);
   const statePath = join(stateDir, "state.json");
   const dynamicConfigPath = join(cfgDir, "config.json");
-  const boot = createForumBumpStateStore({ statePath, logger: quiet });
-  await boot.initialize({ localDate: "2026-07-28" });
+  if (fresh) {
+    mkdirSync(stateDir);
+    mkdirSync(cfgDir);
+    const boot = createForumBumpStateStore({ statePath, logger: quiet });
+    await boot.initialize({ localDate: "2026-07-28" });
+  }
   const timers = makeTimers();
   const alerts = [];
   const counts = { bumps: 0, scans: 0, sends: 0, deletes: 0 };
@@ -184,6 +186,22 @@ if (typeof process.getuid === "function" && process.getuid() !== 0) {
       assertEqual(h.timers.active().length, 0, "A2: 停止调度");
       assertEqual(h.alerts, ["forum_bump_state_unavailable"], "A2: 告警 key");
       await h.rt.stop();
+
+      // A2 续：状态恢复可写后重启（真实恢复路径，同一候选仍可顶）→ 不得再次顶帖
+      const r = await setup(root, { fresh: false });
+      const st2 = await r.rt.start();
+      const disk2 = JSON.parse(readFileSync(r.statePath, "utf8"));
+      assertEqual(st2.recoveryStatus, "manual_review_required", "A2 重启: 恢复分类 manual_review_required");
+      assertEqual([disk2.paused, disk2.pauseReason], [true, "INFLIGHT_BEFORE_SEND"], "A2 重启: 暂停 INFLIGHT_BEFORE_SEND");
+      assertEqual(disk2.inFlight?.phase ?? null, "before_send", "A2 重启: inFlight 保留");
+      assertEqual(r.timers.active().length, 0, `A2 重启: 不 arm timer (start=${JSON.stringify(st2.success)})`);
+      await r.timers.fireAll();
+      const resume = await r.rt.resumeByAdmin({ userId: "admin" });
+      assertEqual([resume.success, resume.errorCode], [false, "STATE_RECOVERY_REQUIRED"], "A2 重启: 管理员恢复被拒绝");
+      await r.timers.fireAll();
+      assertEqual([r.counts.scans, r.counts.bumps, r.counts.sends, r.counts.deletes], [0, 0, 0, 0], "A2 重启: 不扫描、不再次顶帖");
+      assertEqual(r.alerts, ["forum_bump_scheduler_halted"], "A2 重启: 告警 key");
+      await r.rt.stop();
     }
     // B. 动态配置写失败 → 拒绝保存，生效配置不变
     {
