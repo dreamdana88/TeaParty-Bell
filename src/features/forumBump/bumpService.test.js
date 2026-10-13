@@ -220,10 +220,11 @@ console.log("\n=== ForumBump bumpService ===\n");
     [{ guildId: GUILD, forumChannelId: FORUM, threadId: "1", policy: policy() }, "非法 thread"],
     [{ guildId: GUILD, forumChannelId: FORUM, threadId: THREAD, policy: { silenceDays: 0 } }, "silence 0"],
     [{ guildId: GUILD, forumChannelId: FORUM, threadId: THREAD, policy: { silenceDays: 30, excludedTagIds: ["bad"] } }, "非法 tag"],
-    // eslint-disable-next-line no-sparse-arrays
+    /* eslint-disable no-sparse-arrays */
     [{ guildId: GUILD, forumChannelId: FORUM, threadId: THREAD, policy: { silenceDays: 30, excludedTagIds: [, "555555555555555555"] } }, "稀疏 tag [ , id]"],
     [{ guildId: GUILD, forumChannelId: FORUM, threadId: THREAD, policy: { silenceDays: 30, excludedTagIds: new Array(2) } }, "稀疏 tag new Array(2)"],
     [{ guildId: GUILD, forumChannelId: FORUM, threadId: THREAD, policy: { silenceDays: 30, excludedTagIds: ["555555555555555555", , "666666666666666666"] } }, "稀疏 tag 中间空槽"],
+    /* eslint-enable no-sparse-arrays */
     [{ guildId: GUILD, forumChannelId: FORUM, threadId: THREAD, policy: { silenceDays: 30, skipPinned: "yes" } }, "非法 skipPinned"],
     [{ guildId: GUILD, forumChannelId: FORUM, threadId: THREAD, policy: policy(), signal: 123 }, "非法 signal"],
   ]) {

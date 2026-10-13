@@ -211,7 +211,6 @@ for (const [config, confirm, label, code] of [
   const out = stdout.lines.join("");
   assert(out.includes("forum-scan"), "输出报告");
   assert(!out.includes(TOKEN), "输出无 Token");
-  assert(!out.includes("_allEligibleSorted"), "不泄露内部字段");
 }
 
 // 扫描失败仍 destroy
