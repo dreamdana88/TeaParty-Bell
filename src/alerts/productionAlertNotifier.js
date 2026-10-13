@@ -15,12 +15,11 @@
 import { generateAlertId } from "./alertOutbox.js";
 
 export function createProductionAlertNotifier(options) {
-  const { outbox, logger } = options;
+  const { outbox } = options;
+  const logger = options.logger ?? { info() {}, warn() {}, error() {} };
 
   /** Map<dedupeKey, { alertId, startedAt, incidentKey }> */
   const _openIncidents = new Map();
-
-  let _loadedAlerts = [];
 
   // ========================
   // 内部
@@ -62,13 +61,12 @@ export function createProductionAlertNotifier(options) {
   // ========================
 
   async function initialize() {
-    _loadedAlerts = outbox.loadAllAlerts();
     _openIncidents.clear();
 
-    for (const alert of _loadedAlerts) {
+    for (const alert of outbox.loadAllAlerts()) {
       if (alert.event === "failure" && alert.severity === "fatal" && alert.incidentStatus === "open") {
         _markOpen(alert.dedupeKey, alert.id, alert.incidentKey, alert.startedAt);
-        if (logger) logger.warn("[AlertNotifier] 发现未解决的历史 fatal incident", {
+        logger.warn("[AlertNotifier] 发现未解决的历史 fatal incident", {
           alertId: alert.id, incidentKey: alert.incidentKey, dedupeKey: alert.dedupeKey,
           deliveryStatus: alert.deliveryStatus,
         });
@@ -84,7 +82,7 @@ export function createProductionAlertNotifier(options) {
     const dedupeKey = incidentKey;
 
     if (_isOpen(dedupeKey)) {
-      if (logger) logger.info("[AlertNotifier] 同类故障已 open，更新 duration", { incidentKey });
+      logger.info("[AlertNotifier] 同类故障已 open，更新 duration", { incidentKey });
       const existing = _openIncidents.get(dedupeKey);
       // updateAlert 失败向上抛（不再 catch 后返回 null）
       await outbox.updateAlert(existing.alertId, {
@@ -99,7 +97,7 @@ export function createProductionAlertNotifier(options) {
     const alert = _buildBase(incidentKey, "failure", "fatal", dedupeKey, message, details);
     await outbox.writeAlert(alert);
     _markOpen(dedupeKey, alert.id, incidentKey, alert.startedAt);
-    if (logger) logger.error("[AlertNotifier] 故障告警已创建", { alertId: alert.id, incidentKey, message });
+    logger.error("[AlertNotifier] 故障告警已创建", { alertId: alert.id, incidentKey, message });
     return alert;
   }
 
@@ -116,7 +114,7 @@ export function createProductionAlertNotifier(options) {
   async function notifyRecovery(incidentKey, message) {
     const dedupeKey = incidentKey;
     if (!_isOpen(dedupeKey)) {
-      if (logger) logger.info("[AlertNotifier] 无对应 open incident，跳过 recovery", { incidentKey });
+      logger.info("[AlertNotifier] 无对应 open incident，跳过 recovery", { incidentKey });
       return null;
     }
 
@@ -126,27 +124,19 @@ export function createProductionAlertNotifier(options) {
     const durationMs = Date.now() - existing.startedAt;
 
     // 检查 Recovery 文件是否已存在
-    let recoveryExists = false;
-    try {
-      // 尝试从 outbox 查询（需要已加载的告警列表）
-      const all = outbox.loadAllAlerts();
-      const found = outbox.findAlert(recoveryAlertId, all);
-      if (found) {
-        recoveryExists = true;
-        // 验证 originalAlertId 匹配
-        const origId = found.details?.originalAlertId;
-        if (origId !== originalAlertId) {
-          throw Object.assign(
-            new Error(`Recovery 文件 originalAlertId 不匹配：期望 ${originalAlertId}，实际 ${origId}`),
-            { name: "OutboxError", code: "schema_invalid" }
-          );
-        }
-        if (logger) logger.info("[AlertNotifier] Recovery 文件已存在，幂等跳过", { recoveryAlertId, originalAlertId });
+    // 加载失败直接向上传播
+    const found = outbox.findAlert(recoveryAlertId, outbox.loadAllAlerts());
+    const recoveryExists = Boolean(found);
+    if (found) {
+      // 验证 originalAlertId 匹配
+      const origId = found.details?.originalAlertId;
+      if (origId !== originalAlertId) {
+        throw Object.assign(
+          new Error(`Recovery 文件 originalAlertId 不匹配：期望 ${originalAlertId}，实际 ${origId}`),
+          { name: "OutboxError", code: "schema_invalid" }
+        );
       }
-    } catch (err) {
-      if (err.name === "OutboxError") throw err;
-      // 加载失败 → 传播
-      throw err;
+      logger.info("[AlertNotifier] Recovery 文件已存在，幂等跳过", { recoveryAlertId, originalAlertId });
     }
 
     // 写入 Recovery（如不存在）
@@ -181,7 +171,7 @@ export function createProductionAlertNotifier(options) {
     // 两者都成功 → 从内存删除
     _markClosed(dedupeKey);
 
-    if (logger) logger.info("[AlertNotifier] 恢复告警已创建", {
+    logger.info("[AlertNotifier] 恢复告警已创建", {
       recoveryAlertId, incidentKey, originalAlertId, durationMs,
     });
     return { recoveryAlertId, originalAlertId, incidentKey };
@@ -194,7 +184,7 @@ export function createProductionAlertNotifier(options) {
     const alert = _buildBase(incidentKey, "warning", "warning", incidentKey + "_warning", message, details);
     alert.incidentStatus = "resolved";
     await outbox.writeAlert(alert);
-    if (logger) logger.warn("[AlertNotifier] 警告已创建", { alertId: alert.id, incidentKey, message });
+    logger.warn("[AlertNotifier] 警告已创建", { alertId: alert.id, incidentKey, message });
     return alert;
   }
 
@@ -211,11 +201,7 @@ export function createProductionAlertNotifier(options) {
    */
   async function notifyReadyAfterRestart(options = {}) {
     const result = { createdReady: false, recovered: [], failedRecoveries: [], skipped: [] };
-    const exclude = new Set(
-      options.excludeIncidentKeys
-        ? [...options.excludeIncidentKeys]
-        : [],
-    );
+    const exclude = new Set(options.excludeIncidentKeys ?? []);
 
     const eligible = [];
     for (const [dedupeKey, incident] of _openIncidents) {
@@ -235,7 +221,7 @@ export function createProductionAlertNotifier(options) {
           if (rec) result.recovered.push(rec.incidentKey);
         } catch (err) {
           result.failedRecoveries.push({ incidentKey: incident.incidentKey, error: err.message });
-          if (logger) logger.error("[AlertNotifier] Ready recovery 失败", { incidentKey: incident.incidentKey, error: err.message });
+          logger.error("[AlertNotifier] Ready recovery 失败", { incidentKey: incident.incidentKey, error: err.message });
         }
       }
     } else {
@@ -246,9 +232,9 @@ export function createProductionAlertNotifier(options) {
       try {
         await outbox.writeAlert(alert);
         result.createdReady = true;
-        if (logger) logger.info("[AlertNotifier] service_operational 已创建", { alertId: alert.id });
+        logger.info("[AlertNotifier] service_operational 已创建", { alertId: alert.id });
       } catch (err) {
-        if (logger) logger.error("[AlertNotifier] service_operational 写入失败", { error: err.message });
+        logger.error("[AlertNotifier] service_operational 写入失败", { error: err.message });
         throw err;
       }
     }

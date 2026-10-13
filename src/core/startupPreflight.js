@@ -62,13 +62,14 @@ export function createStartupPreflight(options) {
   const {
     client,
     config,
-    logger,
+    logger: injectedLogger,
     emojiProvider,
     notifyFailure,
     notifyWarning,
     exitFn = process.exit,
   } = options;
 
+  const logger = injectedLogger ?? { info() {}, warn() {}, error() {} };
   const _results = [];
   /** @type {import("discord.js").Guild|null} 缓存，只 fetch 一次 */
   let _guild = null;
@@ -167,12 +168,10 @@ export function createStartupPreflight(options) {
       );
     } catch (err) {
       // 无法读取 systemChannelFlags → WARNING（非 PASS）
-      if (logger) {
-        logger.warn("[StartupPreflight] 无法读取 systemChannelFlags", {
-          guildId: guild.id,
-          error: err.message,
-        });
-      }
+      logger.warn("[StartupPreflight] 无法读取 systemChannelFlags", {
+        guildId: guild.id,
+        error: err.message,
+      });
       return _addResult(
         "suppress_premium_subscriptions",
         PreflightResult.WARNING,
@@ -455,21 +454,27 @@ export function createStartupPreflight(options) {
   // 汇总与决策
   // ========================
 
+  /** warning 告警 best-effort：写入失败不影响自检结论。 */
+  async function _sendWarnings(warnings) {
+    if (!notifyWarning) return;
+    for (const w of warnings) {
+      try { await notifyWarning(w.check, w.message, { details: w.details }); } catch { /* best-effort */ }
+    }
+  }
+
   async function run() {
     _results.length = 0;
     _guild = null;
 
-    if (logger) {
-      logger.info("[StartupPreflight] 开始启动权限自检...", {
-        guildId: config.discordGuildId,
-        thanksChannelId: config.discordThanksChannelId,
-        nodeEnv: config.nodeEnv,
-        isProduction: config.isProduction,
-        forumBumpMode: config.forumBump?.mode ?? "disabled",
-      });
-    }
+    logger.info("[StartupPreflight] 开始启动权限自检...", {
+      guildId: config.discordGuildId,
+      thanksChannelId: config.discordThanksChannelId,
+      nodeEnv: config.nodeEnv,
+      isProduction: config.isProduction,
+      forumBumpMode: config.forumBump?.mode ?? "disabled",
+    });
 
-    await _checkGuildDirect(); // _fetchGuildOnce 内部会调用
+    await _fetchGuildOnce();
     await _checkSuppressPremiumSubscriptions();
     await _checkSystemChannel();
     await _checkThanksChannel();
@@ -481,19 +486,17 @@ export function createStartupPreflight(options) {
     const recoverable = _results.filter((r) => r.result === PreflightResult.RECOVERABLE);
     const warnings = _results.filter((r) => r.result === PreflightResult.WARNING);
 
-    if (logger) {
-      if (fatal.length === 0 && recoverable.length === 0) {
-        logger.info("[StartupPreflight] 自检通过", {
-          checkCount: _results.length, warningCount: warnings.length,
-        });
-      } else {
-        logger.error("[StartupPreflight] 自检发现问题", {
-          fatalCount: fatal.length, recoverableCount: recoverable.length,
-          warningCount: warnings.length,
-          fatalItems: fatal.map((r) => ({ check: r.check, message: r.message })),
-          recoverableItems: recoverable.map((r) => ({ check: r.check, message: r.message })),
-        });
-      }
+    if (fatal.length === 0 && recoverable.length === 0) {
+      logger.info("[StartupPreflight] 自检通过", {
+        checkCount: _results.length, warningCount: warnings.length,
+      });
+    } else {
+      logger.error("[StartupPreflight] 自检发现问题", {
+        fatalCount: fatal.length, recoverableCount: recoverable.length,
+        warningCount: warnings.length,
+        fatalItems: fatal.map((r) => ({ check: r.check, message: r.message })),
+        recoverableItems: recoverable.map((r) => ({ check: r.check, message: r.message })),
+      });
     }
 
     // 决策：permanent fatal → exit 78, recoverable → exit 1
@@ -504,14 +507,10 @@ export function createStartupPreflight(options) {
             `启动自检失败，${fatal.length} 项致命问题`,
             { guildId: config.discordGuildId, details: { fatalCount: fatal.length, fatalItems: fatal } });
         } catch (err) {
-          if (logger) logger.error("[StartupPreflight] 无法写入 fatal 告警", { error: err.message });
+          logger.error("[StartupPreflight] 无法写入 fatal 告警", { error: err?.message });
         }
       }
-      if (notifyWarning && warnings.length > 0) {
-        for (const w of warnings) {
-          try { await notifyWarning(w.check, w.message, { details: w.details }); } catch {}
-        }
-      }
+      await _sendWarnings(warnings);
       exitFn(78);
       return { passed: false, fatal, recoverable, warnings, all: _results };
     }
@@ -523,7 +522,7 @@ export function createStartupPreflight(options) {
             `启动自检遇到可恢复错误：${recoverable[0].message}`,
             { guildId: config.discordGuildId, details: { recoverable } });
         } catch (err) {
-          if (logger) logger.error("[StartupPreflight] 无法写入 recoverable 告警，放弃重启循环", { error: err.message });
+          logger.error("[StartupPreflight] 无法写入 recoverable 告警，放弃重启循环", { error: err?.message });
           exitFn(78);
           return { passed: false, fatal: [], recoverable, warnings, all: _results };
         }
@@ -532,18 +531,9 @@ export function createStartupPreflight(options) {
       return { passed: false, fatal: [], recoverable, warnings, all: _results };
     }
 
-    if (notifyWarning && warnings.length > 0) {
-      for (const w of warnings) {
-        try { await notifyWarning(w.check, w.message, { details: w.details }); } catch {}
-      }
-    }
+    await _sendWarnings(warnings);
 
     return { passed: true, fatal: [], recoverable: [], warnings, all: _results };
-  }
-
-  // 首次调用 fetchGuildOnce（由 run 内联）
-  async function _checkGuildDirect() {
-    await _fetchGuildOnce();
   }
 
   return { run };

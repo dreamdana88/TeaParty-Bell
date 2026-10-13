@@ -26,6 +26,7 @@
 - [ ] 负向：把 `DISCORD_THANKS_CHANNEL_ID` 改成不存在的 ID → 启动失败，退出码 78（永久故障）。还原。
 - [ ] 负向：`NODE_ENV=production` + `TEST_MODE=true` → 自检 FATAL、退出码 78。还原。
 - [ ] 负向（单实例锁）：同一目录再开一个 `npm start` → 第二个进程立即退出码 78（`INSTANCE_LOCK_BUSY`），第一个不受影响。
+- [ ] 单实例锁过期接管：`kill -9` 第一个进程后再 `npm start` → 自动接管 `data/runtime/teaparty-bell.instance.lock` 正常启动。macOS / Windows 无 `/proc`，只检查 pid 存活；若 pid 被复用导致误判占用，手动删除该锁文件。
 - [ ] 启动失败时 `data/runtime/alerts/` 下生成 `startup_preflight_failed` 告警文件。
 
 ## 2. Boost 感谢

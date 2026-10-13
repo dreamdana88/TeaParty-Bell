@@ -64,13 +64,15 @@ export function createGatewayHealthMonitor(options) {
     notifyFailure,
     notifyRecovery,
     exitFn = process.exit,
-    logger,
+    logger: injectedLogger,
     checkIntervalMs = DEFAULT_CHECK_INTERVAL_MS,
     startupGraceMs = DEFAULT_STARTUP_GRACE_MS,
     unhealthyThresholdMs = DEFAULT_UNHEALTHY_THRESHOLD_MS,
     healthySummaryIntervalMs = DEFAULT_HEALTHY_SUMMARY_INTERVAL_MS,
     alertPersistenceFailureExitCode = 78,
   } = options;
+
+  const logger = injectedLogger ?? { info() {}, warn() {}, error() {} };
 
   // ========================
   // 状态
@@ -126,6 +128,21 @@ export function createGatewayHealthMonitor(options) {
     return ready && wsStatus === WS_STATUS_READY;
   }
 
+  /**
+   * fire-and-forget 故障告警：持久化成功 → exit 1；失败 → exit 78（放弃重启循环）。
+   */
+  function _notifyFailureThenExit(persistFailedLog, ...notifyArgs) {
+    Promise.resolve()
+      .then(() => notifyFailure(...notifyArgs))
+      .then(() => {
+        if (!_hasExited) { _hasExited = true; exitFn(1); }
+      })
+      .catch((err) => {
+        logger.error(persistFailedLog, { error: err?.message });
+        if (!_hasExited) { _hasExited = true; exitFn(alertPersistenceFailureExitCode); }
+      });
+  }
+
   function _elapsedSince(time) {
     if (!time) return 0;
     return Date.now() - time;
@@ -147,7 +164,7 @@ export function createGatewayHealthMonitor(options) {
     const ready = _isReady();
     const wsStatus = _safeWsStatus();
     const ping = _safePing();
-    const healthy = _isHealthy();
+    const healthy = ready && wsStatus === WS_STATUS_READY;
 
     // ---- 尚未 Ready ----
     if (!_ready) {
@@ -157,44 +174,34 @@ export function createGatewayHealthMonitor(options) {
         // 宽限期耗尽仍未 Ready
         if (!_hasCreatedFailureAlert) {
           _hasCreatedFailureAlert = true;
-          if (logger) {
-            logger.error("[GatewayHealth] 启动宽限期耗尽，Gateway 仍未 Ready", {
-              graceMs: startupGraceMs,
-              graceElapsedMs: graceElapsed,
-              isReady: ready,
-              wsStatus,
-              ping,
-            });
-          }
-
-          // fire-and-forget 告警；持久化成功 → exit 1，失败 → exit 78
-          Promise.resolve()
-            .then(() =>
-              notifyFailure("gateway_startup_timeout", "Gateway 启动超时：宽限期内未能 Ready", {
-                wsStatus: String(wsStatus),
-                ping,
-                details: { graceMs: startupGraceMs, graceElapsedMs: graceElapsed },
-              })
-            )
-            .then(() => {
-              if (!_hasExited) { _hasExited = true; exitFn(1); }
-            })
-            .catch((err) => {
-              if (logger) logger.error("[GatewayHealth] 启动超时告警持久化失败，放弃重启循环", { error: err.message });
-              if (!_hasExited) { _hasExited = true; exitFn(alertPersistenceFailureExitCode); }
-            });
-        }
-      } else {
-        // 宽限期内
-        if (logger) {
-          logger.info("[GatewayHealth] 启动宽限期内，Gateway 尚未 Ready", {
+          logger.error("[GatewayHealth] 启动宽限期耗尽，Gateway 仍未 Ready", {
+            graceMs: startupGraceMs,
+            graceElapsedMs: graceElapsed,
             isReady: ready,
             wsStatus,
             ping,
-            graceElapsedMs: graceElapsed,
-            graceMs: startupGraceMs,
           });
+
+          _notifyFailureThenExit(
+            "[GatewayHealth] 启动超时告警持久化失败，放弃重启循环",
+            "gateway_startup_timeout",
+            "Gateway 启动超时：宽限期内未能 Ready",
+            {
+              wsStatus: String(wsStatus),
+              ping,
+              details: { graceMs: startupGraceMs, graceElapsedMs: graceElapsed },
+            },
+          );
         }
+      } else {
+        // 宽限期内
+        logger.info("[GatewayHealth] 启动宽限期内，Gateway 尚未 Ready", {
+          isReady: ready,
+          wsStatus,
+          ping,
+          graceElapsedMs: graceElapsed,
+          graceMs: startupGraceMs,
+        });
       }
       return;
     }
@@ -205,13 +212,11 @@ export function createGatewayHealthMonitor(options) {
       if (_unhealthySince) {
         const duration = _elapsedSince(_unhealthySince);
         _unhealthySince = null;
-        if (logger) {
-          logger.info("[GatewayHealth] Gateway 已恢复健康", {
-            wasUnhealthyMs: duration,
-            wsStatus,
-            ping,
-          });
-        }
+        logger.info("[GatewayHealth] Gateway 已恢复健康", {
+          wasUnhealthyMs: duration,
+          wsStatus,
+          ping,
+        });
 
         // 只有此前创建了 failure alert 才发送 recovery
         if (_hasCreatedFailureAlert && !_recoveryInFlight) {
@@ -225,7 +230,7 @@ export function createGatewayHealthMonitor(options) {
               _recoveryInFlight = false;
             })
             .catch((err) => {
-              if (logger) logger.error("[GatewayHealth] Recovery 持久化失败，放弃运行", { error: err.message });
+              logger.error("[GatewayHealth] Recovery 持久化失败，放弃运行", { error: err?.message });
               _recoveryInFlight = false;
               // 不清除 _hasCreatedFailureAlert——让跨重启识别
               _hasExited = true;
@@ -241,29 +246,25 @@ export function createGatewayHealthMonitor(options) {
 
       if (shouldLogSummary) {
         _lastHealthySummaryAt = now;
-        if (logger) {
-          logger.info("[GatewayHealth] healthy", {
-            ready: true,
-            wsStatus: "Ready",
-            ping: ping !== null ? `${ping}ms` : "unavailable",
-            uptime: `${Math.round(_uptime() / 1000)}s`,
-            guildCount: client.guilds?.cache?.size ?? "?",
-          });
-        }
+        logger.info("[GatewayHealth] healthy", {
+          ready: true,
+          wsStatus: "Ready",
+          ping: ping !== null ? `${ping}ms` : "unavailable",
+          uptime: `${Math.round(_uptime() / 1000)}s`,
+          guildCount: client.guilds?.cache?.size ?? "?",
+        });
       }
     } else {
       // 不健康
       if (!_unhealthySince) {
         // 首次检测到不健康
         _unhealthySince = now;
-        if (logger) {
-          logger.warn("[GatewayHealth] Gateway 不健康", {
-            isReady: ready,
-            wsStatus,
-            ping,
-            unhealthySince: _unhealthySince,
-          });
-        }
+        logger.warn("[GatewayHealth] Gateway 不健康", {
+          isReady: ready,
+          wsStatus,
+          ping,
+          unhealthySince: _unhealthySince,
+        });
       } else {
         // 持续不健康
         const duration = _elapsedSince(_unhealthySince);
@@ -272,37 +273,7 @@ export function createGatewayHealthMonitor(options) {
           // 达到阈值
           if (!_hasCreatedFailureAlert) {
             _hasCreatedFailureAlert = true;
-            if (logger) {
-              logger.error("[GatewayHealth] Gateway 持续不健康达到阈值，准备退出", {
-                isReady: ready,
-                wsStatus,
-                ping,
-                unhealthySince: _unhealthySince,
-                durationMs: duration,
-                thresholdMs: unhealthyThresholdMs,
-              });
-            }
-
-            Promise.resolve()
-              .then(() =>
-                notifyFailure("gateway_unhealthy", `Gateway 持续不健康 ${Math.round(duration / 1000)}s，达到阈值 ${Math.round(unhealthyThresholdMs / 1000)}s`, {
-                  wsStatus: String(wsStatus),
-                  ping,
-                  details: { durationMs: duration, thresholdMs: unhealthyThresholdMs },
-                })
-              )
-              .then(() => {
-                if (!_hasExited) { _hasExited = true; exitFn(1); }
-              })
-              .catch((err) => {
-                if (logger) logger.error("[GatewayHealth] 不健康告警持久化失败，放弃重启循环", { error: err.message });
-                if (!_hasExited) { _hasExited = true; exitFn(alertPersistenceFailureExitCode); }
-              });
-          }
-        } else {
-          // 未达阈值，仅记录状态
-          if (logger) {
-            logger.warn("[GatewayHealth] Gateway 持续不健康（未达阈值）", {
+            logger.error("[GatewayHealth] Gateway 持续不健康达到阈值，准备退出", {
               isReady: ready,
               wsStatus,
               ping,
@@ -310,7 +281,28 @@ export function createGatewayHealthMonitor(options) {
               durationMs: duration,
               thresholdMs: unhealthyThresholdMs,
             });
+
+            _notifyFailureThenExit(
+              "[GatewayHealth] 不健康告警持久化失败，放弃重启循环",
+              "gateway_unhealthy",
+              `Gateway 持续不健康 ${Math.round(duration / 1000)}s，达到阈值 ${Math.round(unhealthyThresholdMs / 1000)}s`,
+              {
+                wsStatus: String(wsStatus),
+                ping,
+                details: { durationMs: duration, thresholdMs: unhealthyThresholdMs },
+              },
+            );
           }
+        } else {
+          // 未达阈值，仅记录状态
+          logger.warn("[GatewayHealth] Gateway 持续不健康（未达阈值）", {
+            isReady: ready,
+            wsStatus,
+            ping,
+            unhealthySince: _unhealthySince,
+            durationMs: duration,
+            thresholdMs: unhealthyThresholdMs,
+          });
         }
       }
     }
@@ -326,9 +318,7 @@ export function createGatewayHealthMonitor(options) {
    */
   function start() {
     if (_started) {
-      if (logger) {
-        logger.warn("[GatewayHealth] Monitor 已启动，忽略重复 start()");
-      }
+      logger.warn("[GatewayHealth] Monitor 已启动，忽略重复 start()");
       return;
     }
     _started = true;
@@ -342,14 +332,12 @@ export function createGatewayHealthMonitor(options) {
       _check();
     }, checkIntervalMs);
 
-    if (logger) {
-      logger.info("[GatewayHealth] Monitor 已启动", {
-        checkIntervalMs,
-        startupGraceMs,
-        unhealthyThresholdMs,
-        healthySummaryIntervalMs,
-      });
-    }
+    logger.info("[GatewayHealth] Monitor 已启动", {
+      checkIntervalMs,
+      startupGraceMs,
+      unhealthyThresholdMs,
+      healthySummaryIntervalMs,
+    });
   }
 
   /**
@@ -366,9 +354,7 @@ export function createGatewayHealthMonitor(options) {
     // 重置状态
     _unhealthySince = null;
     _recoveryInFlight = false;
-    if (logger) {
-      logger.info("[GatewayHealth] Monitor 已停止");
-    }
+    logger.info("[GatewayHealth] Monitor 已停止");
   }
 
   /**
@@ -382,11 +368,9 @@ export function createGatewayHealthMonitor(options) {
     if (!_ready) {
       _ready = true;
       _readyAt = Date.now();
-      if (logger) {
-        logger.info("[GatewayHealth] Gateway 首次 Ready，宽限期结束", {
-          graceElapsedMs: _elapsedSince(_startupAt),
-        });
-      }
+      logger.info("[GatewayHealth] Gateway 首次 Ready，宽限期结束", {
+        graceElapsedMs: _elapsedSince(_startupAt),
+      });
     }
   }
 
