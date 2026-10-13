@@ -72,11 +72,7 @@ export async function registerAdminCommands({
   try {
     await rest.put(route, { body });
   } catch (error) {
-    try {
-      logger?.error?.("[ManualMessage] Guild 命令同步失败", safeErrorFields(error));
-    } catch {
-      // 安全诊断日志失败不能改变注册失败语义。
-    }
+    logger?.error?.("[ManualMessage] Guild 命令同步失败", safeErrorFields(error));
     throw new AdminCommandRegistrationError("COMMAND_REGISTRATION_FAILED", undefined, error);
   }
 
