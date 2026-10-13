@@ -1,16 +1,14 @@
 import { Routes } from "discord.js";
 import { logger as defaultLogger } from "../../utils/logger.js";
 import { allAdminCommandDefinitions } from "../adminCommands.js";
+import { AppError } from "../../utils/appError.js";
 
 const SAFE_REGISTRATION_ERROR_MESSAGE = "Guild 命令注册失败。";
 
-export class AdminCommandRegistrationError extends Error {
+export class AdminCommandRegistrationError extends AppError {
   constructor(code, safeMessage = SAFE_REGISTRATION_ERROR_MESSAGE, cause) {
-    super(safeMessage);
+    super(code, safeMessage, cause);
     this.name = "AdminCommandRegistrationError";
-    this.code = code;
-    this.safeMessage = safeMessage;
-    this.cause = cause;
   }
 }
 
@@ -74,11 +72,7 @@ export async function registerAdminCommands({
   try {
     await rest.put(route, { body });
   } catch (error) {
-    try {
-      logger?.error?.("[ManualMessage] Guild 命令同步失败", safeErrorFields(error));
-    } catch {
-      // 安全诊断日志失败不能改变注册失败语义。
-    }
+    logger?.error?.("[ManualMessage] Guild 命令同步失败", safeErrorFields(error));
     throw new AdminCommandRegistrationError("COMMAND_REGISTRATION_FAILED", undefined, error);
   }
 

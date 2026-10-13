@@ -173,15 +173,11 @@ async function safelyDestroy(destroyFn, logger) {
   try {
     await destroyFn();
   } catch (error) {
-    try {
-      logger?.warn?.("[ForumBump] client destroy failed", {
-        operation: "destroy",
-        errorName: typeof error?.name === "string" ? error.name : "Error",
-        discordCode: error?.code ?? null,
-      });
-    } catch {
-      // ignore
-    }
+    logger?.warn?.("[ForumBump] client destroy failed", {
+      operation: "destroy",
+      errorName: typeof error?.name === "string" ? error.name : "Error",
+      discordCode: error?.code ?? null,
+    });
   }
 }
 
@@ -248,17 +244,9 @@ export async function runForumScan({
     if (typeof login !== "function") {
       throw createForumBumpError("SCAN_FAILED");
     }
-    try {
-      logger?.info?.("正在登录 Discord...");
-    } catch {
-      // ignore
-    }
+    logger?.info?.("正在登录 Discord...");
     await login(config.discordBotToken);
-    try {
-      logger?.info?.("Discord BOT 已就绪");
-    } catch {
-      // ignore
-    }
+    logger?.info?.("Discord BOT 已就绪");
 
     result = await scanFn({
       client,

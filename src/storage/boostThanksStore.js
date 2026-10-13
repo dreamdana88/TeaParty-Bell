@@ -17,8 +17,8 @@
  */
 
 import { createHash } from "crypto";
-import { readFileSync, writeFileSync, renameSync, existsSync, unlinkSync, mkdirSync } from "fs";
-import { dirname } from "path";
+import { readFileSync, existsSync } from "fs";
+import { writeJsonAtomic } from "../utils/atomicJson.js";
 
 // ---- 常量 ----
 
@@ -84,16 +84,6 @@ export function createBoostThanksStore(options) {
   // ========================
   // 内部：持久化
   // ========================
-
-  /**
-   * 确保状态文件所在目录存在。
-   */
-  function _ensureDir() {
-    const dir = dirname(filePath);
-    if (!existsSync(dir)) {
-      mkdirSync(dir, { recursive: true });
-    }
-  }
 
   /**
    * 读取并校验当前状态文件。
@@ -203,15 +193,11 @@ export function createBoostThanksStore(options) {
    * 调用方必须通过 _writeQueue 串行化。
    */
   function _save() {
-    _ensureDir();
-    const tmpPath = filePath + ".tmp";
-    const json = JSON.stringify(
+    writeJsonAtomic(
+      filePath,
       { version: FILE_VERSION, records: Object.fromEntries(_records) },
-      null,
-      2
+      { tmpPath: `${filePath}.tmp`, durable: false, trailingNewline: false }
     );
-    writeFileSync(tmpPath, json, "utf-8");
-    renameSync(tmpPath, filePath);
   }
 
   /**

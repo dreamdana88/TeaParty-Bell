@@ -141,10 +141,10 @@ export function createForumBumpRuntime({
     if (stateStore && mode !== "disabled") {
       try {
         await stateStore.load();
-        stateSnap = stateStore.getSnapshot?.() ?? null;
       } catch {
-        stateSnap = stateStore.getSnapshot?.() ?? null;
+        // load 失败时仍读取内存中的上一份快照
       }
+      stateSnap = stateStore.getSnapshot?.() ?? null;
     }
     const schedStatus = scheduler ? scheduler.getStatus() : null;
     return {
@@ -221,15 +221,11 @@ export function createForumBumpRuntime({
     criticalFired = true;
     fatal = true;
     fatalCode = context?.errorCode ?? "ALERT_PERSISTENCE_FAILED";
-    try {
-      logger?.error?.("[ForumBumpRuntime] critical failure", {
-        errorCode: fatalCode,
-        status: context?.status ?? null,
-        errorName: context?.errorName ?? null,
-      });
-    } catch {
-      // ignore
-    }
+    logger?.error?.("[ForumBumpRuntime] critical failure", {
+      errorCode: fatalCode,
+      status: context?.status ?? null,
+      errorName: context?.errorName ?? null,
+    });
     if (typeof onCriticalFailure === "function") {
       try {
         const ret = onCriticalFailure({
@@ -246,15 +242,14 @@ export function createForumBumpRuntime({
     }
   }
 
-  async function haltSchedulerAfterAlertFailure() {
-    if (scheduler) {
-      try {
-        await scheduler.stop();
-      } catch {
-        // ignore
-      }
+  /** 停 Scheduler 并吞掉 stop 异常；引用保留到 stop() 清理，timer 已由 scheduler.stop 清除。 */
+  async function stopSchedulerQuietly() {
+    if (!scheduler) return;
+    try {
+      await scheduler.stop();
+    } catch {
+      // ignore
     }
-    // stop 后引用保留到 stop() 清理；timer 已由 scheduler.stop 清除
   }
 
   /**
@@ -268,18 +263,14 @@ export function createForumBumpRuntime({
     try {
       await alertHandler.handleCycleResult(result);
     } catch (error) {
-      try {
-        logger?.error?.("[ForumBumpRuntime] cycle alert failed", {
-          errorName: typeof error?.name === "string" ? error.name : "Error",
-          status: result?.status ?? null,
-          incidentKey,
-        });
-      } catch {
-        // ignore
-      }
+      logger?.error?.("[ForumBumpRuntime] cycle alert failed", {
+        errorName: typeof error?.name === "string" ? error.name : "Error",
+        status: result?.status ?? null,
+        incidentKey,
+      });
       // 仅终止类 incident 升级致命
       if (incidentKey) {
-        await haltSchedulerAfterAlertFailure();
+        await stopSchedulerQuietly();
         fireCriticalOnce({
           errorCode: "ALERT_PERSISTENCE_FAILED",
           status: result?.status ?? null,
@@ -336,11 +327,7 @@ export function createForumBumpRuntime({
         recoveryStatus: null,
       };
       // disabled 不得把遗留 Forum incident 当作已恢复
-      try {
-        logger?.info?.("[ForumBumpRuntime] disabled — 不创建 Runtime 组件，不恢复 Forum incident");
-      } catch {
-        // ignore
-      }
+      logger?.info?.("[ForumBumpRuntime] disabled — 不创建 Runtime 组件，不恢复 Forum incident");
       return startResult;
     }
 
@@ -372,13 +359,9 @@ export function createForumBumpRuntime({
           });
         }
       }
-      try {
-        logger?.error?.("[ForumBumpRuntime] 动态配置不可用，fail closed", {
-          errorCode: startResult.errorCode,
-        });
-      } catch {
-        // ignore
-      }
+      logger?.error?.("[ForumBumpRuntime] 动态配置不可用，fail closed", {
+        errorCode: startResult.errorCode,
+      });
       return startResult;
     }
 
@@ -415,14 +398,10 @@ export function createForumBumpRuntime({
             });
           }
         }
-        try {
-          logger?.error?.("[ForumBumpRuntime] effective Forum Preflight 失败，fail closed", {
-            errorCode: "DYNAMIC_CONFIG_PREFLIGHT_FAILED",
-            failureCount: (pf.failures ?? []).length,
-          });
-        } catch {
-          // ignore
-        }
+        logger?.error?.("[ForumBumpRuntime] effective Forum Preflight 失败，fail closed", {
+          errorCode: "DYNAMIC_CONFIG_PREFLIGHT_FAILED",
+          failureCount: (pf.failures ?? []).length,
+        });
         return startResult;
       }
     } catch (error) {
@@ -622,14 +601,10 @@ export function createForumBumpRuntime({
           });
         }
       }
-      try {
-        logger?.warn?.("[ForumBumpRuntime] 启动恢复待处理，无 timer", {
-          recoveryStatus: recovery,
-          inFlightPhase: summary?.inFlightPhase ?? null,
-        });
-      } catch {
-        // ignore
-      }
+      logger?.warn?.("[ForumBumpRuntime] 启动恢复待处理，无 timer", {
+        recoveryStatus: recovery,
+        inFlightPhase: summary?.inFlightPhase ?? null,
+      });
       return startResult;
     }
 
@@ -709,13 +684,7 @@ export function createForumBumpRuntime({
             timerArmed: false,
             nextWakeAt: null,
           };
-          if (scheduler) {
-            try {
-              await scheduler.stop();
-            } catch {
-              // ignore
-            }
-          }
+          await stopSchedulerQuietly();
           started = false;
           scheduler = null;
           stateStore = null;
@@ -729,14 +698,10 @@ export function createForumBumpRuntime({
       }
     }
 
-    try {
-      logger?.info?.("[ForumBumpRuntime] started", {
-        mode,
-        timerArmed: startResult.timerArmed,
-      });
-    } catch {
-      // ignore
-    }
+    logger?.info?.("[ForumBumpRuntime] started", {
+      mode,
+      timerArmed: startResult.timerArmed,
+    });
     return startResult;
   }
 
@@ -748,13 +713,9 @@ export function createForumBumpRuntime({
       try {
         await scheduler.stop();
       } catch (error) {
-        try {
-          logger?.error?.("[ForumBumpRuntime] stop failed", {
-            errorName: typeof error?.name === "string" ? error.name : "Error",
-          });
-        } catch {
-          // ignore
-        }
+        logger?.error?.("[ForumBumpRuntime] stop failed", {
+          errorName: typeof error?.name === "string" ? error.name : "Error",
+        });
       }
     }
     scheduler = null;
@@ -851,13 +812,9 @@ export function createForumBumpRuntime({
       }
       dynamicConfigSource = "failed";
       dynamicConfigError = "DYNAMIC_CONFIG_COMPENSATE_FAILED";
-      try {
-        logger?.error?.("[ForumBumpRuntime] 动态配置补偿失败，fail closed", {
-          primaryErrorCode,
-        });
-      } catch {
-        // ignore
-      }
+      logger?.error?.("[ForumBumpRuntime] 动态配置补偿失败，fail closed", {
+        primaryErrorCode,
+      });
       if (alertHandler) {
         try {
           await alertHandler.handleCycleResult({
@@ -1162,15 +1119,11 @@ export function createForumBumpRuntime({
           });
         }
 
-        try {
-          logger?.info?.("[ForumBumpRuntime] dynamic config updated", {
-            revision: dynamicConfigDoc.revision,
-            dailyLimit: dynamicConfigDoc.dailyLimit,
-            nextWakeAt: arm.nextWakeAt ?? null,
-          });
-        } catch {
-          // ignore
-        }
+        logger?.info?.("[ForumBumpRuntime] dynamic config updated", {
+          revision: dynamicConfigDoc.revision,
+          dailyLimit: dynamicConfigDoc.dailyLimit,
+          nextWakeAt: arm.nextWakeAt ?? null,
+        });
 
         return {
           success: true,
@@ -1268,13 +1221,9 @@ export function createForumBumpRuntime({
         // ignore
       }
 
-      try {
-        logger?.info?.("[ForumBumpRuntime] admin paused", {
-          actor: actorContext?.actorId ?? null,
-        });
-      } catch {
-        // ignore
-      }
+      logger?.info?.("[ForumBumpRuntime] admin paused", {
+        actor: actorContext?.actorId ?? null,
+      });
 
       return {
         success: true,
@@ -1368,14 +1317,10 @@ export function createForumBumpRuntime({
 
       const arm = await scheduler.rescheduleFromState({ reason: "ready" });
 
-      try {
-        logger?.info?.("[ForumBumpRuntime] admin resumed", {
-          actor: actorContext?.actorId ?? null,
-          nextWakeAt: arm.nextWakeAt ?? null,
-        });
-      } catch {
-        // ignore
-      }
+      logger?.info?.("[ForumBumpRuntime] admin resumed", {
+        actor: actorContext?.actorId ?? null,
+        nextWakeAt: arm.nextWakeAt ?? null,
+      });
 
       return {
         success: true,

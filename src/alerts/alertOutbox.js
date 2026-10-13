@@ -18,6 +18,7 @@
  */
 
 import { readFileSync, writeFileSync, renameSync, existsSync, mkdirSync, readdirSync, unlinkSync } from "fs";
+import { writeJsonAtomic } from "../utils/atomicJson.js";
 import { join } from "path";
 
 // ---- 常量 ----
@@ -108,8 +109,9 @@ export function createAlertOutbox(options) {
       if (fs.existsSync(probePath) || fs.existsSync(tmpPath)) {
         throw new Error("probe file name collision");
       }
-      fs.writeFileSync(tmpPath, `{"probe":true,"ts":${Date.now()}}`, "utf-8");
-      fs.renameSync(tmpPath, probePath);
+      writeJsonAtomic(probePath, { probe: true, ts: Date.now() }, {
+        fs, tmpPath, durable: false, pretty: false, trailingNewline: false,
+      });
     } catch (err) {
       try { if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath); } catch {}
       try { if (fs.existsSync(probePath)) fs.unlinkSync(probePath); } catch {}
@@ -145,19 +147,14 @@ export function createAlertOutbox(options) {
    * 原子写入单条告警文件。version 在此处注入，调用方无法覆盖。
    */
   function _saveAlertFile(alert) {
-    _ensureDir();
     const filePath = _filePath(alert.id);
     const tmpPath = filePath + ".tmp";
 
     const toSave = { ...alert, version: FILE_VERSION };
-    const json = JSON.stringify(toSave, null, 2);
 
     try {
-      fs.writeFileSync(tmpPath, json, "utf-8");
-      fs.renameSync(tmpPath, filePath);
+      writeJsonAtomic(filePath, toSave, { fs, tmpPath, durable: false, trailingNewline: false });
     } catch (err) {
-      // 尽力清理残留 tmp
-      try { if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath); } catch {}
       throw new OutboxError(
         `告警文件写入失败：${filePath}（${err.message}）`,
         "write_failed",

@@ -52,7 +52,6 @@ export function createForumBumpAdminRouter({
   now = () => Date.now(),
   sessionStore = null,
   /** (ids: string[]) => Promise<Map<string,string>> */
-  resolveForumNamesFn = null,
 } = {}) {
   if (!client || typeof client.on !== "function") {
     throw new TypeError("createForumBumpAdminRouter 需要 client.on");
@@ -171,13 +170,6 @@ export function createForumBumpAdminRouter({
   }
 
   async function resolveForumNames(ids) {
-    if (typeof resolveForumNamesFn === "function") {
-      try {
-        return await resolveForumNamesFn(ids);
-      } catch {
-        return new Map();
-      }
-    }
     const map = new Map();
     if (!client?.channels) return map;
     for (const id of ids ?? []) {

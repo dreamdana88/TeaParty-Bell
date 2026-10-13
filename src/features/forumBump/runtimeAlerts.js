@@ -167,14 +167,10 @@ export function createForumBumpAlertHandler({ alertNotifier, logger, guildId = n
       try {
         await alertNotifier.notifyRecovery(key, `Forum Bump 已恢复健康：${key}`);
       } catch (error) {
-        try {
-          logger?.error?.("[ForumBumpRuntime] recovery 告警失败", {
-            incidentKey: key,
-            errorName: typeof error?.name === "string" ? error.name : "Error",
-          });
-        } catch {
-          // ignore
-        }
+        logger?.error?.("[ForumBumpRuntime] recovery 告警失败", {
+          incidentKey: key,
+          errorName: typeof error?.name === "string" ? error.name : "Error",
+        });
         throw error;
       }
     }

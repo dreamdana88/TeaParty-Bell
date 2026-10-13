@@ -80,23 +80,39 @@ function format(level, message, meta) {
   const ts = timestamp();
   const base = `[${ts}] [${level.toUpperCase()}] ${message}`;
   if (meta !== undefined) {
-    const safe = sanitize(meta);
-    return `${base} ${JSON.stringify(safe)}`;
+    try {
+      return `${base} ${JSON.stringify(sanitize(meta))}`;
+    } catch {
+      // 循环引用 / BigInt 等：不输出原始 meta，避免绕过脱敏
+      return `${base} {"logMetaError":"unserializable"}`;
+    }
   }
   return base;
 }
 
+/**
+ * 日志调用永不抛出：调用方无需再包 try/catch。
+ */
+function emit(level, write, message, meta) {
+  if (!shouldLog(level)) return;
+  try {
+    write(format(level, message, meta));
+  } catch {
+    // 输出流异常不能影响业务流程
+  }
+}
+
 export const logger = {
   error(message, meta) {
-    if (shouldLog("error")) console.error(format("error", message, meta));
+    emit("error", (line) => console.error(line), message, meta);
   },
   warn(message, meta) {
-    if (shouldLog("warn")) console.warn(format("warn", message, meta));
+    emit("warn", (line) => console.warn(line), message, meta);
   },
   info(message, meta) {
-    if (shouldLog("info")) console.info(format("info", message, meta));
+    emit("info", (line) => console.info(line), message, meta);
   },
   debug(message, meta) {
-    if (shouldLog("debug")) console.debug(format("debug", message, meta));
+    emit("debug", (line) => console.debug(line), message, meta);
   },
 };

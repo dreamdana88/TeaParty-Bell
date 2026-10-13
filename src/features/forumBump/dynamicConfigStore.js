@@ -3,19 +3,8 @@
  * 不自动覆盖损坏文件；不连接 Discord。
  */
 
-import {
-  closeSync,
-  existsSync,
-  fsyncSync,
-  mkdirSync,
-  openSync,
-  readFileSync,
-  renameSync,
-  unlinkSync,
-  writeSync,
-} from "fs";
-import { dirname } from "path";
-import { randomBytes } from "crypto";
+import { existsSync, readFileSync } from "fs";
+import { writeJsonAtomic } from "../../utils/atomicJson.js";
 import {
   FORUM_BUMP_DYNAMIC_CONFIG_VERSION,
   cloneDynamicConfig,
@@ -23,11 +12,6 @@ import {
   isForumBumpDynamicConfigError,
   validateDynamicConfig,
 } from "./dynamicConfigSchema.js";
-
-function defaultMakeTempName(configPath) {
-  const id = randomBytes(8).toString("hex");
-  return `${configPath}.tmp-${id}`;
-}
 
 function emptyResult(operation, extras = {}) {
   return {
@@ -48,26 +32,13 @@ function emptyResult(operation, extras = {}) {
  */
 export function createForumBumpDynamicConfigStore({
   configPath,
-  fs: fsOps,
   logger,
   clock = { now: () => Date.now() },
-  makeTempName = defaultMakeTempName,
 } = {}) {
   if (typeof configPath !== "string" || configPath.trim().length === 0) {
     throw new TypeError("createForumBumpDynamicConfigStore 需要 configPath");
   }
 
-  const fs = fsOps ?? {
-    existsSync,
-    mkdirSync,
-    readFileSync,
-    openSync,
-    writeSync,
-    fsyncSync,
-    closeSync,
-    renameSync,
-    unlinkSync,
-  };
 
   /** @type {object|null} */
   let _config = null;
@@ -80,81 +51,21 @@ export function createForumBumpDynamicConfigStore({
     return task;
   }
 
-  function _ensureDir() {
-    const dir = dirname(configPath);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-  }
-
   function _atomicWrite(doc) {
-    _ensureDir();
-    const tmpPath = makeTempName(configPath);
-    const json = `${JSON.stringify(doc, null, 2)}\n`;
-    let fd = null;
     try {
-      fd = fs.openSync(tmpPath, "w");
-      fs.writeSync(fd, json, 0, "utf8");
-      try {
-        fs.fsyncSync(fd);
-      } catch (fsyncError) {
-        try {
-          fs.closeSync(fd);
-        } catch {
-          // ignore
-        }
-        fd = null;
-        try {
-          if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
-        } catch {
-          // ignore
-        }
-        throw createDynamicConfigError("DYNAMIC_CONFIG_WRITE_FAILED", fsyncError);
-      }
-      fs.closeSync(fd);
-      fd = null;
-      fs.renameSync(tmpPath, configPath);
-      try {
-        const dirFd = fs.openSync(dirname(configPath), "r");
-        try {
-          fs.fsyncSync(dirFd);
-        } catch {
-          // best-effort
-        } finally {
-          try {
-            fs.closeSync(dirFd);
-          } catch {
-            // ignore
-          }
-        }
-      } catch {
-        // ignore
-      }
+      writeJsonAtomic(configPath, doc, { fsyncDir: true });
     } catch (error) {
-      if (isForumBumpDynamicConfigError(error) && error.code === "DYNAMIC_CONFIG_WRITE_FAILED") {
-        throw error;
-      }
-      try {
-        if (fd != null) fs.closeSync(fd);
-      } catch {
-        // ignore
-      }
-      try {
-        if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
-      } catch {
-        // ignore
-      }
       throw createDynamicConfigError("DYNAMIC_CONFIG_WRITE_FAILED", error);
     }
   }
 
   function _readAndValidateFromDisk() {
-    if (!fs.existsSync(configPath)) {
+    if (!existsSync(configPath)) {
       throw createDynamicConfigError("DYNAMIC_CONFIG_NOT_FOUND");
     }
     let raw;
     try {
-      raw = fs.readFileSync(configPath, "utf8");
+      raw = readFileSync(configPath, "utf8");
     } catch (error) {
       throw createDynamicConfigError("DYNAMIC_CONFIG_READ_FAILED", error);
     }
@@ -215,7 +126,7 @@ export function createForumBumpDynamicConfigStore({
 
   function exists() {
     try {
-      return fs.existsSync(configPath);
+      return existsSync(configPath);
     } catch {
       return false;
     }
@@ -239,7 +150,7 @@ export function createForumBumpDynamicConfigStore({
         }
 
         let diskDoc = null;
-        const fileExists = fs.existsSync(configPath);
+        const fileExists = existsSync(configPath);
         if (fileExists) {
           diskDoc = _readAndValidateFromDisk();
           if (diskDoc.revision !== expectedRevision) {
@@ -277,14 +188,10 @@ export function createForumBumpDynamicConfigStore({
         const finalDoc = validateDynamicConfig(next);
         _atomicWrite(finalDoc);
         _config = cloneDynamicConfig(finalDoc);
-        try {
-          logger?.info?.("[ForumBumpDynamicConfig] saved", {
-            revision: finalDoc.revision,
-            dailyLimit: finalDoc.dailyLimit,
-          });
-        } catch {
-          // ignore
-        }
+        logger?.info?.("[ForumBumpDynamicConfig] saved", {
+          revision: finalDoc.revision,
+          dailyLimit: finalDoc.dailyLimit,
+        });
         return {
           operation: "save",
           success: true,

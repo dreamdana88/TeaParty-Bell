@@ -3,6 +3,7 @@
  *
  * safeMessage 只用于对外展示；cause 保留给内部诊断，不能直接写入审计。
  */
+import { defineAppError } from "../../utils/appError.js";
 
 export const MANUAL_MESSAGE_SOURCES = Object.freeze([
   "discord_slash",
@@ -27,29 +28,9 @@ const SAFE_MESSAGES = Object.freeze({
   REPLY_FAILED: "小G宝回复消息失败。",
 });
 
-export class ManualMessageError extends Error {
-  /**
-   * @param {string} code
-   * @param {string} [safeMessage]
-   * @param {unknown} [cause]
-   */
-  constructor(code, safeMessage = SAFE_MESSAGES[code] ?? "人工发言失败。", cause) {
-    super(safeMessage, cause === undefined ? undefined : { cause });
-    this.name = "ManualMessageError";
-    this.code = code;
-    this.safeMessage = safeMessage;
-    this.cause = cause;
-  }
-}
+const kind = defineAppError("ManualMessageError", SAFE_MESSAGES, "人工发言失败。");
 
-export function isManualMessageError(error) {
-  return error instanceof ManualMessageError;
-}
-
-export function createManualMessageError(code, cause) {
-  return new ManualMessageError(code, SAFE_MESSAGES[code], cause);
-}
-
-export function getSafeMessage(code) {
-  return SAFE_MESSAGES[code] ?? "人工发言失败。";
-}
+export const ManualMessageError = kind.ErrorClass;
+export const isManualMessageError = kind.is;
+export const createManualMessageError = kind.create;
+export const getSafeMessage = kind.getSafeMessage;

@@ -1,45 +1,17 @@
-import {
-  closeSync,
-  existsSync,
-  fsyncSync,
-  mkdirSync,
-  openSync,
-  readFileSync,
-  renameSync,
-  unlinkSync,
-  writeSync,
-} from "fs";
-import { dirname } from "path";
-import { randomBytes } from "crypto";
+import { existsSync, readFileSync } from "fs";
+import { writeJsonAtomic } from "../../utils/atomicJson.js";
 
 export const COC_MVP_STATE_VERSION = 1;
-
-function defaultMakeTempName(filePath) {
-  return `${filePath}.tmp-${randomBytes(8).toString("hex")}`;
-}
 
 /**
  * MVP 临时场次文件。损坏时 fail closed，不改写成空名单。
  */
 export function createCocSessionStore({
   filePath,
-  fs: fsOps,
-  makeTempName = defaultMakeTempName,
 } = {}) {
   if (typeof filePath !== "string" || filePath.trim().length === 0) {
     throw new TypeError("createCocSessionStore 需要 filePath");
   }
-  const fs = fsOps ?? {
-    existsSync,
-    mkdirSync,
-    readFileSync,
-    openSync,
-    writeSync,
-    fsyncSync,
-    closeSync,
-    renameSync,
-    unlinkSync,
-  };
   let queue = Promise.resolve();
   /** @type {{ version: number, sessions: object[] }|null} */
   let memory = null;
@@ -70,12 +42,12 @@ export function createCocSessionStore({
   }
 
   function readFromDisk() {
-    if (!fs.existsSync(filePath)) {
+    if (!existsSync(filePath)) {
       return { ok: true, state: emptyState(), missing: true };
     }
     let text;
     try {
-      text = fs.readFileSync(filePath, "utf8");
+      text = readFileSync(filePath, "utf8");
     } catch {
       return { ok: false, errorCode: "STATE_READ_FAILED" };
     }
@@ -97,27 +69,7 @@ export function createCocSessionStore({
   }
 
   function atomicWrite(state) {
-    const dir = dirname(filePath);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    const tmpPath = makeTempName(filePath);
-    const json = `${JSON.stringify(state, null, 2)}\n`;
-    let fd = null;
-    try {
-      fd = fs.openSync(tmpPath, "w");
-      fs.writeSync(fd, json, 0, "utf8");
-      fs.fsyncSync(fd);
-      fs.closeSync(fd);
-      fd = null;
-      fs.renameSync(tmpPath, filePath);
-    } catch (error) {
-      if (fd != null) {
-        try { fs.closeSync(fd); } catch { /* ignore */ }
-      }
-      try {
-        if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
-      } catch { /* ignore */ }
-      throw error;
-    }
+    writeJsonAtomic(filePath, state);
   }
 
   async function load() {
