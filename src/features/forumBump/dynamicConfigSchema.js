@@ -3,6 +3,7 @@
  * 严格字段；未知字段拒绝；不保存历史。
  */
 
+import { AppError } from "../../utils/appError.js";
 import { isDiscordSnowflake } from "./activityTime.js";
 import { parseHhMm } from "./schedulerConfig.js";
 import { computeAutoInterval } from "./autoInterval.js";
@@ -40,21 +41,12 @@ const SAFE_MESSAGES = Object.freeze({
   DYNAMIC_CONFIG_BUSY: "配置控制操作进行中。",
 });
 
-export class ForumBumpDynamicConfigError extends Error {
-  /**
-   * @param {string} code
-   * @param {string} [safeMessage]
-   * @param {unknown} [cause]
-   * @param {object|null} [context]
-   */
+/** 动态配置错误额外暴露 errorCode（= code），面板与 runtime 结果沿用该字段。 */
+export class ForumBumpDynamicConfigError extends AppError {
   constructor(code, safeMessage = SAFE_MESSAGES[code] ?? "动态配置错误。", cause, context = null) {
-    super(safeMessage, cause === undefined ? undefined : { cause });
+    super(code, safeMessage, cause, context);
     this.name = "ForumBumpDynamicConfigError";
-    this.code = code;
     this.errorCode = code;
-    this.safeMessage = safeMessage;
-    this.cause = cause;
-    this.context = context && typeof context === "object" ? { ...context } : null;
   }
 }
 
@@ -63,12 +55,7 @@ export function isForumBumpDynamicConfigError(error) {
 }
 
 export function createDynamicConfigError(code, cause, context = null) {
-  return new ForumBumpDynamicConfigError(
-    code,
-    SAFE_MESSAGES[code],
-    cause,
-    context,
-  );
+  return new ForumBumpDynamicConfigError(code, SAFE_MESSAGES[code], cause, context);
 }
 
 /**

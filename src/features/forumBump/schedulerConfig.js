@@ -1,18 +1,15 @@
 /**
  * Forum Bump 调度器配置校验（纯函数）。
  */
-
+import { AppError } from "../../utils/appError.js";
 import { isDiscordSnowflake } from "./activityTime.js";
 
 const TIME_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
 
-export class SchedulerConfigError extends Error {
+export class SchedulerConfigError extends AppError {
   constructor(code, safeMessage, context = null) {
-    super(safeMessage);
+    super(code, safeMessage, undefined, context);
     this.name = "SchedulerConfigError";
-    this.code = code;
-    this.safeMessage = safeMessage;
-    this.context = context;
   }
 }
 

@@ -2,7 +2,7 @@
  * Forum Bump 状态 schema v1：创建与严格校验。
  * 未知顶层 / inFlight 字段一律拒绝。
  */
-
+import { defineAppError } from "../../utils/appError.js";
 import { isDiscordSnowflake } from "./activityTime.js";
 
 export const FORUM_BUMP_STATE_VERSION = 1;
@@ -59,34 +59,12 @@ const SAFE_MESSAGES = Object.freeze({
   STATE_DATE_ROLLBACK: "业务日期不允许回退。",
 });
 
-export class ForumBumpStateError extends Error {
-  /**
-   * @param {string} code
-   * @param {string} [safeMessage]
-   * @param {unknown} [cause]
-   * @param {object|null} [context]
-   */
-  constructor(code, safeMessage = SAFE_MESSAGES[code] ?? "Forum Bump 状态错误。", cause, context = null) {
-    super(safeMessage, cause === undefined ? undefined : { cause });
-    this.name = "ForumBumpStateError";
-    this.code = code;
-    this.safeMessage = safeMessage;
-    this.cause = cause;
-    this.context = context && typeof context === "object" ? { ...context } : null;
-  }
-}
+const stateErrorKind = defineAppError("ForumBumpStateError", SAFE_MESSAGES, "Forum Bump 状态错误。");
 
-export function isForumBumpStateError(error) {
-  return error instanceof ForumBumpStateError;
-}
-
-export function createStateError(code, cause, context = null) {
-  return new ForumBumpStateError(code, SAFE_MESSAGES[code], cause, context);
-}
-
-export function getStateSafeMessage(code) {
-  return SAFE_MESSAGES[code] ?? "Forum Bump 状态错误。";
-}
+export const ForumBumpStateError = stateErrorKind.ErrorClass;
+export const isForumBumpStateError = stateErrorKind.is;
+export const createStateError = stateErrorKind.create;
+export const getStateSafeMessage = stateErrorKind.getSafeMessage;
 
 /**
  * @param {string} localDate

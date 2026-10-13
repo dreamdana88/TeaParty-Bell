@@ -1,6 +1,7 @@
 /**
  * Forum 候选扫描器安全错误模型。
  */
+import { defineAppError } from "../../utils/appError.js";
 
 const SAFE_MESSAGES = Object.freeze({
   NOT_DEVELOPMENT: "Forum 扫描仅允许在 development 环境运行。",
@@ -24,33 +25,11 @@ const SAFE_MESSAGES = Object.freeze({
   INVALID_ARGUMENT: "Forum 扫描参数无效。",
 });
 
-export class ForumBumpError extends Error {
-  /**
-   * @param {string} code
-   * @param {string} [safeMessage]
-   * @param {unknown} [cause]
-   * @param {object|null} [context]
-   */
-  constructor(code, safeMessage = SAFE_MESSAGES[code] ?? "Forum 扫描失败。", cause, context = null) {
-    super(safeMessage, cause === undefined ? undefined : { cause });
-    this.name = "ForumBumpError";
-    this.code = code;
-    this.safeMessage = safeMessage;
-    this.cause = cause;
-    this.context = context && typeof context === "object" ? { ...context } : null;
-  }
-}
+const kind = defineAppError("ForumBumpError", SAFE_MESSAGES, "Forum 扫描失败。");
 
-export function isForumBumpError(error) {
-  return error instanceof ForumBumpError;
-}
-
-export function createForumBumpError(code, cause, context = null) {
-  return new ForumBumpError(code, SAFE_MESSAGES[code], cause, context);
-}
-
-export function getSafeMessage(code) {
-  return SAFE_MESSAGES[code] ?? "Forum 扫描失败。";
-}
+export const ForumBumpError = kind.ErrorClass;
+export const isForumBumpError = kind.is;
+export const createForumBumpError = kind.create;
+export const getSafeMessage = kind.getSafeMessage;
 
 export { SAFE_MESSAGES as FORUM_BUMP_SAFE_MESSAGES };

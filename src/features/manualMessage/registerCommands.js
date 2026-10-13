@@ -1,16 +1,14 @@
 import { Routes } from "discord.js";
 import { logger as defaultLogger } from "../../utils/logger.js";
 import { allAdminCommandDefinitions } from "../adminCommands.js";
+import { AppError } from "../../utils/appError.js";
 
 const SAFE_REGISTRATION_ERROR_MESSAGE = "Guild 命令注册失败。";
 
-export class AdminCommandRegistrationError extends Error {
+export class AdminCommandRegistrationError extends AppError {
   constructor(code, safeMessage = SAFE_REGISTRATION_ERROR_MESSAGE, cause) {
-    super(safeMessage);
+    super(code, safeMessage, cause);
     this.name = "AdminCommandRegistrationError";
-    this.code = code;
-    this.safeMessage = safeMessage;
-    this.cause = cause;
   }
 }
 
