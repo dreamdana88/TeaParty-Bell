@@ -36,14 +36,12 @@
 - [ ] `TEST_MODE=false` 第二轮：感谢频道真实出现消息，并在 Boost 系统消息上加约 `REACTION_COUNT`（默认 10）个表情。
 - [ ] AI：主 API（`AI_*`）正常时用主 API；把 `AI_BASE_URL` 写错且配置了 `FALLBACK_API_*` → 走备用一次；两路都失败 → 不发送，留待人工补。
 - [ ] 重启后不重复感谢（`boostThanksStore` 去重）；发送中途杀进程，重启日志出现「发现 sending 状态残留，已标记为 uncertain」。
-- [ ] 可选离线工具：`npm run test:copy`（文案）、`npm run test:ai`（AI 连通）。
 
 ## 3. 论坛顶帖：扫描与顶帖
 
 - [ ] 离线扫描（只读，要求 development + TEST_MODE=true）：
   `npm run forum:scan -- --forum <论坛频道ID> --silence-days 30 --confirm-guild <Dev Guild ID>`，输出候选帖列表；`--confirm-guild` 与 `.env` 不一致时报 `GUILD_CONFIRMATION_MISMATCH`。
 - [ ] 状态文件：`npm run forum:state -- inspect`（默认 `FORUM_BUMP_STATE_PATH=data/runtime/forum-bump/state.json`）；首次需 `npm run forum:state -- init --confirm-guild <Dev Guild ID>`。
-- [ ] 单帖 POC：`npm run forum:poc -- inspect --thread <帖子ID> --confirm-guild <ID>`；`bump-message ... --execute` 真实发一条顶帖消息。
 - [ ] 运行时：`FORUM_BUMP_MODE=dry_run` + `FORUM_BUMP_FORUM_CHANNEL_IDS=<ID>` → 日志有扫描/决策，不发消息；`execute` → 活跃窗口（`FORUM_BUMP_ACTIVE_START`–`FORUM_BUMP_ACTIVE_END`，`FORUM_BUMP_TIMEZONE`）内按间隔顶帖。
 - [ ] 规则：置顶帖跳过（`FORUM_BUMP_SKIP_PINNED=true`）、`FORUM_BUMP_EXCLUDED_TAG_IDS` 中的标签跳过、未达 `FORUM_BUMP_SILENCE_DAYS` 的帖子不顶。
 - [ ] 每日额度 `FORUM_BUMP_DAILY_LIMIT` 用完后当天不再顶；成功间隔 = 活跃窗时长 ÷ dailyLimit（最短 30 分钟）。
@@ -103,7 +101,7 @@
 - 套皮发言：命令定义、Modal 上下文、内容/提及策略、审计、交互路由（mock interaction）。
 - CoC：会话规则、会话服务、交互路由、成员查询、选卡、骰子解析/奖惩骰、文字骰、团录。
 - 告警：Outbox 文件读写、dedupe、recovery 幂等、fail-closed。
-- 脚本：`scripts/*.test.js`（命令注册、forum CLI、emoji 导出等的参数与安全门）。
+- 脚本：`scripts/*.test.js`（命令注册、forum-scan / forum-bump-state CLI、emoji 导出等的参数与安全门）。
 
 ### 只能靠真实 Discord Dev Bot 验证
 
