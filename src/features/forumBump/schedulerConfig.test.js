@@ -43,5 +43,20 @@ for (const [cfg, label] of [
   }
 }
 
+// excludedTagIds 稀疏数组须拒绝，正常数组照常通过
+// eslint-disable-next-line no-sparse-arrays
+for (const [tags, label] of [[[, "555555555555555555"], "稀疏 [ , id]"], [new Array(2), "稀疏 new Array(2)"]]) {
+  try {
+    validateSchedulerConfig({ ...base, excludedTagIds: tags });
+    assert(false, label);
+  } catch (e) {
+    assert(e.code === "SCHEDULER_CONFIG_INVALID", label);
+  }
+}
+for (const [tags, label] of [[[], "空数组"], [["555555555555555555", "666666666666666666"], "正常 tag 数组"]]) {
+  const cfg = validateSchedulerConfig({ ...base, excludedTagIds: tags });
+  assert(cfg.excludedTagIds.length === tags.length, label);
+}
+
 console.log(`\nForumBump schedulerConfig: ${passed} passed / ${failed} failed`);
 if (failed > 0) process.exitCode = 1;

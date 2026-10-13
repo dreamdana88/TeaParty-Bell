@@ -82,8 +82,10 @@ export function validateSchedulerConfig(config) {
   if (!Array.isArray(config.excludedTagIds)) {
     throw new SchedulerConfigError("SCHEDULER_CONFIG_INVALID", "excludedTagIds 必须为数组。");
   }
-  for (const id of excludedTagIds) {
-    if (!isDiscordSnowflake(String(id))) {
+  // 显式下标循环：空槽读到 undefined 并被拒绝（不依赖会跳过空槽的数组方法）
+  for (let i = 0; i < excludedTagIds.length; i++) {
+    const id = excludedTagIds[i];
+    if (!(i in excludedTagIds) || !isDiscordSnowflake(String(id))) {
       throw new SchedulerConfigError("SCHEDULER_CONFIG_INVALID", "excludedTagIds 含非法 ID。");
     }
   }

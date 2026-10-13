@@ -172,7 +172,8 @@ function validateArgs({ guildId, forumChannelId, threadId, policy, signal }) {
   }
   const excludedTagIds = policy.excludedTagIds ?? [];
   if (!Array.isArray(excludedTagIds)
-    || excludedTagIds.some((id) => !isDiscordSnowflake(String(id)))) {
+    // Array.from 把空槽展开为 undefined，避免 .some 跳过稀疏数组空槽
+    || Array.from(excludedTagIds).some((id) => !isDiscordSnowflake(String(id)))) {
     return "BUMP_ARGUMENT_INVALID";
   }
   if (policy.skipPinned !== undefined && typeof policy.skipPinned !== "boolean") {
