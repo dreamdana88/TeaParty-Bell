@@ -86,8 +86,6 @@ export async function start(options = {}) {
     createManualMessageServiceFn = createManualMessageService,
     createManualInteractionRouterFn = createManualInteractionRouter,
     createForumBumpRuntimeFn = createForumBumpRuntime,
-    createForumBumpAdminRouterFn = createForumBumpAdminRouter,
-    createCocRuntimeFn = createCocRuntime,
     createInstanceLockFn = createInstanceLock,
     logger = defaultLogger,
     exitFn = (code) => process.exit(code),
@@ -369,7 +367,7 @@ export async function start(options = {}) {
 
     // Runtime 就绪后再启动 Admin Router（即使 partial start 也可查看面板）
     try {
-      forumBumpAdminRouter = createForumBumpAdminRouterFn({
+      forumBumpAdminRouter = createForumBumpAdminRouter({
         client,
         guildId: config.discordGuildId,
         forumBumpRuntime,
@@ -437,7 +435,7 @@ export async function start(options = {}) {
   });
 
   try {
-    cocRuntime = createCocRuntimeFn({
+    cocRuntime = createCocRuntime({
       client,
       config,
       logger,
