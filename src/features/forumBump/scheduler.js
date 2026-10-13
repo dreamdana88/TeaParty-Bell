@@ -20,19 +20,11 @@ import {
 import { validateSchedulerConfig } from "./schedulerConfig.js";
 import { buildSafeInFlightSummary } from "./runtimeAlerts.js";
 
-function buildSafeInFlightSummaryFromState(state) {
-  return buildSafeInFlightSummary(state?.inFlight ?? null);
-}
-
 function defaultTimers() {
   return {
     setTimeout: (fn, ms) => setTimeout(fn, ms),
     clearTimeout: (h) => clearTimeout(h),
   };
-}
-
-function defaultRandom() {
-  return Math.random();
 }
 
 function defaultCreateOperationId() {
@@ -46,30 +38,20 @@ function defaultCreateOperationId() {
  * @param {string} [fallbackErrorCode="STATE_WRITE_FAILED"]
  * @returns {Promise<{ ok: boolean, result: object|null, errorCode: string|null }>}
  */
+const nonEmptyString = (v) => (typeof v === "string" && v ? v : null);
+
 export async function safeStateCall(fn, fallbackErrorCode = "STATE_WRITE_FAILED") {
   try {
     const result = await fn();
-    if (!result || result.success !== true) {
-      return {
-        ok: false,
-        result: result ?? null,
-        errorCode: (typeof result?.errorCode === "string" && result.errorCode)
-          ? result.errorCode
-          : fallbackErrorCode,
-      };
+    if (result?.success === true) {
+      return { ok: true, result, errorCode: null };
     }
-    return { ok: true, result, errorCode: null };
+    return { ok: false, result: result ?? null, errorCode: nonEmptyString(result?.errorCode) ?? fallbackErrorCode };
   } catch (error) {
-    const fromCode = typeof error?.code === "string" && error.code
-      ? error.code
-      : null;
-    const fromErrorCode = typeof error?.errorCode === "string" && error.errorCode
-      ? error.errorCode
-      : null;
     return {
       ok: false,
       result: null,
-      errorCode: fromCode || fromErrorCode || fallbackErrorCode,
+      errorCode: nonEmptyString(error?.code) ?? nonEmptyString(error?.errorCode) ?? fallbackErrorCode,
     };
   }
 }
@@ -94,7 +76,7 @@ export function createForumBumpScheduler({
   logger,
   clock = { now: () => Date.now() },
   timers = defaultTimers(),
-  random = defaultRandom,
+  random = () => Math.random(),
   createOperationId = defaultCreateOperationId,
   onCycleResult = null,
   config: rawConfig,
@@ -241,7 +223,7 @@ export function createForumBumpScheduler({
           if (gen !== timerGeneration) return;
 
           const n = clock.now();
-          if (plannedWake != null && n + 50 < plannedWake) {
+          if (n + 50 < plannedWake) {
             // 提前触发：重新 arm，不启动周期
             scheduleWake(plannedWake, reason);
             return;
@@ -300,7 +282,7 @@ export function createForumBumpScheduler({
   async function loadStateOrFail() {
     const call = await safeStateCall(() => stateStore.load(), "STATE_READ_FAILED");
     if (!call.ok) {
-      return { ok: false, errorCode: call.errorCode || "STATE_READ_FAILED", state: null };
+      return { ok: false, errorCode: call.errorCode, state: null };
     }
     return { ok: true, state: call.result.state, errorCode: null };
   }
@@ -389,7 +371,7 @@ export function createForumBumpScheduler({
     if (!loaded.ok) {
       return {
         success: false,
-        errorCode: loaded.errorCode || "STATE_NOT_FOUND",
+        errorCode: loaded.errorCode,
         recoveryStatus: null,
         timerArmed: false,
         nextWakeAt: null,
@@ -403,7 +385,7 @@ export function createForumBumpScheduler({
     if (!recovery.ok) {
       return {
         success: false,
-        errorCode: recovery.errorCode || "STATE_RECOVERY_FAILED",
+        errorCode: recovery.errorCode,
         recoveryStatus: null,
         timerArmed: false,
         nextWakeAt: null,
@@ -416,7 +398,7 @@ export function createForumBumpScheduler({
       lastRunStatus = "recovery_required";
       clearSchedule();
       const recState = recoveryResult.state || loaded.result.state;
-      const inFlightSummary = buildSafeInFlightSummaryFromState(recState);
+      const inFlightSummary = buildSafeInFlightSummary(recState?.inFlight ?? null);
       return {
         success: true,
         started: true,
@@ -441,7 +423,7 @@ export function createForumBumpScheduler({
         errorCode: null,
         timerArmed: false,
         nextWakeAt: null,
-        inFlightSummary: buildSafeInFlightSummaryFromState(state),
+        inFlightSummary: buildSafeInFlightSummary(state?.inFlight ?? null),
         pauseReason: state.pauseReason ?? null,
       };
     }
@@ -581,7 +563,7 @@ export function createForumBumpScheduler({
 
     const load = await loadStateOrFail();
     if (!load.ok) {
-      return haltNoTimer("state_failed", load.errorCode || "STATE_READ_FAILED");
+      return haltNoTimer("state_failed", load.errorCode);
     }
     if (load.state?.inFlight) {
       const paused = await pauseOrStateFailed(
@@ -752,52 +734,44 @@ export function createForumBumpScheduler({
     }
 
     let lifecycleRevision = revision;
+    /** 写入一步 inFlight 进度；失败抛出（bumpService 据此 fail closed / 清理）。 */
+    const persistStep = async (write) => {
+      const call = await safeStateCall(() => write(lifecycleRevision), "STATE_WRITE_FAILED");
+      if (!call.ok) {
+        const err = new Error(call.errorCode);
+        err.code = call.errorCode;
+        throw err;
+      }
+      lifecycleRevision = call.result.revision;
+    };
     const lifecycle = {
       onBeforeSend: async () => {
         const startedAt = toUtcIso(clock.now());
-        const call = await safeStateCall(() => stateStore.beginInFlight({
-          expectedRevision: lifecycleRevision,
+        return persistStep((expectedRevision) => stateStore.beginInFlight({
+          expectedRevision,
           operationId,
           guildId: config.guildId,
           forumChannelId: first.forumChannelId,
           threadId: first.threadId,
           startedAt,
-        }), "STATE_WRITE_FAILED");
-        if (!call.ok) {
-          const err = new Error(call.errorCode || "STATE_WRITE_FAILED");
-          err.code = call.errorCode || "STATE_WRITE_FAILED";
-          throw err;
-        }
-        lifecycleRevision = call.result.revision;
+        }));
       },
       onMessageSent: async ({ sentMessageId }) => {
         const sentAt = toUtcIso(clock.now());
-        const call = await safeStateCall(() => stateStore.markMessageSent({
-          expectedRevision: lifecycleRevision,
+        return persistStep((expectedRevision) => stateStore.markMessageSent({
+          expectedRevision,
           operationId,
           sentMessageId,
           sentAt,
-        }), "STATE_WRITE_FAILED");
-        if (!call.ok) {
-          const err = new Error(call.errorCode || "STATE_WRITE_FAILED");
-          err.code = call.errorCode || "STATE_WRITE_FAILED";
-          throw err;
-        }
-        lifecycleRevision = call.result.revision;
+        }));
       },
       onMessageDeleted: async () => {
         const deletedAt = toUtcIso(clock.now());
-        const call = await safeStateCall(() => stateStore.markMessageDeleted({
-          expectedRevision: lifecycleRevision,
+        return persistStep((expectedRevision) => stateStore.markMessageDeleted({
+          expectedRevision,
           operationId,
           deletedAt,
-        }), "STATE_WRITE_FAILED");
-        if (!call.ok) {
-          const err = new Error(call.errorCode || "STATE_WRITE_FAILED");
-          err.code = call.errorCode || "STATE_WRITE_FAILED";
-          throw err;
-        }
-        lifecycleRevision = call.result.revision;
+        }));
       },
     };
 
