@@ -12,7 +12,3 @@ export const allAdminCommandDefinitions = Object.freeze([
   ...forumBumpAdminCommandDefinitions,
   ...cocCommandDefinitions,
 ]);
-
-export function getAllAdminCommandDefinitions() {
-  return allAdminCommandDefinitions.map((d) => ({ ...d }));
-}

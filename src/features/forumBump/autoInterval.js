@@ -5,7 +5,6 @@
 
 import { parseHhMm } from "./schedulerConfig.js";
 import {
-  getLocalDate,
   getNextBusinessDayWindowStart,
   getNextWindowStart,
   isInsideActiveWindow,
@@ -233,17 +232,4 @@ export function recomputeNextEligibleAfterConfigChange({
     nextEligibleAt: toUtcIso(candidate),
     reason: "cooldown",
   };
-}
-
-/**
- * 成功顶帖后的 nextEligibleAt：lastSuccess + autoInterval，无抖动。
- * @param {number} successAtMs
- * @param {number} autoIntervalMs
- */
-export function computeSuccessNextEligibleAt(successAtMs, autoIntervalMs) {
-  return successAtMs + autoIntervalMs;
-}
-
-export function localDateForNow(nowMs, timezone) {
-  return getLocalDate(nowMs, timezone);
 }

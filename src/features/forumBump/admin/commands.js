@@ -28,7 +28,3 @@ export const forumBumpPanelCommand = buildForumBumpPanelCommand();
 export const forumBumpAdminCommandDefinitions = Object.freeze([
   forumBumpPanelCommand.toJSON(),
 ]);
-
-export function getForumBumpAdminCommands() {
-  return forumBumpAdminCommandDefinitions.map((d) => ({ ...d }));
-}

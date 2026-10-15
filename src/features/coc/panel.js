@@ -35,10 +35,6 @@ export function parseCustomId(customId) {
   };
 }
 
-export function isCocCustomId(customId) {
-  return parseCustomId(customId) != null || customId === `${COC_CUSTOM_PREFIX}:modal-open`;
-}
-
 function namesBlock(session) {
   const klLines = session.pl.slice(0, MAX_NAMES).map((member) => `${member.characterName}（<@${member.userId}>）`);
   const obLines = session.ob.slice(0, MAX_NAMES).map((member) => `<@${member.userId}>`);

@@ -31,5 +31,3 @@ export const ForumBumpError = kind.ErrorClass;
 export const isForumBumpError = kind.is;
 export const createForumBumpError = kind.create;
 export const getSafeMessage = kind.getSafeMessage;
-
-export { SAFE_MESSAGES as FORUM_BUMP_SAFE_MESSAGES };
