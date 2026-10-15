@@ -453,12 +453,6 @@ export function activeSessionInChannel(sessions, channelId) {
   )) ?? null;
 }
 
-export function speakerName(session, userId, displayName) {
-  const pl = session?.pl.find((member) => member.userId === userId);
-  if (pl?.characterName) return pl.characterName;
-  return displayName || "调查员";
-}
-
 export const BUSY_MEMBER_MESSAGE = "小G宝正在处理上一项成员变更，请稍后再试。";
 
 export function memberRole(session, userId) {
@@ -519,14 +513,6 @@ export function applyAddOb(session, userId, at) {
     pendingMemberOp: null,
     transcriptSeats: closePlSeats(seatsForRead(session), userId, at),
   };
-}
-
-export function applyObToPl(session, member, at) {
-  return applyAddPl(session, member, at);
-}
-
-export function applyPlToOb(session, userId, at) {
-  return applyAddOb(session, userId, at);
 }
 
 export function applyRemoveMember(session, userId, at) {

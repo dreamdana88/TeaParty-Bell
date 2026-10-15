@@ -338,6 +338,3 @@ export function createManualMessageService({
 
   return { send, reply };
 }
-
-export const MANUAL_MESSAGE_CHANNEL_TYPES = Object.freeze([...ALLOWED_CHANNEL_TYPES]);
-export const MANUAL_MESSAGE_THREAD_TYPES = Object.freeze([...THREAD_CHANNEL_TYPES]);

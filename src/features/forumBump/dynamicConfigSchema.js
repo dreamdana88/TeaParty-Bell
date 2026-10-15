@@ -235,5 +235,3 @@ export function cloneDynamicConfig(doc) {
     forumChannelIds: [...doc.forumChannelIds],
   };
 }
-
-export { SAFE_MESSAGES as DYNAMIC_CONFIG_SAFE_MESSAGES };

@@ -64,7 +64,6 @@ const stateErrorKind = defineAppError("ForumBumpStateError", SAFE_MESSAGES, "For
 export const ForumBumpStateError = stateErrorKind.ErrorClass;
 export const isForumBumpStateError = stateErrorKind.is;
 export const createStateError = stateErrorKind.create;
-export const getStateSafeMessage = stateErrorKind.getSafeMessage;
 
 /**
  * @param {string} localDate
@@ -256,5 +255,3 @@ export function validateInFlight(inflight) {
     throw createStateError("STATE_INVALID");
   }
 }
-
-export { SAFE_MESSAGES as FORUM_BUMP_STATE_SAFE_MESSAGES };
