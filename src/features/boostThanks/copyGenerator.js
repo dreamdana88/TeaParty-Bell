@@ -54,13 +54,13 @@ const RE_MD_HEADING = /^\s*#{1,6}\s/m;
 // =========================================================================
 
 const STYLE_POOL = [
-  { key: "lifeBlessing", weight: 20 },
-  { key: "fairyTale", weight: 15 },
-  { key: "abstractChaos", weight: 10 },
+  { key: "lifeBlessing", weight: 15 },
+  { key: "fairyTale", weight: 18 },
+  { key: "abstractChaos", weight: 15 },
   { key: "oneLiner", weight: 15 },
-  { key: "gentleBlessing", weight: 25 },
-  { key: "antiRoutine", weight: 10 },
-  { key: "lightTavern", weight: 5 },
+  { key: "gentleBlessing", weight: 12 },
+  { key: "antiRoutine", weight: 12 },
+  { key: "lightTavern", weight: 8 },
   { key: "aiGamer", weight: 5 },
 ];
 
