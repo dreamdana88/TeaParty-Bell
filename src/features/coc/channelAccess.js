@@ -4,6 +4,13 @@ export const ROOM_ALLOW = [
   PermissionFlagsBits.ViewChannel,
   PermissionFlagsBits.SendMessages,
   PermissionFlagsBits.ReadMessageHistory,
+  PermissionFlagsBits.SendMessagesInThreads,
+];
+
+export const BOT_ROOM_ALLOW = [
+  ...ROOM_ALLOW,
+  PermissionFlagsBits.CreatePrivateThreads,
+  PermissionFlagsBits.ManageThreads,
 ];
 
 /**
@@ -18,7 +25,7 @@ export function buildRoomOverwrites({ guildId, botUserId, userIds }) {
     members.push({
       id: userId,
       type: 1,
-      allow: ROOM_ALLOW,
+      allow: userId === botUserId ? BOT_ROOM_ALLOW : ROOM_ALLOW,
     });
   }
   return [

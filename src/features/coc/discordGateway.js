@@ -103,6 +103,19 @@ export function createCocDiscordGateway(client) {
         ViewChannel: true,
         SendMessages: true,
         ReadMessageHistory: true,
+        SendMessagesInThreads: true,
+      });
+    },
+
+    async grantBotThreadManage(channelId, botUserId) {
+      const channel = await client.channels.fetch(channelId);
+      await channel.permissionOverwrites.edit(botUserId, {
+        ViewChannel: true,
+        SendMessages: true,
+        ReadMessageHistory: true,
+        SendMessagesInThreads: true,
+        CreatePrivateThreads: true,
+        ManageThreads: true,
       });
     },
 
@@ -128,12 +141,37 @@ export function createCocDiscordGateway(client) {
           ViewChannel: true,
           SendMessages: false,
           ReadMessageHistory: true,
+          SendMessagesInThreads: false,
         });
       }
       await channel.permissionOverwrites.edit(channel.guild.id, {
         ViewChannel: false,
         SendMessages: false,
       });
+    },
+
+    async createPrivateThread({ channelId, name }) {
+      const channel = await client.channels.fetch(channelId);
+      const thread = await channel.threads.create({
+        name,
+        type: ChannelType.PrivateThread,
+        invitable: false,
+        autoArchiveDuration: 1440,
+        reason: "CoC 秘密交流",
+      });
+      return { id: thread.id, name: thread.name };
+    },
+
+    async addThreadMember(threadId, userId) {
+      const thread = await client.channels.fetch(threadId);
+      if (thread.archived) await thread.setArchived(false);
+      await thread.members.add(userId);
+    },
+
+    async removeThreadMember(threadId, userId) {
+      const thread = await client.channels.fetch(threadId);
+      if (thread.archived) await thread.setArchived(false);
+      await thread.members.remove(userId);
     },
 
     async sendMessage(channelId, payload) {

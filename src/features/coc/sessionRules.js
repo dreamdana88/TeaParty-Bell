@@ -91,7 +91,94 @@ export function createRecruitingSession({
     transcriptOptOutUserIds: [],
     transcriptOptOutSpans: [],
     transcriptSeats: [],
+    secretThreads: [],
+    pendingSecretOp: null,
   };
+}
+
+export const MAX_THREAD_NAME = 100;
+export const MAX_SECRET_THREADS = 25;
+
+export function normalizeThreadName(raw) {
+  if (typeof raw !== "string") return null;
+  const name = raw.replace(/[\r\n\t]/g, " ").replace(/\s+/g, " ").trim();
+  if (!name || name.length > MAX_THREAD_NAME) return null;
+  return name;
+}
+
+export function secretThreadsOf(session) {
+  if (!Array.isArray(session?.secretThreads)) return [];
+  const threads = [];
+  const seen = new Set();
+  for (const thread of session.secretThreads) {
+    if (!thread || typeof thread.threadId !== "string" || !thread.threadId || seen.has(thread.threadId)) continue;
+    seen.add(thread.threadId);
+    const plUserIds = [];
+    for (const userId of Array.isArray(thread.plUserIds) ? thread.plUserIds : []) {
+      if (typeof userId === "string" && userId && !plUserIds.includes(userId)) plUserIds.push(userId);
+    }
+    threads.push({
+      threadId: thread.threadId,
+      name: normalizeThreadName(thread.name) ?? "未命名子区",
+      createdAt: finiteTime(thread.createdAt) ?? 0,
+      plUserIds,
+    });
+  }
+  threads.sort((left, right) => (
+    left.createdAt - right.createdAt || String(left.threadId).localeCompare(String(right.threadId))
+  ));
+  return threads;
+}
+
+export function findSecretThread(session, threadId) {
+  if (typeof threadId !== "string" || !threadId) return null;
+  return secretThreadsOf(session).find((thread) => thread.threadId === threadId) ?? null;
+}
+
+export function gateSecretAdmin(session, actorId) {
+  if (!session) return { ok: false, message: "这场跑团已经不在了。" };
+  if (actorId !== session.kpUserId) return { ok: false, message: "只有本局 KP 可以使用秘密交流。" };
+  if (session.state !== SESSION_STATES.active) return { ok: false, message: "只有进行中的跑团可以使用秘密交流。" };
+  return { ok: true };
+}
+
+export function eligibleSecretPl(session, thread) {
+  const inThread = new Set(thread?.plUserIds ?? []);
+  return (session?.pl ?? []).filter((member) => member?.userId && !inThread.has(member.userId));
+}
+
+export function removableSecretPl(session, thread) {
+  const sessionPl = new Set((session?.pl ?? []).map((member) => member.userId));
+  return (thread?.plUserIds ?? []).filter((userId) => sessionPl.has(userId));
+}
+
+export function replaceSecretThread(session, thread) {
+  const threads = secretThreadsOf(session);
+  const index = threads.findIndex((item) => item.threadId === thread.threadId);
+  const nextThreads = index === -1
+    ? [...threads, thread]
+    : threads.map((item) => (item.threadId === thread.threadId ? thread : item));
+  return { ...session, secretThreads: nextThreads };
+}
+
+/**
+ * 按新身份同步秘密子区：OB 进入全部子区；OB 转 PL 时退出未被点名的子区；移出本局时退出全部。
+ */
+export function planSecretThreadSync(session, userId, afterRole, beforeRole = null) {
+  const adds = [];
+  const removes = [];
+  const secretThreads = secretThreadsOf(session).map((thread) => {
+    const wasSelectedPl = thread.plUserIds.includes(userId);
+    const plUserIds = afterRole === "pl" && wasSelectedPl
+      ? thread.plUserIds
+      : thread.plUserIds.filter((id) => id !== userId);
+    if (afterRole === "ob") {
+      if (!wasSelectedPl) adds.push(thread.threadId);
+    } else if (afterRole == null) removes.push(thread.threadId);
+    else if (afterRole === "pl" && beforeRole === "ob" && !wasSelectedPl) removes.push(thread.threadId);
+    return { ...thread, plUserIds };
+  });
+  return { adds, removes, secretThreads };
 }
 
 export function transcriptOptOutIds(session) {
@@ -431,6 +518,16 @@ export function markEnding(session, now) {
   };
 }
 
+export function revertEnding(session) {
+  if (session.state !== SESSION_STATES.ending) return session;
+  return {
+    ...session,
+    state: SESSION_STATES.active,
+    endedAt: null,
+    deleteAt: null,
+  };
+}
+
 export function markEnded(session, now) {
   return {
     ...session,
@@ -449,7 +546,11 @@ export function isPrunableSession(session, now) {
 
 export function activeSessionInChannel(sessions, channelId) {
   return sessions.find((session) => (
-    session.state === SESSION_STATES.active && session.runChannelId === channelId
+    session.state === SESSION_STATES.active
+    && (
+      session.runChannelId === channelId
+      || secretThreadsOf(session).some((thread) => thread.threadId === channelId)
+    )
   )) ?? null;
 }
 

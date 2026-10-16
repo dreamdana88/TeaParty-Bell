@@ -8,8 +8,10 @@ import { INVALID_DICE_MESSAGE, parseDiceExpression } from "./dice/parser.js";
 import { planNicknameRestore } from "./nickname.js";
 import {
   buildTranscriptFiles,
+  buildSectionedTranscriptFiles,
   TRANSCRIPT_FAILED_NOTICE,
-  TRANSCRIPT_INCOMPLETE_NOTICE,
+  TRANSCRIPT_RETRY_NOTICE,
+  TRANSCRIPT_INCOMPLETE_RETRY_NOTICE,
 } from "./transcript.js";
 import {
   activeSessionInChannel,
@@ -18,8 +20,10 @@ import {
   applyRemoveMember,
   beginTranscriptSeats,
   createRecruitingSession,
+  findSecretThread,
   gateMemberAdmin,
   gateNewMember,
+  gateSecretAdmin,
   gateTranscriptPrivacy,
   findOccupyingSession,
   isPrunableSession,
@@ -27,15 +31,21 @@ import {
   markCancelled,
   markEnded,
   markEnding,
+  MAX_SECRET_THREADS,
   memberRole,
   normalizeCharacterName,
+  normalizeThreadName,
   normalizeTitle,
   participantIds,
+  planSecretThreadSync,
+  replaceSecretThread,
   replaceSession,
   requestCancel,
   requestEnd,
   requestStart,
+  revertEnding,
   revertStarting,
+  secretThreadsOf,
   signupPl,
   signupOb,
   cancelSignup,
@@ -634,36 +644,65 @@ export function createCocSessionService({
     }
   }
 
+  async function historyOf(channelId, startedAt) {
+    const history = await discord.fetchChannelHistory(channelId, { startedAt });
+    return {
+      messages: Array.isArray(history) ? history : history?.messages ?? [],
+      truncated: Array.isArray(history) ? false : history?.truncated === true,
+    };
+  }
+
+  async function collectTranscriptSections(session) {
+    const startedAt = session.startedAt ?? null;
+    const sections = [];
+    const main = await historyOf(session.runChannelId, startedAt);
+    sections.push({ title: "主频道", messages: main.messages, truncated: main.truncated });
+    for (const thread of secretThreadsOf(session)) {
+      try {
+        const history = await historyOf(thread.threadId, startedAt);
+        sections.push({ title: thread.name, messages: history.messages, truncated: history.truncated });
+      } catch (error) {
+        if (channelMissing(error)) {
+          sections.push({ title: thread.name, messages: [], missing: true });
+          continue;
+        }
+        throw error;
+      }
+    }
+    return sections;
+  }
+
   async function deliverTranscript(session) {
-    if (!transcriptActive() || !session?.runChannelId) return { skipped: true };
+    if (!transcriptActive() || !session?.runChannelId) return { skipped: true, ok: true };
     const current = find(session.sessionId) ?? session;
-    if (current.transcriptDelivered === true) return { skipped: true };
+    if (current.transcriptDelivered === true) return { skipped: true, ok: true };
     if (typeof discord.fetchChannelHistory !== "function") {
       logger.warn?.("CoC 团录没有频道历史接口", { sessionId: current.sessionId });
-      await notifyTranscriptFailed(current);
       return { ok: false };
     }
-    let history;
+    let sections;
     try {
-      history = await discord.fetchChannelHistory(current.runChannelId, {
-        startedAt: current.startedAt ?? null,
-      });
+      sections = await collectTranscriptSections(current);
     } catch (error) {
       logger.warn?.("CoC 团录没有读到频道历史", { message: error?.message, sessionId: current.sessionId });
-      await notifyTranscriptFailed(current);
       return { ok: false };
     }
-    const messages = Array.isArray(history) ? history : history?.messages;
-    const truncated = Array.isArray(history) ? false : history?.truncated === true;
+    const incomplete = sections.some((section) => section.truncated === true || section.missing === true);
+    if (incomplete) {
+      logger.warn?.("CoC 团录不完整", { sessionId: current.sessionId });
+      return { ok: false, incomplete: true };
+    }
     let files;
     try {
-      files = buildTranscriptFiles(current, messages ?? [], {
-        botUserId: config.botUserId,
-        truncated,
-      }).files;
+      const threaded = sections.length > 1;
+      files = (threaded
+        ? buildSectionedTranscriptFiles(current, sections, { botUserId: config.botUserId })
+        : buildTranscriptFiles(current, sections[0].messages, {
+          botUserId: config.botUserId,
+        })
+      ).files;
     } catch (error) {
       logger.warn?.("CoC 团录没有整理出来", { message: error?.message, sessionId: current.sessionId });
-      await notifyTranscriptFailed(current);
       return { ok: false };
     }
     let sentAll = true;
@@ -677,10 +716,7 @@ export function createCocSessionService({
         logger.warn?.("CoC 团录没有完整发出", { message: error?.message, sessionId: current.sessionId });
       }
     }
-    if (!sentAll) {
-      await notifyTranscriptFailed(current, TRANSCRIPT_INCOMPLETE_NOTICE);
-      return { ok: false };
-    }
+    if (!sentAll) return { ok: false, incomplete: true };
     const marked = await store.update((state) => {
       const latest = state.sessions.find((item) => item.sessionId === current.sessionId);
       if (!latest) return { state, result: null };
@@ -699,9 +735,17 @@ export function createCocSessionService({
     if (!session) return { ok: false, message: "这场跑团已经不在了。" };
     const gate = requestEnd(session, actorId);
     if (!gate.ok) return gate;
+    if (transcriptActive()) {
+      const delivered = await deliverTranscript(session);
+      if (!delivered.ok) {
+        return {
+          ok: false,
+          message: delivered.incomplete ? TRANSCRIPT_INCOMPLETE_RETRY_NOTICE : TRANSCRIPT_RETRY_NOTICE,
+        };
+      }
+    }
     const ending = await markSessionEnding(sessionId, actorId);
     if (!ending.ok) return { ok: false, message: ending.message };
-    await deliverTranscript(ending.result);
     await cleanupRoom(ending.result);
     const ended = await markSessionEnded(sessionId);
     if (!ended.ok) return { ok: false, message: ended.message };
@@ -711,11 +755,29 @@ export function createCocSessionService({
   async function continueEnding(sessionId) {
     const session = find(sessionId);
     if (!session || session.state !== SESSION_STATES.ending) return { ok: true, skipped: true };
-    await deliverTranscript(session);
+    const delivered = await deliverTranscript(session);
+    if (transcriptActive() && !delivered.ok && !delivered.skipped) {
+      const message = delivered.incomplete ? TRANSCRIPT_INCOMPLETE_RETRY_NOTICE : TRANSCRIPT_RETRY_NOTICE;
+      await notifyTranscriptFailed(session, message);
+      const reverted = await revertSessionEnding(sessionId);
+      return reverted.ok
+        ? { ok: false, retry: true, session: reverted.result, message }
+        : { ok: false, message: reverted.message };
+    }
     await cleanupRoom(session);
     return markSessionEnded(sessionId).then((ended) => (
       ended.ok ? { ok: true, session: ended.result } : { ok: false, message: ended.message }
     ));
+  }
+
+  async function revertSessionEnding(sessionId) {
+    return store.update((state) => {
+      const current = state.sessions.find((item) => item.sessionId === sessionId);
+      if (!current) return { errorCode: "MISSING", message: "这场跑团已经不在了。" };
+      if (current.state !== SESSION_STATES.ending) return { state, result: current };
+      const next = revertEnding(current);
+      return { state: { ...state, sessions: replaceSession(state.sessions, next) }, result: next };
+    });
   }
 
   async function reconcileStarting(session) {
@@ -781,6 +843,50 @@ export function createCocSessionService({
     return true;
   }
 
+  async function rollbackSecretThreadSync(op, applied) {
+    const userId = op.targetUserId;
+    for (const threadId of applied.adds ?? []) {
+      try {
+        await discord.removeThreadMember(threadId, userId);
+      } catch (error) {
+        if (!(channelMissing(error) || error?.code === 10007 || error?.discordCode === 10007)) {
+          logger.warn?.("CoC 回滚秘密子区成员失败", { message: error?.message, userId, threadId });
+        }
+      }
+    }
+    for (const threadId of applied.removes ?? []) {
+      try {
+        await discord.addThreadMember(threadId, userId);
+      } catch (error) {
+        if (!channelMissing(error)) {
+          logger.warn?.("CoC 补回秘密子区成员失败", { message: error?.message, userId, threadId });
+        }
+      }
+    }
+  }
+
+  async function applySecretThreadSync(op, applied) {
+    const userId = op.targetUserId;
+    for (const threadId of op.secretAdds ?? []) {
+      try {
+        await discord.addThreadMember(threadId, userId);
+        applied.adds.push(threadId);
+      } catch (error) {
+        if (channelMissing(error)) continue;
+        throw error;
+      }
+    }
+    for (const threadId of op.secretRemoves ?? []) {
+      try {
+        await discord.removeThreadMember(threadId, userId);
+        applied.removes.push(threadId);
+      } catch (error) {
+        if (channelMissing(error) || error?.code === 10007 || error?.discordCode === 10007) continue;
+        throw error;
+      }
+    }
+  }
+
   async function rollbackPending(sessionId) {
     const session = find(sessionId);
     const op = session?.pendingMemberOp;
@@ -822,7 +928,17 @@ export function createCocSessionService({
       if (!gate.ok) return { errorCode: "REJECTED", message: gate.message };
       const extra = extraGate(state.sessions, current);
       if (!extra.ok) return { errorCode: "REJECTED", message: extra.message };
-      const next = { ...current, pendingMemberOp: { ...op, startedAt: clock.now() } };
+      const plan = planSecretThreadSync(current, op.targetUserId, op.afterRole, op.beforeRole);
+      const next = {
+        ...current,
+        pendingMemberOp: {
+          ...op,
+          startedAt: clock.now(),
+          secretAdds: plan.adds,
+          secretRemoves: plan.removes,
+          secretThreads: plan.secretThreads,
+        },
+      };
       return { state: { ...state, sessions: replaceSession(state.sessions, next) }, result: next };
     });
   }
@@ -862,17 +978,25 @@ export function createCocSessionService({
     if (!reserved.ok) return { ok: false, message: reserved.message };
     const session = reserved.result;
     const pending = session.pendingMemberOp;
+    const appliedSecret = { adds: [], removes: [] };
     try {
       const nick = await applyPlannedNickname(session, pending);
       await ensureCocRole(session.guildId, pending.targetUserId, pending.afterRole ?? null);
       if (pending.afterChannelAccess !== pending.beforeChannelAccess) {
         await ensureChannelAccess(session.runChannelId, pending.targetUserId, pending.afterChannelAccess);
       }
-      const saved = await commitMember(sessionId, (current, at) => apply(current, nick, at));
+      await applySecretThreadSync(pending, appliedSecret);
+      const saved = await commitMember(sessionId, (current, at) => {
+        const next = apply(current, nick, at);
+        return pending.secretThreads
+          ? { ...next, secretThreads: pending.secretThreads }
+          : next;
+      });
       if (!saved.ok) throw new Error(saved.message);
       return { ok: true, session: saved.result };
     } catch (error) {
       logger.warn?.("CoC 成员变更失败", { message: error?.message, sessionId, type: pending.type });
+      await rollbackSecretThreadSync(pending, appliedSecret);
       await rollbackPending(sessionId);
       return { ok: false, message: "这次成员变更没有完成，已收回。" };
     }
@@ -982,7 +1106,216 @@ export function createCocSessionService({
     );
   }
 
+  async function clearPendingSecret(sessionId) {
+    await store.update((state) => {
+      const current = state.sessions.find((item) => item.sessionId === sessionId);
+      if (!current) return { state, result: null };
+      return {
+        state: { ...state, sessions: replaceSession(state.sessions, { ...current, pendingSecretOp: null }) },
+        result: null,
+      };
+    });
+  }
+
+  function previewSecret(sessionId, actorId) {
+    if (mode !== "ready") return unavailable(mode === "broken" ? "CoC 场次记录暂时不可用。" : undefined);
+    const session = find(sessionId);
+    const gate = gateSecretAdmin(session, actorId);
+    if (!gate.ok) return gate;
+    return { ok: true, session };
+  }
+
+  async function beginCreateSecretThread(sessionId, actorId, rawName) {
+    if (mode !== "ready") return unavailable(mode === "broken" ? "CoC 场次记录暂时不可用。" : undefined);
+    const name = normalizeThreadName(rawName);
+    if (!name) return { ok: false, message: "子区名称不能为空，且不能超过 100 个字。" };
+    const saved = await store.update((state) => {
+      const current = state.sessions.find((item) => item.sessionId === sessionId);
+      const gate = gateSecretAdmin(current, actorId);
+      if (!gate.ok) return { errorCode: "REJECTED", message: gate.message };
+      if (secretThreadsOf(current).length >= MAX_SECRET_THREADS) {
+        return { errorCode: "REJECTED", message: `最多 ${MAX_SECRET_THREADS} 个秘密子区。` };
+      }
+      const next = { ...current, pendingSecretOp: { type: "create", name } };
+      return { state: { ...state, sessions: replaceSession(state.sessions, next) }, result: next };
+    });
+    if (!saved.ok) return { ok: false, message: saved.message };
+    return { ok: true, session: saved.result, name };
+  }
+
+  async function createSecretThread(sessionId, actorId, plUserIds = []) {
+    if (mode !== "ready") return unavailable(mode === "broken" ? "CoC 场次记录暂时不可用。" : undefined);
+    const session = find(sessionId);
+    const gate = gateSecretAdmin(session, actorId);
+    if (!gate.ok) return gate;
+    const name = session.pendingSecretOp?.type === "create" ? session.pendingSecretOp.name : null;
+    if (!name) return { ok: false, message: "请先填写子区名称。" };
+    if (secretThreadsOf(session).length >= MAX_SECRET_THREADS) {
+      await clearPendingSecret(sessionId);
+      return { ok: false, message: `最多 ${MAX_SECRET_THREADS} 个秘密子区。` };
+    }
+    if (typeof discord.createPrivateThread !== "function") {
+      return { ok: false, message: "秘密子区暂时不可用。" };
+    }
+    const uniquePl = [...new Set(plUserIds)].filter((userId) => session.pl.some((member) => member.userId === userId));
+    const obIds = session.ob.map((member) => member.userId).filter(Boolean);
+    const memberIds = [session.kpUserId, ...uniquePl, ...obIds]
+      .filter((userId, index, list) => userId && list.indexOf(userId) === index);
+    if (typeof discord.grantBotThreadManage === "function" && config.botUserId) {
+      try {
+        await discord.grantBotThreadManage(session.runChannelId, config.botUserId);
+      } catch (error) {
+        logger.warn?.("CoC 补齐秘密子区权限失败", { message: error?.message, sessionId });
+      }
+    }
+    if (typeof discord.grantChannelAccess === "function") {
+      for (const userId of participantIds(session)) {
+        try {
+          await discord.grantChannelAccess(session.runChannelId, userId);
+        } catch (error) {
+          logger.warn?.("CoC 补齐子区发言权限失败", { message: error?.message, userId, sessionId });
+        }
+      }
+    }
+    let thread;
+    try {
+      thread = await discord.createPrivateThread({ channelId: session.runChannelId, name });
+    } catch (error) {
+      logger.warn?.("CoC 创建秘密子区失败", { message: error?.message, sessionId });
+      await clearPendingSecret(sessionId);
+      return { ok: false, message: "秘密子区没有建起来，请稍后再试。" };
+    }
+    const requiredIds = new Set([session.kpUserId, ...obIds]);
+    const joinedPl = [];
+    let requiredFailed = false;
+    for (const userId of memberIds) {
+      try {
+        await discord.addThreadMember(thread.id, userId);
+        if (uniquePl.includes(userId)) joinedPl.push(userId);
+      } catch (error) {
+        logger.warn?.("CoC 加入秘密子区失败", { message: error?.message, userId, sessionId });
+        if (requiredIds.has(userId)) {
+          requiredFailed = true;
+          break;
+        }
+      }
+    }
+    if (requiredFailed) {
+      try {
+        await discord.deleteChannel(thread.id);
+      } catch (error) {
+        logger.warn?.("CoC 回滚秘密子区失败", { message: error?.message, sessionId });
+      }
+      await clearPendingSecret(sessionId);
+      return { ok: false, message: "秘密子区没有建起来，请稍后再试。" };
+    }
+    const saved = await store.update((state) => {
+      const current = state.sessions.find((item) => item.sessionId === sessionId);
+      if (!current || current.state !== SESSION_STATES.active) {
+        return { errorCode: "REJECTED", message: "这场跑团现在不能添加秘密子区。" };
+      }
+      if (secretThreadsOf(current).length >= MAX_SECRET_THREADS) {
+        return { errorCode: "REJECTED", message: `最多 ${MAX_SECRET_THREADS} 个秘密子区。` };
+      }
+      const record = {
+        threadId: thread.id,
+        name: normalizeThreadName(thread.name) ?? name,
+        createdAt: clock.now(),
+        plUserIds: joinedPl,
+      };
+      const next = {
+        ...replaceSecretThread(current, record),
+        pendingSecretOp: null,
+      };
+      return { state: { ...state, sessions: replaceSession(state.sessions, next) }, result: { session: next, thread: record } };
+    });
+    if (!saved.ok) {
+      try {
+        await discord.deleteChannel(thread.id);
+      } catch (error) {
+        logger.warn?.("CoC 回滚秘密子区失败", { message: error?.message, sessionId });
+      }
+      return { ok: false, message: saved.message };
+    }
+    const warning = uniquePl.some((userId) => !joinedPl.includes(userId))
+      ? "部分 PL 没有加入该秘密子区，可在「管理参与者」中增补。"
+      : null;
+    return { ok: true, session: saved.result.session, thread: saved.result.thread, warning };
+  }
+
+  async function addSecretThreadPl(sessionId, actorId, threadId, plUserIds) {
+    if (mode !== "ready") return unavailable(mode === "broken" ? "CoC 场次记录暂时不可用。" : undefined);
+    const session = find(sessionId);
+    const gate = gateSecretAdmin(session, actorId);
+    if (!gate.ok) return gate;
+    const thread = findSecretThread(session, threadId);
+    if (!thread) return { ok: false, message: "没有找到这个秘密子区。" };
+    const adding = [...new Set(plUserIds)].filter((userId) => (
+      session.pl.some((member) => member.userId === userId) && !thread.plUserIds.includes(userId)
+    ));
+    if (!adding.length) return { ok: false, message: "没有可以增补的本团 PL。" };
+    const added = [];
+    for (const userId of adding) {
+      try {
+        await discord.addThreadMember(threadId, userId);
+        added.push(userId);
+      } catch (error) {
+        logger.warn?.("CoC 增补秘密子区成员失败", { message: error?.message, userId, sessionId });
+      }
+    }
+    if (!added.length) return { ok: false, message: "增补没有完成，请稍后再试。" };
+    const saved = await store.update((state) => {
+      const current = state.sessions.find((item) => item.sessionId === sessionId);
+      const latest = findSecretThread(current, threadId);
+      if (!latest) return { errorCode: "MISSING", message: "没有找到这个秘密子区。" };
+      const nextThread = { ...latest, plUserIds: [...latest.plUserIds, ...added.filter((id) => !latest.plUserIds.includes(id))] };
+      const next = { ...replaceSecretThread(current, nextThread), pendingSecretOp: null };
+      return { state: { ...state, sessions: replaceSession(state.sessions, next) }, result: next };
+    });
+    if (!saved.ok) return { ok: false, message: saved.message };
+    return { ok: true, session: saved.result, threadId, added };
+  }
+
+  async function removeSecretThreadPl(sessionId, actorId, threadId, plUserIds) {
+    if (mode !== "ready") return unavailable(mode === "broken" ? "CoC 场次记录暂时不可用。" : undefined);
+    const session = find(sessionId);
+    const gate = gateSecretAdmin(session, actorId);
+    if (!gate.ok) return gate;
+    const thread = findSecretThread(session, threadId);
+    if (!thread) return { ok: false, message: "没有找到这个秘密子区。" };
+    const removing = [...new Set(plUserIds)].filter((userId) => thread.plUserIds.includes(userId));
+    if (!removing.length) return { ok: false, message: "没有可以移除的 PL。" };
+    const removed = [];
+    for (const userId of removing) {
+      try {
+        await discord.removeThreadMember(threadId, userId);
+        removed.push(userId);
+      } catch (error) {
+        if (channelMissing(error) || error?.code === 10007 || error?.discordCode === 10007) {
+          removed.push(userId);
+          continue;
+        }
+        logger.warn?.("CoC 移除秘密子区成员失败", { message: error?.message, userId, sessionId });
+      }
+    }
+    if (!removed.length) return { ok: false, message: "移除没有完成，请稍后再试。" };
+    const saved = await store.update((state) => {
+      const current = state.sessions.find((item) => item.sessionId === sessionId);
+      const latest = findSecretThread(current, threadId);
+      if (!latest) return { errorCode: "MISSING", message: "没有找到这个秘密子区。" };
+      const drop = new Set(removed);
+      const nextThread = { ...latest, plUserIds: latest.plUserIds.filter((userId) => !drop.has(userId)) };
+      const next = { ...replaceSecretThread(current, nextThread), pendingSecretOp: null };
+      return { state: { ...state, sessions: replaceSession(state.sessions, next) }, result: next };
+    });
+    if (!saved.ok) return { ok: false, message: saved.message };
+    return { ok: true, session: saved.result, threadId, removed };
+  }
+
   async function recoverInterrupted() {
+    for (const session of sessions().filter((item) => item.pendingSecretOp)) {
+      await clearPendingSecret(session.sessionId);
+    }
     for (const session of sessions().filter((item) => item.pendingMemberOp)) {
       await rollbackPending(session.sessionId);
     }
@@ -1156,6 +1489,11 @@ export function createCocSessionService({
     previewMembers,
     recoverInterrupted,
     previewRepost,
+    previewSecret,
+    beginCreateSecretThread,
+    createSecretThread,
+    addSecretThreadPl,
+    removeSecretThreadPl,
     deleteIfDue,
     roll,
     rollTextDice,

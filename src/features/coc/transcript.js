@@ -7,6 +7,8 @@ const INCLUDED_TYPES = new Set([USER_MESSAGE, REPLY_MESSAGE]);
 
 export const TRANSCRIPT_FAILED_NOTICE = "本局团录没有发出。";
 export const TRANSCRIPT_INCOMPLETE_NOTICE = "本局团录没有完整发出。";
+export const TRANSCRIPT_RETRY_NOTICE = "本局团录没有发出，尚未进入 48 小时删除。请稍后再次结束本局。";
+export const TRANSCRIPT_INCOMPLETE_RETRY_NOTICE = "本局团录没有完整发出，尚未进入 48 小时删除。请稍后再次结束本局。";
 export const TRANSCRIPT_TRUNCATED_NOTICE = "⚠️ 本局消息量超过团录安全上限，本次团录只包含最近 20000 条频道消息。";
 export const TRANSCRIPT_HISTORY_PAGE_SIZE = 100;
 export const TRANSCRIPT_HISTORY_HARD_LIMIT = 20000;
@@ -185,6 +187,92 @@ export function buildTranscriptFiles(session, messages, {
     markdown: renderTranscriptMarkdown(session.title, chunk, { truncated: truncated && index === 0 }),
   }));
   return { files, truncated };
+}
+
+function sectionEntries(session, section, botUserId) {
+  if (section?.missing) return [];
+  return selectTranscriptMessages(session, section?.messages ?? [], botUserId);
+}
+
+function chunkSectioned(prepared, partLimit) {
+  const chunks = [];
+  let current = [];
+  let count = 0;
+  function flush() {
+    if (current.length) {
+      chunks.push(current);
+      current = [];
+      count = 0;
+    }
+  }
+  for (const section of prepared) {
+    if (section.missing || section.entries.length === 0) {
+      if (count >= partLimit) flush();
+      current.push({ kind: "marker", section });
+      continue;
+    }
+    for (const entry of section.entries) {
+      if (count >= partLimit) flush();
+      current.push({ kind: "entry", sectionTitle: section.title, entry });
+      count += 1;
+    }
+  }
+  if (current.length || !chunks.length) chunks.push(current);
+  return chunks;
+}
+
+function renderSectionedMarkdown(title, items, { truncated = false } = {}) {
+  const lines = [`# 《${title}》团录`, ""];
+  if (truncated) lines.push(TRANSCRIPT_TRUNCATED_NOTICE, "");
+  let lastTitle = null;
+  function openSection(sectionTitle) {
+    if (lastTitle === sectionTitle) return;
+    lastTitle = sectionTitle;
+    lines.push(`## ${sectionTitle}`, "");
+  }
+  function emptyBody(section) {
+    openSection(section.title);
+    lines.push(section.missing
+      ? "（该秘密子区已不存在，未能收录消息。）"
+      : "（本局没有记入团录的发言。）", "");
+  }
+  if (!items.length) {
+    lines.push("（本局没有记入团录的发言。）");
+    return `${lines.join("\n")}\n`;
+  }
+  for (const item of items) {
+    if (item.kind === "marker") {
+      emptyBody(item.section);
+      continue;
+    }
+    openSection(item.sectionTitle);
+    lines.push(`[${item.entry.time}] ${item.entry.speaker}：`, item.entry.content, "");
+  }
+  return `${lines.join("\n").replace(/\n$/, "")}\n`;
+}
+
+/**
+ * @param {object} session
+ * @param {{ title: string, messages?: object[], truncated?: boolean, missing?: boolean }[]} sections
+ */
+export function buildSectionedTranscriptFiles(session, sections, {
+  botUserId = null,
+  truncated = false,
+  partLimit = TRANSCRIPT_PART_MESSAGE_LIMIT,
+} = {}) {
+  const prepared = (sections ?? []).map((section) => ({
+    title: section.title,
+    missing: section.missing === true,
+    truncated: section.truncated === true,
+    entries: sectionEntries(session, section, botUserId),
+  }));
+  const anyTruncated = truncated || prepared.some((section) => section.truncated);
+  const chunks = chunkSectioned(prepared, partLimit);
+  const files = chunks.map((chunk, index) => ({
+    name: transcriptFileName(session.title, { part: index + 1, parts: chunks.length }),
+    markdown: renderSectionedMarkdown(session.title, chunk, { truncated: anyTruncated && index === 0 }),
+  }));
+  return { files, truncated: anyTruncated };
 }
 
 export function buildTranscriptFile(session, messages, options = {}) {

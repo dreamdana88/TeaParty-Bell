@@ -69,6 +69,22 @@ function fakeDiscord(overrides = {}) {
       calls.push(["grant", channelId, userId]);
       if (overrides.failGrant) throw new Error("grant failed");
     },
+    async grantBotThreadManage(channelId, botUserId) {
+      calls.push(["bot-thread", channelId, botUserId]);
+    },
+    async createPrivateThread({ channelId, name }) {
+      calls.push(["thread", channelId, name]);
+      if (overrides.failThread) throw new Error("thread failed");
+      return { id: overrides.threadId ?? "thread-1", name };
+    },
+    async addThreadMember(threadId, userId) {
+      calls.push(["thread-add", threadId, userId]);
+      if (overrides.failThreadAdd === userId) throw new Error("thread add failed");
+    },
+    async removeThreadMember(threadId, userId) {
+      calls.push(["thread-remove", threadId, userId]);
+      if (overrides.failThreadRemove) throw new Error("thread remove failed");
+    },
     async revokeChannelAccess(channelId, userId) { calls.push(["revoke", channelId, userId]); },
     async lockChannel(id) {
       calls.push(["lock", id, overrides.observeState?.() ?? null]);
@@ -84,6 +100,13 @@ function fakeDiscord(overrides = {}) {
     async fetchChannelHistory(channelId, options) {
       calls.push(["history", channelId, options ?? null]);
       if (overrides.failHistory) throw new Error("history failed");
+      if (overrides.failHistoryOf?.[channelId]) throw new Error("history failed");
+      if (overrides.missingThreads?.includes(channelId)) {
+        const error = new Error("Unknown Channel");
+        error.code = 10003;
+        throw error;
+      }
+      if (overrides.histories?.[channelId]) return overrides.histories[channelId];
       return overrides.history ?? { messages: [], truncated: false };
     },
     async editMessage() { calls.push(["edit"]); },
@@ -559,8 +582,10 @@ async function activeTable(overrides) {
     history: { messages: [{ id: "m", authorId: "kp", content: "读失败也不落盘", createdTimestamp: Date.now(), type: 0 }] },
   });
   const done = await service.finish("session-1", "kp");
-  assert(done.ok && done.session.state === "ENDED", "团录读失败也照旧结束");
-  assert(discord.calls.some((call) => call[0] === "send" && call[1]?.content === "本局团录没有发出。"), "频道里说明团录没发出");
+  assert(done.ok === false && service.find("session-1").state === "ACTIVE", "团录读失败不结束");
+  assert(done.message.includes("尚未进入 48 小时删除"), "读失败提示可以重试结束");
+  assert(!discord.calls.some((call) => call[0] === "lock"), "读失败不锁频道");
+  assert(service.find("session-1").deleteAt == null, "读失败不写入删除倒计时");
   assert(!discord.calls.some((call) => call[0] === "send" && call[1]?.files), "读失败不发送附件");
   assert(!containsText(JSON.parse(readFileSync(store.filePath, "utf8")), "读失败也不落盘"), "读失败不把正文写进场次文件");
   assert(!readdirSync(dir).some((name) => name.endsWith(".md")), "读失败不留下团录文件");
@@ -576,9 +601,10 @@ async function activeTable(overrides) {
     },
   });
   const done = await service.finish("session-1", "kp");
-  assert(done.ok, "团录发送失败也照旧结束");
-  assert(discord.calls.some((call) => call[0] === "send" && call[1]?.content === "本局团录没有完整发出。"), "发送失败会说明团录没完整发出");
-  assert(done.session.transcriptDelivered !== true, "没发出就不记成已交付");
+  assert(done.ok === false && service.find("session-1").state === "ACTIVE", "团录发送失败不结束");
+  assert(done.message.includes("尚未进入 48 小时删除"), "发送失败提示可以重试结束");
+  assert(!discord.calls.some((call) => call[0] === "lock"), "发送失败不锁频道");
+  assert(service.find("session-1").transcriptDelivered !== true, "没发出就不记成已交付");
   assert(!containsText(JSON.parse(readFileSync(store.filePath, "utf8")), line), "发送失败不把正文写进场次文件");
   assert(!readdirSync(dir).some((name) => name.endsWith(".md")), "发送失败不留下团录文件");
 }
@@ -750,10 +776,10 @@ async function activeTable(overrides) {
     history: { messages: lines },
   });
   const done = await service.finish("session-1", "kp");
-  assert(done.ok && done.session.state === "ENDED", "有一卷失败时本局仍然结束");
+  assert(done.ok === false && service.find("session-1").state === "ACTIVE", "有一卷失败时不进入删除");
   assert(discord.calls.some((call) => call[0] === "send" && call[1]?.files?.[0]?.name === "成员团录-01.md"), "失败前的那一卷已经发出");
-  assert(discord.calls.some((call) => call[0] === "send" && call[1]?.content === "本局团录没有完整发出。"), "缺卷时说明团录不完整");
-  assert(done.session.transcriptDelivered !== true, "没发齐就不记成已交付");
+  assert(!discord.calls.some((call) => call[0] === "lock"), "缺卷时不锁频道");
+  assert(service.find("session-1").transcriptDelivered !== true, "没发齐就不记成已交付");
   assert(!containsText(JSON.parse(readFileSync(store.filePath, "utf8")), "缺卷0"), "失败的分卷不落进场次文件");
   assert(!readdirSync(dir).some((name) => name.endsWith(".md")), "失败的分卷不写成本地文件");
 }
@@ -969,5 +995,254 @@ async function activeTable(overrides) {
   assert((await service.rollTextDice({ channelId: "room-1", userId: "ob", content: "1d100 演技" })).ignore, "OB 技能骰点忽略");
   assertEqual(readFileSync(store.filePath, "utf8"), before, "技能骰点不写 Session 或长期卡");
 }
+
+{
+  const { service, discord, store } = await activeTable({ config: { messageContentEnabled: true } });
+  const invited = await invitePl(service, "add", "session-1", "kp", "pl2", "江某");
+  assert(invited.ok, "本局再加一名 PL");
+  assert((await service.previewSecret("session-1", "pl")).ok === false, "PL 不能打开秘密交流");
+  assert((await service.createSecretThread("session-1", "kp", ["pl"])).ok === false, "没有名称不能建子区");
+  const named = await service.beginCreateSecretThread("session-1", "kp", "密谈");
+  assert(named.ok && named.session.pendingSecretOp?.name === "密谈", "记下待建子区名称");
+  const created = await service.createSecretThread("session-1", "kp", ["pl", "pl", "outsider"]);
+  assert(created.ok && created.thread.threadId === "thread-1", "KP 建成私密子区");
+  assertEqual(created.thread.plUserIds.join(","), "pl", "只记下本团被选中的 PL");
+  assert(discord.calls.some((call) => call[0] === "thread" && call[1] === "room-1" && call[2] === "密谈"), "在本团频道下建子区");
+  assert(discord.calls.some((call) => call[0] === "thread-add" && call[2] === "kp"), "自动加入 KP");
+  assert(discord.calls.some((call) => call[0] === "thread-add" && call[2] === "pl"), "加入所选 PL");
+  assert(discord.calls.some((call) => call[0] === "thread-add" && call[2] === "ob"), "自动加入本团 OB");
+  assert(!discord.calls.some((call) => call[0] === "thread-add" && call[2] === "pl2"), "未选中的 PL 不加入");
+  const saved = JSON.parse(readFileSync(store.filePath, "utf8"));
+  assertEqual(saved.sessions[0].secretThreads[0].threadId, "thread-1", "子区 ID 持久保存");
+  const threadRoll = await service.roll({ channelId: "thread-1", userId: "pl", displayName: "奈洛莉", expression: "1d4" });
+  assert(threadRoll.ok, "秘密子区可以 /r");
+  const textRoll = await service.rollTextDice({ channelId: "thread-1", userId: "kp", content: "1d100" });
+  assert(textRoll.ok === true, "秘密子区可以文字骰点");
+  const outsiderRoll = await service.roll({ channelId: "thread-1", userId: "pl2", displayName: "江某", expression: "1d4" });
+  assert(outsiderRoll.ok, "未进子区的本团 PL 若发 /r 仍按本团身份处理");
+  const added = await service.addSecretThreadPl("session-1", "kp", "thread-1", ["pl2"]);
+  assert(added.ok && added.session.secretThreads[0].plUserIds.includes("pl2"), "增补未加入的本团 PL");
+  assert((await service.addSecretThreadPl("session-1", "kp", "thread-1", ["pl2"])).ok === false, "已在子区的 PL 不能再增补");
+  const removed = await service.removeSecretThreadPl("session-1", "kp", "thread-1", ["pl"]);
+  assert(removed.ok && !removed.session.secretThreads[0].plUserIds.includes("pl"), "移除 PL 只改后续访问名单");
+  assert(discord.calls.some((call) => call[0] === "thread-remove" && call[2] === "pl"), "向 Discord 撤销子区成员");
+  const reloaded = createCocSessionStore({ filePath: store.filePath });
+  await reloaded.load();
+  assertEqual(reloaded.snapshot().sessions[0].secretThreads[0].name, "密谈", "重启后仍能读到子区关联");
+}
+
+{
+  const atMain = Date.parse("2026-09-28T12:15:00.000Z");
+  const atSecret = Date.parse("2026-09-28T12:16:00.000Z");
+  const atLater = Date.parse("2026-09-28T12:17:00.000Z");
+  const { service, discord, store } = await activeTable({
+    config: { messageContentEnabled: true, transcriptEnabled: true },
+    histories: {
+      "room-1": { messages: [
+        { id: "m1", authorId: "kp", content: "主频道先说", createdTimestamp: atMain, type: 0 },
+        { id: "m3", authorId: "pl", content: "主频道后说", createdTimestamp: atLater, type: 0 },
+      ] },
+      "thread-1": { messages: [
+        { id: "s2", authorId: "pl", content: "第一子区", createdTimestamp: atSecret, type: 0 },
+      ] },
+      "thread-b": { messages: [
+        { id: "s1", authorId: "kp", content: "第二子区更早", createdTimestamp: atMain, type: 0 },
+      ] },
+    },
+  });
+  await store.update((state) => {
+    const current = state.sessions[0];
+    const next = {
+      ...current,
+      secretThreads: [
+        { threadId: "thread-1", name: "耳语", createdAt: 2_000, plUserIds: ["pl"] },
+        { threadId: "thread-b", name: "密室", createdAt: 3_000, plUserIds: ["pl"] },
+      ],
+    };
+    return { state: { ...state, sessions: [next] }, result: next };
+  });
+  const done = await service.finish("session-1", "kp");
+  assert(done.ok && done.session.state === "ENDED", "含子区的总团录成功后才结束");
+  const historyChannels = discord.calls.filter((call) => call[0] === "history").map((call) => call[1]);
+  assertEqual(historyChannels.join(","), "room-1,thread-1,thread-b", "按创建顺序读取主频道和子区");
+  const markdown = discord.calls.find((call) => call[0] === "send" && call[1]?.files)?.[1].files[0].attachment.toString("utf8");
+  assert(markdown.includes("## 主频道") && markdown.includes("## 耳语") && markdown.includes("## 密室"), "总团录按子区名称分节");
+  assert(markdown.indexOf("主频道先说") < markdown.indexOf("主频道后说"), "主频道内部按时间排");
+  assert(markdown.indexOf("## 耳语") < markdown.indexOf("## 密室"), "子区分节按创建顺序");
+  assert(markdown.includes("第一子区") && markdown.includes("第二子区更早"), "各子区消息都收录");
+}
+
+{
+  const { service, discord } = await activeTable({
+    config: { messageContentEnabled: true, transcriptEnabled: true },
+    missingThreads: ["thread-1"],
+    history: { messages: [{ id: "m", authorId: "kp", content: "主频道还在", createdTimestamp: Date.parse("2026-09-28T12:15:00.000Z"), type: 0 }] },
+  });
+  await service.beginCreateSecretThread("session-1", "kp", "已删");
+  await service.createSecretThread("session-1", "kp", ["pl"]);
+  const done = await service.finish("session-1", "kp");
+  assert(done.ok === false && service.find("session-1").state === "ACTIVE", "子区已不存在时不进入删除");
+  assert(done.message.includes("没有完整发出"), "缺失子区提示团录不完整");
+  assert(!discord.calls.some((call) => call[0] === "send" && call[1]?.files), "缺失子区不发送残缺团录");
+  assert(!discord.calls.some((call) => call[0] === "lock"), "缺失子区不锁频道");
+  assert(service.find("session-1").deleteAt == null, "缺失子区不写删除倒计时");
+}
+
+{
+  const { service, discord } = await activeTable({
+    config: { messageContentEnabled: true, transcriptEnabled: true },
+    failHistoryOf: { "thread-1": true },
+    history: { messages: [{ id: "m", authorId: "kp", content: "不该删", createdTimestamp: Date.parse("2026-09-28T12:15:00.000Z"), type: 0 }] },
+  });
+  await service.beginCreateSecretThread("session-1", "kp", "读失败");
+  await service.createSecretThread("session-1", "kp", ["pl"]);
+  const done = await service.finish("session-1", "kp");
+  assert(done.ok === false && service.find("session-1").state === "ACTIVE", "子区导出失败不进入删除");
+  assert(!discord.calls.some((call) => call[0] === "lock"), "子区导出失败不锁频道");
+  assert(service.find("session-1").deleteAt == null, "子区导出失败不写删除倒计时");
+}
+
+{
+  const { service, discord } = await activeTable({
+    config: { messageContentEnabled: true, transcriptEnabled: true },
+    history: {
+      messages: [{ id: "m", authorId: "kp", content: "截断", createdTimestamp: Date.parse("2026-09-28T12:15:00.000Z"), type: 0 }],
+      truncated: true,
+    },
+  });
+  const done = await service.finish("session-1", "kp");
+  assert(done.ok === false && service.find("session-1").state === "ACTIVE", "截断团录不进入删除");
+  assert(done.message.includes("没有完整发出"), "截断提示团录不完整");
+  assert(!discord.calls.some((call) => call[0] === "send" && call[1]?.files), "截断团录不发送附件");
+  assert(!discord.calls.some((call) => call[0] === "lock"), "截断团录不锁频道");
+  assert(service.find("session-1").deleteAt == null, "截断团录不写删除倒计时");
+}
+
+{
+  const { service, discord, store } = harness({
+    config: { messageContentEnabled: true, transcriptEnabled: true },
+    failHistory: true,
+  });
+  await store.load();
+  await store.update((state) => ({
+    state: {
+      ...state,
+      sessions: [{
+        sessionId: "ending",
+        state: "ENDING",
+        guildId: "guild",
+        recruitChannelId: "public",
+        recruitMessageId: "panel",
+        runChannelId: "room-1",
+        controlMessageId: "control",
+        rolesGranted: true,
+        kpUserId: "kp",
+        title: "收尾失败",
+        pl: [{ userId: "pl", characterName: "奈洛莉", originalNickname: null, appliedNickname: null }],
+        ob: [],
+        createdAt: 1,
+        startedAt: 1,
+        endedAt: 1_000,
+        deleteAt: 1_000 + DELETE_AFTER_MS,
+        channelDeleted: false,
+        transcriptDelivered: false,
+        secretThreads: [],
+      }],
+    },
+    result: null,
+  }));
+  await service.recoverInterrupted();
+  const session = service.find("ending");
+  assertEqual(session.state, "ACTIVE", "团录失败的收尾回到进行中");
+  assert(session.deleteAt == null && session.endedAt == null, "团录失败的收尾不保留删除倒计时");
+  assert(!discord.calls.some((call) => call[0] === "lock"), "团录失败的收尾不锁频道");
+  assert(discord.calls.some((call) => (
+    call[0] === "send" && String(call[1]?.content ?? "").includes("尚未进入 48 小时删除")
+  )), "收尾失败提示可以重试结束");
+}
+
+{
+  const { service, discord } = await activeTable({ config: { messageContentEnabled: true } });
+  await service.beginCreateSecretThread("session-1", "kp", "密谈");
+  await service.createSecretThread("session-1", "kp", []);
+  discord.calls.length = 0;
+  const addedOb = await service.addOb("session-1", "kp", "guest");
+  assert(addedOb.ok && discord.calls.some((call) => call[0] === "thread-add" && call[2] === "guest"), "新增 OB 加入已有秘密子区");
+  const converted = await service.convertPlToOb("session-1", "kp", "pl");
+  assert(converted.ok && discord.calls.some((call) => call[0] === "thread-add" && call[2] === "pl"), "PL 转 OB 后补进未点名的秘密子区");
+  assert(!converted.session.secretThreads[0].plUserIds.includes("pl"), "转 OB 后从点名名单里拿掉");
+  const asPl = await invitePl(service, "convert", "session-1", "kp", "guest", "江某");
+  assert(asPl.ok && discord.calls.some((call) => call[0] === "thread-remove" && call[2] === "guest"), "OB 转 PL 时退出未点名的秘密子区");
+  const extra = await invitePl(service, "add", "session-1", "kp", "pl2", "江某");
+  assert(extra.ok && !discord.calls.some((call) => call[0] === "thread-add" && call[2] === "pl2"), "新 PL 不自动进入已有秘密子区");
+  const removed = await service.removeMember("session-1", "kp", "ob");
+  assert(removed.ok && discord.calls.some((call) => call[0] === "thread-remove" && call[2] === "ob"), "移出本局时退出秘密子区");
+}
+
+{
+  const { service, discord, store } = await activeTable({
+    config: { messageContentEnabled: true },
+    failThreadAdd: "pl",
+  });
+  await service.beginCreateSecretThread("session-1", "kp", "密谈");
+  const created = await service.createSecretThread("session-1", "kp", ["pl"]);
+  assert(created.ok && created.warning.includes("增补"), "PL 加入失败仍保存子区并提示增补");
+  assert(!created.thread.plUserIds.includes("pl"), "只记录实际加入成功的 PL");
+  const saved = JSON.parse(readFileSync(store.filePath, "utf8"));
+  assert(!saved.sessions[0].secretThreads[0].plUserIds.includes("pl"), "失败的 PL 不写入持久名单");
+  assert(discord.calls.some((call) => call[0] === "thread-add" && call[2] === "kp"), "KP 仍加入");
+  assert(discord.calls.some((call) => call[0] === "thread-add" && call[2] === "ob"), "OB 仍加入");
+}
+
+{
+  const { service, discord, store } = await activeTable({
+    config: { messageContentEnabled: true },
+    failThreadAdd: "kp",
+  });
+  await service.beginCreateSecretThread("session-1", "kp", "密谈");
+  const created = await service.createSecretThread("session-1", "kp", ["pl"]);
+  assert(created.ok === false, "KP 加入失败则回滚子区");
+  assert(discord.calls.some((call) => call[0] === "delete" && call[1] === "thread-1"), "必需成员失败时删掉子区");
+  assertEqual(JSON.parse(readFileSync(store.filePath, "utf8")).sessions[0].secretThreads?.length ?? 0, 0, "必需成员失败不留下子区记录");
+  assert(service.find("session-1").pendingSecretOp == null, "回滚后清掉待建状态");
+}
+
+{
+  const { service, discord, store } = await activeTable({
+    config: { messageContentEnabled: true },
+    failThreadAdd: "ob",
+  });
+  await service.beginCreateSecretThread("session-1", "kp", "密谈");
+  const created = await service.createSecretThread("session-1", "kp", ["pl"]);
+  assert(created.ok === false, "OB 加入失败则回滚子区");
+  assert(discord.calls.some((call) => call[0] === "delete" && call[1] === "thread-1"), "OB 失败时删掉子区");
+  assertEqual(JSON.parse(readFileSync(store.filePath, "utf8")).sessions[0].secretThreads?.length ?? 0, 0, "OB 失败不留下子区记录");
+}
+
+{
+  const { service, discord, store } = await activeTable({ config: { messageContentEnabled: true } });
+  await store.update((state) => {
+    const current = state.sessions[0];
+    const secretThreads = Array.from({ length: 25 }, (_, index) => ({
+      threadId: `thread-${index + 1}`,
+      name: `密${index + 1}`,
+      createdAt: index,
+      plUserIds: [],
+    }));
+    return {
+      state: {
+        ...state,
+        sessions: [{ ...current, secretThreads, pendingSecretOp: { type: "create", name: "第26" } }],
+      },
+      result: null,
+    };
+  });
+  assert((await service.beginCreateSecretThread("session-1", "kp", "第26")).ok === false, "满 25 个不能再填名称");
+  const created = await service.createSecretThread("session-1", "kp", []);
+  assert(created.ok === false && created.message.includes("最多 25"), "满 25 个不能再建子区");
+  assert(!discord.calls.some((call) => call[0] === "thread" && call[2] === "第26"), "达到上限不向 Discord 建子区");
+  assertEqual(service.find("session-1").secretThreads.length, 25, "达到上限后仍是 25 个子区");
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

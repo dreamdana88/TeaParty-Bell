@@ -8,6 +8,13 @@ import {
   TextInputStyle,
 } from "discord.js";
 import { obSeatLabel } from "./memberQuery.js";
+import {
+  eligibleSecretPl,
+  findSecretThread,
+  MAX_SECRET_THREADS,
+  removableSecretPl,
+  secretThreadsOf,
+} from "./sessionRules.js";
 
 export const COC_CUSTOM_PREFIX = "coc:v1";
 export const PANEL_COLOR = 0x6e4b8b;
@@ -119,6 +126,7 @@ export function controlPanel(session, { transcript = false } = {}) {
   const components = [
     new ActionRowBuilder().addComponents(
       button(buildCustomId("members", session.sessionId), "👥 成员管理", ButtonStyle.Primary),
+      button(buildCustomId("secret", session.sessionId), "🔒 秘密交流", ButtonStyle.Secondary),
       button(buildCustomId("end", session.sessionId), "🛑 结束本局", ButtonStyle.Danger),
     ),
   ];
@@ -268,4 +276,144 @@ export function confirmRow(action, sessionId, confirmLabel, backLabel, userId = 
     button(buildCustomId(action, sessionId, userId), confirmLabel, ButtonStyle.Danger),
     button(buildCustomId(`back-${action}`, sessionId), backLabel, ButtonStyle.Secondary),
   );
+}
+
+export function secretHubPanel(session, selectedThreadId = null, notice = null) {
+  const allThreads = secretThreadsOf(session);
+  const atLimit = allThreads.length >= MAX_SECRET_THREADS;
+  const threads = allThreads.slice(0, MAX_SECRET_THREADS);
+  const selected = threads.find((thread) => thread.threadId === selectedThreadId) ?? null;
+  const lines = ["🔒 秘密交流", ""];
+  if (notice) lines.push(String(notice), "");
+  if (!threads.length) lines.push("尚无秘密子区");
+  else {
+    lines.push("已有子区");
+    if (selected) lines.push(`当前：${selected.name}`);
+    if (atLimit) lines.push(`最多 ${MAX_SECRET_THREADS} 个秘密子区。`);
+  }
+  const components = [];
+  if (threads.length) {
+    components.push(new ActionRowBuilder().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId(buildCustomId("s-pick", session.sessionId))
+        .setPlaceholder("选择子区……")
+        .setMinValues(1)
+        .setMaxValues(1)
+        .addOptions(threads.map((thread) => ({
+          label: thread.name.slice(0, 100),
+          value: thread.threadId,
+          default: thread.threadId === selected?.threadId,
+        }))),
+    ));
+  }
+  components.push(new ActionRowBuilder().addComponents(
+    button(buildCustomId("s-add", session.sessionId), "＋ 添加子区", ButtonStyle.Primary).setDisabled(atLimit),
+    button(buildCustomId("s-mem", session.sessionId, selected?.threadId ?? ""), "管理参与者", ButtonStyle.Secondary)
+      .setDisabled(!selected),
+  ));
+  return { content: lines.join("\n"), components };
+}
+
+export function secretThreadModal(sessionId) {
+  return new ModalBuilder()
+    .setCustomId(buildCustomId("s-modal", sessionId))
+    .setTitle("添加秘密子区")
+    .addComponents(new ActionRowBuilder().addComponents(
+      new TextInputBuilder()
+        .setCustomId("name")
+        .setLabel("子区名称")
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true)
+        .setMaxLength(100),
+    ));
+}
+
+export function secretCreatePlPanel(session) {
+  const options = (session.pl ?? []).slice(0, 25).map((member) => ({
+    label: String(member.characterName ?? "PL").slice(0, 100),
+    value: member.userId,
+  }));
+  const components = [];
+  if (options.length) {
+    components.push(new ActionRowBuilder().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId(buildCustomId("s-pls", session.sessionId))
+        .setPlaceholder("选择要加入的本团 PL")
+        .setMinValues(1)
+        .setMaxValues(Math.min(25, options.length))
+        .addOptions(options),
+    ));
+  }
+  components.push(new ActionRowBuilder().addComponents(
+    button(buildCustomId("s-only", session.sessionId), "仅 KP 与 OB", ButtonStyle.Secondary),
+  ));
+  return {
+    content: options.length
+      ? "选择要加入这个秘密子区的本团 PL。本团 KP 和 OB 会自动加入。"
+      : "当前没有可选的本团 PL。将只加入 KP 与本团 OB。",
+    components,
+  };
+}
+
+export function secretMembersPanel(session, threadId) {
+  const thread = findSecretThread(session, threadId);
+  if (!thread) {
+    return { content: "没有找到这个秘密子区。", components: [] };
+  }
+  const plNames = thread.plUserIds.map((userId) => {
+    const member = session.pl.find((item) => item.userId === userId);
+    return member ? `${member.characterName}（<@${userId}>）` : `<@${userId}>`;
+  });
+  const obLines = (session.ob ?? []).map((member) => `<@${member.userId}>`);
+  return {
+    content: [
+      `🔒 ${thread.name}`,
+      "",
+      "参与名单",
+      `KP：<@${session.kpUserId}>`,
+      `PL：${plNames.length ? plNames.join("、") : "无"}`,
+      `OB：${obLines.length ? obLines.join("、") : "无"}`,
+    ].join("\n"),
+    components: [
+      new ActionRowBuilder().addComponents(
+        button(buildCustomId("s-apl", session.sessionId, thread.threadId), "增补 PL", ButtonStyle.Primary),
+        button(buildCustomId("s-rpl", session.sessionId, thread.threadId), "移除 PL", ButtonStyle.Danger),
+      ),
+      new ActionRowBuilder().addComponents(
+        button(buildCustomId("s-back", session.sessionId, thread.threadId), "返回", ButtonStyle.Secondary),
+      ),
+    ],
+  };
+}
+
+export function secretPickPlPanel(session, threadId, action, prompt) {
+  const thread = findSecretThread(session, threadId);
+  const members = action === "s-apls"
+    ? eligibleSecretPl(session, thread)
+    : removableSecretPl(session, thread).map((userId) => (
+      session.pl.find((member) => member.userId === userId) ?? { userId, characterName: "PL" }
+    ));
+  const options = members.slice(0, 25).map((member) => ({
+    label: String(member.characterName ?? "PL").slice(0, 100),
+    value: member.userId,
+  }));
+  if (!options.length) {
+    return {
+      content: action === "s-apls" ? "没有可以增补的本团 PL。" : "没有可以移除的 PL。",
+      components: [],
+    };
+  }
+  return {
+    content: prompt,
+    components: [
+      new ActionRowBuilder().addComponents(
+        new StringSelectMenuBuilder()
+          .setCustomId(buildCustomId(action, session.sessionId, threadId))
+          .setPlaceholder("选择本团 PL")
+          .setMinValues(1)
+          .setMaxValues(Math.min(25, options.length))
+          .addOptions(options),
+      ),
+    ],
+  };
 }

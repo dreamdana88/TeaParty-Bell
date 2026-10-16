@@ -1,5 +1,6 @@
-import { controlPanel, transcriptPrivacyPrompt } from "./panel.js";
+import { controlPanel, secretHubPanel, transcriptPrivacyPrompt } from "./panel.js";
 import {
+  buildSectionedTranscriptFiles,
   buildTranscriptFile,
   buildTranscriptFiles,
   collectTranscriptHistory,
@@ -69,6 +70,7 @@ const session = {
   const hidden = controlPanel(session);
   assertEqual(shown.components.length, 2, "团录开关打开时多一行隐私按钮");
   assertEqual(hidden.components.length, 1, "团录开关关闭时不出现隐私按钮");
+  assertEqual(hidden.components[0].toJSON().components[1].label, "🔒 秘密交流", "开团面板有秘密交流");
   assertEqual(shown.components[1].toJSON().components[0].label, "团录与隐私", "按钮文字是团录与隐私");
   const recording = transcriptPrivacyPrompt(false, "s1");
   const paused = transcriptPrivacyPrompt(true, "s1");
@@ -76,6 +78,33 @@ const session = {
   assertEqual(paused.components[0].toJSON().components[0].label, "恢复记录我之后的消息", "已退出时可以恢复之后的记录");
   assert(recording.content.includes("从现在起") && recording.content.includes("只跳过之后的新消息"), "未退出的说明是时间段，不是整局删除");
   assert(paused.content.includes("从现在起") && paused.content.includes("不会补上"), "已退出的说明是时间段，恢复不补旧消息");
+  const emptySecret = secretHubPanel({ ...session, sessionId: "s1", secretThreads: [] });
+  assert(emptySecret.content.includes("尚无秘密子区"), "没有子区时说明尚无秘密子区");
+  assertEqual(emptySecret.components[0].toJSON().components[0].label, "＋ 添加子区", "没有子区时仍可添加");
+  assert(emptySecret.components[0].toJSON().components[1].disabled === true, "没有子区时不能管理参与者");
+  const listed = secretHubPanel({
+    ...session,
+    sessionId: "s1",
+    secretThreads: [{ threadId: "t1", name: "耳语", createdAt: 1, plUserIds: ["pl"] }],
+  }, "t1");
+  assert(listed.content.includes("已有子区") && listed.content.includes("耳语"), "有子区时显示名称");
+  assertEqual(listed.components[0].toJSON().components[0].options[0].value, "t1", "子区选择器列出已有子区");
+  assert(listed.components[1].toJSON().components[1].disabled === false, "选中子区后可管理参与者");
+  const capped = secretHubPanel({
+    ...session,
+    sessionId: "s1",
+    secretThreads: Array.from({ length: 26 }, (_, index) => ({
+      threadId: `t${index + 1}`,
+      name: `密${index + 1}`,
+      createdAt: index,
+      plUserIds: [],
+    })),
+  });
+  assert(capped.content.includes("最多 25 个秘密子区。"), "满员时说明上限");
+  assertEqual(capped.components[0].toJSON().components[0].options.length, 25, "选择器最多列出 25 个子区");
+  assert(capped.components[1].toJSON().components[0].disabled === true, "满员时不能再添加子区");
+  const warned = secretHubPanel(session, null, "部分 PL 没有加入该秘密子区，可在「管理参与者」中增补。");
+  assert(warned.content.includes("部分 PL 没有加入该秘密子区"), "创建警告显示在管理面板顶部");
 }
 
 {
@@ -196,6 +225,30 @@ function noise() {
   assertEqual(capped.messages.length, 150, "安全上限停在最近的 150 条");
   assert(capped.truncated === true, "还没读到开团时间就触顶时标记截断");
   assertEqual(capped.messages[0].createdTimestamp, 101, "触顶后保留的是较新的一段");
+}
+
+{
+  const sectioned = buildSectionedTranscriptFiles(session, [
+    {
+      title: "主频道",
+      messages: [
+        { id: "m2", authorId: "pl", content: "后一句", createdTimestamp: Date.parse("2026-09-28T12:16:00.000Z"), type: 0 },
+        { id: "m1", authorId: "kp", content: "先一句", createdTimestamp: Date.parse("2026-09-28T12:15:00.000Z"), type: 0 },
+      ],
+    },
+    {
+      title: "耳语",
+      messages: [
+        { id: "s1", authorId: "pl", content: "子区一句", createdTimestamp: Date.parse("2026-09-28T12:14:00.000Z"), type: 0 },
+      ],
+    },
+    { title: "已归档", missing: true },
+  ]);
+  const markdown = sectioned.files[0].markdown;
+  assert(markdown.includes("## 主频道") && markdown.includes("## 耳语") && markdown.includes("## 已归档"), "分节标题按传入顺序");
+  assert(markdown.indexOf("先一句") < markdown.indexOf("后一句"), "节内按时间排");
+  assert(markdown.indexOf("## 主频道") < markdown.indexOf("## 耳语"), "子区节在主频道之后");
+  assert(markdown.includes("子区一句") && markdown.includes("该秘密子区已不存在"), "归档缺失子区也占一节");
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

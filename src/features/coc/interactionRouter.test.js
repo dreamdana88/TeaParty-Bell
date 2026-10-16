@@ -193,5 +193,146 @@ assert(source.includes("成员搜索被 Discord 拒绝了"), "403 使用中性�
   router.destroy();
 }
 
+{
+  const replies = [];
+  const client = { on(_name, fn) { this.fn = fn; }, off() {} };
+  const session = {
+    sessionId: "s1",
+    kpUserId: "kp",
+    pl: [{ userId: "pl", characterName: "奈洛莉" }],
+    ob: [{ userId: "ob" }],
+    secretThreads: [],
+  };
+  const router = createCocInteractionRouter({
+    client,
+    service: {
+      availability: () => "ready",
+      previewSecret: (id, actor) => actor === "kp"
+        ? { ok: true, session }
+        : { ok: false, message: "只有本局 KP 可以使用秘密交流。" },
+    },
+    discord: {},
+    logger: { warn() {}, error() {} },
+  });
+  router.start();
+  await client.fn({
+    isChatInputCommand: () => false,
+    isModalSubmit: () => false,
+    isStringSelectMenu: () => false,
+    isButton: () => true,
+    customId: "coc:v1:secret:s1",
+    user: { id: "pl" },
+    async reply(payload) { replies.push(payload); },
+  });
+  assert(replies.at(-1)?.content?.includes("只有本局 KP"), "非 KP 不能打开秘密交流");
+  await client.fn({
+    isChatInputCommand: () => false,
+    isModalSubmit: () => false,
+    isStringSelectMenu: () => false,
+    isButton: () => true,
+    customId: "coc:v1:secret:s1",
+    user: { id: "kp" },
+    async reply(payload) { replies.push(payload); },
+  });
+  assert(replies.at(-1)?.content?.includes("尚无秘密子区"), "KP 看到仅自己可见的秘密交流面板");
+  assert(replies.at(-1)?.flags, "秘密交流面板是 ephemeral");
+  router.destroy();
+}
+
+{
+  const updates = [];
+  const client = { on(_name, fn) { this.fn = fn; }, off() {} };
+  const session = {
+    sessionId: "s1",
+    kpUserId: "kp",
+    pl: [{ userId: "pl", characterName: "奈洛莉" }, { userId: "pl2", characterName: "江某" }],
+    ob: [{ userId: "ob" }],
+    secretThreads: [{ threadId: "t1", name: "耳语", createdAt: 1, plUserIds: ["pl"] }],
+  };
+  const added = [];
+  const router = createCocInteractionRouter({
+    client,
+    service: {
+      availability: () => "ready",
+      previewSecret: () => ({ ok: true, session }),
+      async addSecretThreadPl(_session, _actor, threadId, ids) {
+        added.push({ threadId, ids });
+        return {
+          ok: true,
+          threadId,
+          session: {
+            ...session,
+            secretThreads: [{ ...session.secretThreads[0], plUserIds: ["pl", "pl2"] }],
+          },
+        };
+      },
+    },
+    discord: { async sendMessage() { throw new Error("不应刷主频道"); } },
+    logger: { warn() {}, error() {} },
+  });
+  router.start();
+  await client.fn({
+    isChatInputCommand: () => false,
+    isModalSubmit: () => false,
+    isButton: () => false,
+    isStringSelectMenu: () => true,
+    customId: "coc:v1:s-apls:s1:t1",
+    user: { id: "kp" },
+    values: ["pl2"],
+    async deferUpdate() {},
+    async editReply(payload) { updates.push(payload); },
+  });
+  assertEqual(added[0]?.threadId, "t1", "增补打到选中的子区");
+  assert(updates.at(-1)?.content.includes("江某"), "增补后更新管理面板");
+  assert(!updates.at(-1)?.content.includes("主频道"), "不往主频道发通知");
+  router.destroy();
+}
+
+{
+  const updates = [];
+  const client = { on(_name, fn) { this.fn = fn; }, off() {} };
+  const session = {
+    sessionId: "s1",
+    kpUserId: "kp",
+    pl: [{ userId: "pl", characterName: "奈洛莉" }],
+    ob: [{ userId: "ob" }],
+    secretThreads: [{ threadId: "t1", name: "耳语", createdAt: 1, plUserIds: [] }],
+  };
+  const router = createCocInteractionRouter({
+    client,
+    service: {
+      availability: () => "ready",
+      async createSecretThread() {
+        return {
+          ok: true,
+          session,
+          thread: session.secretThreads[0],
+          warning: "部分 PL 没有加入该秘密子区，可在「管理参与者」中增补。",
+        };
+      },
+    },
+    discord: { async sendMessage() { throw new Error("不应刷主频道"); } },
+    logger: { warn() {}, error() {} },
+  });
+  router.start();
+  await client.fn({
+    isChatInputCommand: () => false,
+    isModalSubmit: () => false,
+    isStringSelectMenu: () => false,
+    isButton: () => true,
+    customId: "coc:v1:s-only:s1",
+    user: { id: "kp" },
+    async deferUpdate() {},
+    async editReply(payload) { updates.push(payload); },
+  });
+  assert(updates.at(-1)?.content.includes("部分 PL 没有加入该秘密子区"), "部分加入失败时把警告显示在管理面板");
+  router.destroy();
+}
+
+function assertEqual(actual, expected, label) {
+  if (actual === expected) { passed += 1; console.log(`  PASS: ${label}`); }
+  else { failed += 1; console.error(`  FAIL: ${label} — expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`); }
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

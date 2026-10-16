@@ -21,6 +21,11 @@ import {
   memberSearchResults,
   parseCustomId,
   recruitPanel,
+  secretCreatePlPanel,
+  secretHubPanel,
+  secretMembersPanel,
+  secretPickPlPanel,
+  secretThreadModal,
   startedPanel,
 } from "./panel.js";
 import { classifyMemberQuery, memberOptionLabel } from "./memberQuery.js";
@@ -406,6 +411,77 @@ export function createCocInteractionRouter({
       await interaction.reply({ ...memberAdminPanel(preview.session), flags: MessageFlags.Ephemeral });
       return;
     }
+    if (action === "secret") {
+      const preview = service.previewSecret(sessionId, userId);
+      if (!preview.ok) {
+        await replyEphemeral(interaction, preview.message);
+        return;
+      }
+      await interaction.reply({ ...secretHubPanel(preview.session), flags: MessageFlags.Ephemeral });
+      return;
+    }
+    if (action === "s-add") {
+      const preview = service.previewSecret(sessionId, userId);
+      if (!preview.ok) {
+        await replyEphemeral(interaction, preview.message);
+        return;
+      }
+      await interaction.showModal(secretThreadModal(sessionId));
+      return;
+    }
+    if (action === "s-mem") {
+      const preview = service.previewSecret(sessionId, userId);
+      if (!preview.ok) {
+        await replyEphemeral(interaction, preview.message);
+        return;
+      }
+      if (!targetUserId) {
+        await replyEphemeral(interaction, "请先选择一个秘密子区。");
+        return;
+      }
+      await interaction.update(secretMembersPanel(preview.session, targetUserId));
+      return;
+    }
+    if (action === "s-apl" || action === "s-rpl") {
+      const preview = service.previewSecret(sessionId, userId);
+      if (!preview.ok) {
+        await replyEphemeral(interaction, preview.message);
+        return;
+      }
+      if (!targetUserId) {
+        await replyEphemeral(interaction, "请先选择一个秘密子区。");
+        return;
+      }
+      const adding = action === "s-apl";
+      await interaction.update(secretPickPlPanel(
+        preview.session,
+        targetUserId,
+        adding ? "s-apls" : "s-rpls",
+        adding
+          ? "选择要增补的本团 PL。加入后可查看此前聊天记录。"
+          : "选择要移除的 PL。移除只撤销后续访问，不会抹除对方已经看过的内容。",
+      ));
+      return;
+    }
+    if (action === "s-only") {
+      await interaction.deferUpdate();
+      const created = await service.createSecretThread(sessionId, userId, []);
+      if (!created.ok) {
+        await interaction.editReply({ content: created.message, components: [] });
+        return;
+      }
+      await interaction.editReply(secretHubPanel(created.session, created.thread?.threadId, created.warning ?? null));
+      return;
+    }
+    if (action === "s-back") {
+      const preview = service.previewSecret(sessionId, userId);
+      if (!preview.ok) {
+        await interaction.update({ content: preview.message, components: [] });
+        return;
+      }
+      await interaction.update(secretHubPanel(preview.session, targetUserId));
+      return;
+    }
     if (action === "madd-pl") {
       await interaction.showModal(memberSearchModal(sessionId, "modal-find-pl"));
       return;
@@ -569,6 +645,24 @@ export function createCocInteractionRouter({
           await showMemberSearch(interaction, parsed);
           return;
         }
+        if (parsed.action === "s-modal") {
+          const preview = service.previewSecret(parsed.sessionId, interaction.user.id);
+          if (!preview.ok) {
+            await replyEphemeral(interaction, preview.message);
+            return;
+          }
+          const started = await service.beginCreateSecretThread(
+            parsed.sessionId,
+            interaction.user.id,
+            interaction.fields.getTextInputValue("name"),
+          );
+          if (!started.ok) {
+            await replyEphemeral(interaction, started.message);
+            return;
+          }
+          await interaction.reply({ ...secretCreatePlPanel(started.session), flags: MessageFlags.Ephemeral });
+          return;
+        }
         return;
       }
       if (interaction.isStringSelectMenu?.()) {
@@ -578,6 +672,39 @@ export function createCocInteractionRouter({
         if (parsed.action === "pick-invited-character") {
           await interaction.deferUpdate();
           await selectAndReply(interaction, parsed.sessionId, selected, parsed.userId);
+          return;
+        }
+        if (parsed.action === "s-pick") {
+          const preview = service.previewSecret(parsed.sessionId, interaction.user.id);
+          if (!preview.ok) {
+            await interaction.update({ content: preview.message, components: [] });
+            return;
+          }
+          await interaction.update(secretHubPanel(preview.session, selected));
+          return;
+        }
+        if (parsed.action === "s-pls") {
+          await interaction.deferUpdate();
+          const created = await service.createSecretThread(parsed.sessionId, interaction.user.id, [...(interaction.values ?? [])]);
+          if (!created.ok) {
+            await interaction.editReply({ content: created.message, components: [] });
+            return;
+          }
+          await interaction.editReply(secretHubPanel(created.session, created.thread?.threadId, created.warning ?? null));
+          return;
+        }
+        if (parsed.action === "s-apls" || parsed.action === "s-rpls") {
+          await interaction.deferUpdate();
+          const threadId = parsed.userId;
+          const ids = [...(interaction.values ?? [])];
+          const changed = parsed.action === "s-apls"
+            ? await service.addSecretThreadPl(parsed.sessionId, interaction.user.id, threadId, ids)
+            : await service.removeSecretThreadPl(parsed.sessionId, interaction.user.id, threadId, ids);
+          if (!changed.ok) {
+            await interaction.editReply({ content: changed.message, components: [] });
+            return;
+          }
+          await interaction.editReply(secretMembersPanel(changed.session, changed.threadId ?? threadId));
           return;
         }
         if (parsed.action === "pick-found-pl" || parsed.action === "pick-found-ob") {
