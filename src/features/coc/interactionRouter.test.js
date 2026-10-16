@@ -334,5 +334,16 @@ function assertEqual(actual, expected, label) {
   else { failed += 1; console.error(`  FAIL: ${label} — expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`); }
 }
 
+{
+  const calls = [];
+  const client = { on(_event, handler) { this.handler = handler; }, off() {} };
+  const session = { sessionId: "banner", title: "招募", kpUserId: "kp", pl: [], ob: [{userId:"ob"}], createdAt: 1000 };
+  const router = createCocInteractionRouter({ client, service: { availability: () => "ready", joinOb: async () => ({ok:true,session}) }, discord: {}, logger: {warn(){},error(){}} });
+  router.start();
+  await client.handler({ isChatInputCommand:()=>false,isModalSubmit:()=>false,isStringSelectMenu:()=>false,isButton:()=>true,customId:"coc:v1:ob:banner",user:{id:"ob"}, async deferUpdate(){calls.push("ack");this.deferred=true;},async editReply(payload){calls.push(payload.files?.length===1?"image-edit":"missing-image");} });
+  assert(calls.join(",") === "ack,image-edit", "招募刷新先确认交互再上传横幅，不占用首个回复时限");
+  router.destroy();
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

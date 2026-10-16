@@ -1,5 +1,8 @@
+import { fileURLToPath } from "node:url";
 import {
   ActionRowBuilder,
+  AttachmentBuilder,
+  escapeMarkdown,
   ButtonBuilder,
   ButtonStyle,
   ModalBuilder,
@@ -20,6 +23,8 @@ export const COC_CUSTOM_PREFIX = "coc:v1";
 export const PANEL_COLOR = 0x6e4b8b;
 
 const MAX_NAMES = 12;
+const RECRUIT_BANNER_NAME = "recruit-banner.png";
+const RECRUIT_BANNER_PATH = fileURLToPath(new URL("../../resources/coc/recruit-banner.png", import.meta.url));
 
 export function buildCustomId(action, sessionId = "", userId = "") {
   const parts = [COC_CUSTOM_PREFIX, action];
@@ -42,14 +47,22 @@ export function parseCustomId(customId) {
   };
 }
 
+function rosterText(members, format, empty) {
+  const lines = [];
+  for (const member of members.slice(0, MAX_NAMES)) {
+    const line = format(member);
+    if ([...lines, line].join("\n").length > 960) break;
+    lines.push(line);
+  }
+  const more = members.length - lines.length;
+  if (more) lines.push("…还有 " + more + " 人");
+  return lines.join("\n") || empty;
+}
+
 function namesBlock(session) {
-  const klLines = session.pl.slice(0, MAX_NAMES).map((member) => `${member.characterName}（<@${member.userId}>）`);
-  const obLines = session.ob.slice(0, MAX_NAMES).map((member) => `<@${member.userId}>`);
-  const klMore = session.pl.length > MAX_NAMES ? `\n…还有 ${session.pl.length - MAX_NAMES} 人` : "";
-  const obMore = session.ob.length > MAX_NAMES ? `\n…还有 ${session.ob.length - MAX_NAMES} 人` : "";
   return {
-    pl: klLines.length ? `${klLines.join("\n")}${klMore}` : "还没有人",
-    ob: obLines.length ? `${obLines.join("\n")}${obMore}` : "还没有人",
+    pl: rosterText(session.pl, member => escapeMarkdown(member.characterName) + "  <@" + member.userId + ">", "席位尚空，欢迎加入"),
+    ob: rosterText(session.ob, member => "<@" + member.userId + ">", "旁观席尚空，欢迎见证这段故事。"),
   };
 }
 
@@ -59,67 +72,71 @@ function button(customId, label, style) {
 
 export function recruitComponents(sessionId, disabled = false) {
   const row1 = new ActionRowBuilder().addComponents(
-    button(buildCustomId("kl", sessionId), "🎭 报名 PL", ButtonStyle.Primary).setDisabled(disabled),
-    button(buildCustomId("ob", sessionId), "👁 报名 OB", ButtonStyle.Secondary).setDisabled(disabled),
+    button(buildCustomId("kl", sessionId), "🎭 报名调查员", ButtonStyle.Primary).setDisabled(disabled),
+    button(buildCustomId("ob", sessionId), "👁 旁观报名", ButtonStyle.Secondary).setDisabled(disabled),
     button(buildCustomId("leave", sessionId), "↩ 取消报名", ButtonStyle.Secondary).setDisabled(disabled),
   );
   const row2 = new ActionRowBuilder().addComponents(
-    button(buildCustomId("start", sessionId), "🎲 正式开始", ButtonStyle.Success).setDisabled(disabled),
+    button(buildCustomId("start", sessionId), "🎲 正式开团", ButtonStyle.Success).setDisabled(disabled),
     button(buildCustomId("abort", sessionId), "✖ 取消开团", ButtonStyle.Danger).setDisabled(disabled),
   );
   return [row1, row2];
 }
 
-export function recruitPanel(session, disabled = false) {
+function invitationPanel(session, { status, color, atmosphere, note, disabled }) {
   const names = namesBlock(session);
   return {
+    allowedMentions: { parse: [] },
+    // Replace the single image on edits, rather than accumulating attachments.
+    attachments: [],
+    files: [new AttachmentBuilder(RECRUIT_BANNER_PATH, { name: RECRUIT_BANNER_NAME })],
     embeds: [{
-      color: PANEL_COLOR,
-      title: "🎲 CoC 跑团招募",
-      description: [
-        `模组：${session.title}`,
-        `KP：<@${session.kpUserId}>`,
-        "",
-        `🎭 PL 调查员：${session.pl.length}人`,
-        names.pl,
-        "",
-        `👁 OB 旁观者：${session.ob.length}人`,
-        names.ob,
-        "",
-        disabled ? "报名已结束。" : "等待报名中……",
-      ].join("\n"),
+      color,
+      author: { name: "🕯️ 茶话会 · 调查员召集令" },
+      title: "《" + escapeMarkdown(session.title) + "》",
+      description: atmosphere,
+      fields: [
+        { name: "🎭 守密人 KP", value: "<@" + session.kpUserId + ">", inline: true },
+        { name: "📌 当前状态", value: status, inline: true },
+        { name: "🔎 调查员 · " + session.pl.length + " 人", value: names.pl, inline: false },
+        { name: "👁 旁观者 · " + session.ob.length + " 人", value: names.ob, inline: false },
+        { name: "\u200b", value: note, inline: false },
+      ],
+      image: { url: "attachment://" + RECRUIT_BANNER_NAME },
+      footer: { text: "茶话会调查员档案馆 · 愿诸位平安归来" },
     }],
     components: recruitComponents(session.sessionId, disabled),
   };
 }
 
+export function recruitPanel(session, disabled = false) {
+  return invitationPanel(session, {
+    status: disabled ? "报名已结束" : "正在招募",
+    color: 0x6b2d35,
+    atmosphere: "一份新的调查委托，正在等待揭秘……",
+    note: disabled ? "报名已结束。" : "报名调查员后，请按提示选择自己的角色卡。",
+    disabled,
+  });
+}
+
 export function startedPanel(session) {
-  return {
-    embeds: [{
-      color: PANEL_COLOR,
-      title: `🎲 《${session.title}》已经开团`,
-      description: [
-        `KP：<@${session.kpUserId}>`,
-        "",
-        `🎭 PL：${session.pl.length}人`,
-        `👁 OB：${session.ob.length}人`,
-        "",
-        "报名已结束。",
-      ].join("\n"),
-    }],
-    components: recruitComponents(session.sessionId, true),
-  };
+  return invitationPanel(session, {
+    status: "已经开团",
+    color: 0x8c7048,
+    atmosphere: "调查员已经就座，故事从此刻展开。",
+    note: "报名已结束，请前往本局专属频道。",
+    disabled: true,
+  });
 }
 
 export function cancelledPanel(session) {
-  return {
-    embeds: [{
-      color: PANEL_COLOR,
-      title: `《${session.title}》招募已取消。`,
-      description: `KP：<@${session.kpUserId}>`,
-    }],
-    components: recruitComponents(session.sessionId, true),
-  };
+  return invitationPanel(session, {
+    status: "招募已取消",
+    color: 0x777066,
+    atmosphere: "这份委托暂时封存，期待下一次相聚。",
+    note: "本次招募已取消。",
+    disabled: true,
+  });
 }
 
 export function controlPanel(session, { transcript = false } = {}) {

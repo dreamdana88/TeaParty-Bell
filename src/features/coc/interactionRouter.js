@@ -273,7 +273,8 @@ export function createCocInteractionRouter({
       await interaction.editReply(recruitPanel(session));
       return;
     }
-    await interaction.update(recruitPanel(session));
+    await interaction.deferUpdate();
+    await interaction.editReply(recruitPanel(session));
   }
 
   function runPanel(session) {
