@@ -3,7 +3,7 @@ import { buildRoomOverwrites } from "./channelAccess.js";
 import { planChannelNames } from "./channelName.js";
 import { parseBonusPenalty, rollBonusPenalty } from "./dice/bonusPenalty.js";
 import { rollDice } from "./dice/roller.js";
-import { findSnapshotSkill, formatBonusPenalty, formatTextDice, parseSkillDice } from "./textDice.js";
+import { formatBonusPenalty, formatTextDice, parseSkillDice, resolveCheckTarget } from "./textDice.js";
 import { INVALID_DICE_MESSAGE, parseDiceExpression } from "./dice/parser.js";
 import { planNicknameRestore } from "./nickname.js";
 import {
@@ -1431,7 +1431,7 @@ export function createCocSessionService({
     if (role !== "KP" && role !== "PL") return { ignore: true };
     if (skill.ok) {
       const member = session.pl.find(item => item.userId === userId);
-      const selected = findSnapshotSkill(member, skill.name);
+      const selected = resolveCheckTarget(member, skill.name);
       if (!selected.ok) return { ...selected, skillError: true };
       const rolled = bonus.ok ? rollBonusPenalty(bonus, randomInt) : rollDice("1d100", randomInt);
       const text = bonus.ok ? formatBonusPenalty(userId, rolled) : formatTextDice(userId, rolled);

@@ -2,6 +2,19 @@ import { buildCharacterSheet } from "./characterSheet.js";
 
 function failure(message) { return { ok: false, message }; }
 
+const CHARACTERISTIC_KEYS = ["str", "con", "siz", "dex", "app", "int", "pow", "edu", "luck"];
+
+/** 九项属性逐项必须是非负安全整数（不设上限）；任一项不合格返回 null，不保存半张卡。 */
+function pickCharacteristics(source) {
+  const picked = {};
+  for (const key of CHARACTERISTIC_KEYS) {
+    const value = source?.[key];
+    if (!Number.isSafeInteger(value) || value < 0) return null;
+    picked[key] = value;
+  }
+  return picked;
+}
+
 export function createCharacterClient({ baseUrl, secret, fetchImpl = globalThis.fetch } = {}) {
   async function get(path) {
     if (!secret || !baseUrl) return failure("档案馆内部接口尚未配置，请联系管理员。");
@@ -55,13 +68,15 @@ export function createCharacterClient({ baseUrl, secret, fetchImpl = globalThis.
       || typeof card.occupation.name !== "string") {
       return failure("角色卡姓名或初始 HP、SAN、MP、Luck 不完整，请先到档案馆补齐；初始理智不会从意志补值。");
     }
+    const characteristics = pickCharacteristics(card.characteristics);
+    if (!characteristics) return failure("档案馆角色属性数据异常，请联系管理员。");
     const characterSheet = buildCharacterSheet(card, data.derived, data.updatedAt);
     return { ok: true, snapshot: structuredClone({
       characterId: card.id, ownerDiscordUserId: card.ownerDiscordUserId,
       characterName: card.identity.name, occupation: card.occupation.name,
       initialHp: data.derived.hp, initialSan: card.initialSan,
       initialMp: data.derived.mp, initialLuck: card.characteristics.luck, skills: card.skills,
-      characterSheet,
+      characteristics, characterSheet,
     }) };
   }
   return { list, read };

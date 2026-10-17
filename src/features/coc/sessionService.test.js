@@ -1244,5 +1244,78 @@ async function activeTable(overrides) {
   assertEqual(service.find("session-1").secretThreads.length, 25, "达到上限后仍是 25 个子区");
 }
 
+{
+  // 属性检定：快照来自选卡时的 characteristics，掷骰只读本局快照。
+  let face = 43;
+  const rand = (min, max) => (max === 9 ? face % 10 : face);
+  const longTerm = { str: 50, con: 60, siz: 55, dex: 70, app: 65, int: 75, pow: 40, edu: 80, luck: 33 };
+  let archiveReads = 0;
+  const characters = {
+    async list() { return { ok: true, characters: [{ id: "fixture-card" }] }; },
+    async read(id, ownerDiscordUserId) {
+      archiveReads += 1;
+      return { ok: true, snapshot: { characterId: id, ownerDiscordUserId, characterName: id, occupation: "测试职业",
+        initialHp: 10, initialSan: 50, initialMp: 10, initialLuck: 50,
+        skills: [{ name: "侦查", base: 25, growth: 0, occupationPoints: 20, interestPoints: 0 }, { name: "敏捷", base: 1, growth: 0, occupationPoints: 0, interestPoints: 0 }],
+        characteristics: { ...longTerm }, characterSheet: { character: { characteristics: { dex: 1, luck: 1 } } } } };
+    },
+  };
+  const { service, store } = await activeTable({ config: { messageContentEnabled: true }, randomInt: rand, characters });
+  const pl = service.find("session-1").pl.find(member => member.userId === "pl");
+  assert(JSON.stringify(pl.characteristics) === JSON.stringify(longTerm), "选卡后 Session 保存九项属性");
+  longTerm.dex = 5; longTerm.luck = 1;
+  const readsBefore = archiveReads;
+  const fileBefore = readFileSync(store.filePath, "utf8");
+  const roll = content => service.rollTextDice({ channelId: "room-1", userId: "pl", content });
+  const plain = text => `${formatTextDice("pl", rollDice("1d100", rand))}\n${text}`;
+  assertEqual((await roll("1d100 敏捷")).text, plain("敏捷 DEX：43/70 成功"), "敏捷读到 DEX（长期卡后来修改不影响本局快照）");
+  assertEqual((await roll("1d100 DEX")).text, plain("敏捷 DEX：43/70 成功"), "DEX 读到 DEX");
+  assertEqual((await roll("1d100 dex")).text, plain("敏捷 DEX：43/70 成功"), "英文属性名小写兼容");
+  assertEqual((await roll("1d100 Pow")).text, plain("意志 POW：43/40 失败"), "英文属性名混合大小写兼容，超过属性值标失败");
+  assertEqual((await roll("1d100 幸运")).text, plain("幸运 LUCK：43/33 失败"), "幸运读到快照 Luck，不读 characterSheet");
+  assertEqual((await roll("1d100 LUCK")).text, plain("幸运 LUCK：43/33 失败"), "LUCK 读到快照 Luck");
+  face = 22;
+  const bonus = await roll("1d100 敏捷 奖励1");
+  assertEqual(bonus.text, `${formatBonusPenalty("pl", rollBonusPenalty(parseBonusPenalty("1d100 奖励1"), rand))}\n敏捷 DEX：22/70 成功`, "1d100 敏捷 奖励1");
+  face = 55;
+  const penalty = await roll("1d100 意志 惩罚2");
+  assertEqual(penalty.text, `${formatBonusPenalty("pl", rollBonusPenalty(parseBonusPenalty("1d100 惩罚2"), rand))}\n意志 POW：55/40 失败`, "1d100 意志 惩罚2");
+  assert(!/大成功|大失败|极难|困难/.test(bonus.text + penalty.text), "属性检定只判成功/失败");
+  face = 45;
+  assertEqual((await roll("1d100 侦查")).text, plain("侦查：45/45 成功"), "1d100 侦查 行为不变");
+  assertEqual((await roll("1d100 侦查 奖励1")).text, `${formatBonusPenalty("pl", rollBonusPenalty(parseBonusPenalty("1d100 奖励1"), rand))}\n侦查：55/45 失败`, "技能奖惩行为不变");
+  assertEqual((await roll("1d100 敏捷")).text, plain("敏捷 DEX：45/70 成功"), "属性名优先于同名自定义技能，不串到技能");
+  assert((await roll("1d100 不存在")).message === "本局角色卡里没有这个技能，请检查名称。", "非属性名仍走技能查找");
+  const kp = await service.rollTextDice({ channelId: "room-1", userId: "kp", content: "1d100 敏捷" });
+  assert(kp.skillError && kp.message === "请先绑定本局调查员角色卡。" && !kp.text, "KP 读不到其他 PL 的属性");
+  assert((await service.rollTextDice({ channelId: "room-1", userId: "ob", content: "1d100 敏捷" })).ignore, "OB 属性骰点仍被忽略");
+  assert((await service.rollTextDice({ channelId: "room-1", userId: "ob", content: "1d100 幸运 奖励1" })).ignore, "OB 属性奖惩骰仍被忽略");
+  assertEqual(archiveReads, readsBefore, "属性检定不实时读取档案馆");
+  assertEqual(readFileSync(store.filePath, "utf8"), fileBefore, "属性检定不写 Session");
+
+  await store.update(state => ({ state: { ...state, sessions: state.sessions.map(session => ({ ...session,
+    pl: session.pl.map(member => { const { characteristics, ...rest } = member; return { ...rest, initialLuck: 50 }; }) })) } }));
+  face = 30;
+  const legacyDex = await roll("1d100 敏捷");
+  assert(legacyDex.skillError && legacyDex.message === "本局角色属性数据异常，请联系 KP。", "老 Session 没有 characteristics 时属性安全失败");
+  assertEqual((await roll("1d100 幸运")).text, plain("幸运 LUCK：30/50 成功"), "老 Session 幸运回退到 initialLuck");
+  assertEqual((await roll("1d100 luck")).text, plain("幸运 LUCK：30/50 成功"), "老 Session LUCK 回退到 initialLuck");
+  await store.update(state => ({ state: { ...state, sessions: state.sessions.map(session => ({ ...session,
+    pl: session.pl.map(member => ({ ...member, initialLuck: "50" })) })) } }));
+  assert((await roll("1d100 幸运")).message === "本局角色属性数据异常，请联系 KP。", "initialLuck 非法时不回退");
+  await store.update(state => ({ state: { ...state, sessions: state.sessions.map(session => ({ ...session,
+    pl: session.pl.map(member => ({ ...member, characteristics: { ...longTerm, dex: -3 } })) })) } }));
+  assert((await roll("1d100 DEX")).message === "本局角色属性数据异常，请联系 KP。", "属性值非法时报数据异常");
+}
+
+{
+  // 没卡时安全失败：PL 成员没有绑定角色卡。
+  const { service, store } = await activeTable({ config: { messageContentEnabled: true }, randomInt: () => 10 });
+  await store.update(state => ({ state: { ...state, sessions: state.sessions.map(session => ({ ...session,
+    pl: session.pl.map(member => { const { characterId, characteristics, ...rest } = member; return rest; }) })) } }));
+  const result = await service.rollTextDice({ channelId: "room-1", userId: "pl", content: "1d100 敏捷" });
+  assert(result.skillError && result.message === "请先绑定本局调查员角色卡。", "没卡时属性检定沿用绑定提示");
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
