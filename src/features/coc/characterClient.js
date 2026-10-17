@@ -1,3 +1,5 @@
+import { buildCharacterSheet } from "./characterSheet.js";
+
 function failure(message) { return { ok: false, message }; }
 
 export function createCharacterClient({ baseUrl, secret, fetchImpl = globalThis.fetch } = {}) {
@@ -53,11 +55,13 @@ export function createCharacterClient({ baseUrl, secret, fetchImpl = globalThis.
       || typeof card.occupation.name !== "string") {
       return failure("角色卡姓名或初始 HP、SAN、MP、Luck 不完整，请先到档案馆补齐；初始理智不会从意志补值。");
     }
+    const characterSheet = buildCharacterSheet(card, data.derived, data.updatedAt);
     return { ok: true, snapshot: structuredClone({
       characterId: card.id, ownerDiscordUserId: card.ownerDiscordUserId,
       characterName: card.identity.name, occupation: card.occupation.name,
       initialHp: data.derived.hp, initialSan: card.initialSan,
       initialMp: data.derived.mp, initialLuck: card.characteristics.luck, skills: card.skills,
+      characterSheet,
     }) };
   }
   return { list, read };
