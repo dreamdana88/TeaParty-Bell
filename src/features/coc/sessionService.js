@@ -2,7 +2,8 @@ import { randomBytes } from "crypto";
 import { buildRoomOverwrites } from "./channelAccess.js";
 import { planChannelNames } from "./channelName.js";
 import { parseBonusPenalty, rollBonusPenalty } from "./dice/bonusPenalty.js";
-import { rollDice } from "./dice/roller.js";
+import { rollDice, secureRandomInt } from "./dice/roller.js";
+import { STAT_LABELS, applyDelta, currentStats, formatStatLine, parseStatCommand, rollAmount } from "./currentStats.js";
 import { formatBonusPenalty, formatTextDice, parseSkillDice, resolveCheckTarget } from "./textDice.js";
 import { INVALID_DICE_MESSAGE, parseDiceExpression } from "./dice/parser.js";
 import { planNicknameRestore } from "./nickname.js";
@@ -1421,6 +1422,8 @@ export function createCocSessionService({
   async function rollTextDice({ channelId, userId, content }) {
     if (config.messageContentEnabled !== true) return { ignore: true };
     if (!hasActiveRunChannel(channelId)) return { ignore: true };
+    const command = parseStatCommand(content);
+    if (command.ok) return statCommand(channelId, userId, command);
     const skill = parseSkillDice(content);
     const bonus = skill.ok && skill.bonus ? skill.bonus : parseBonusPenalty(content);
     const parsed = bonus.ok ? null : parseDiceExpression(content);
@@ -1449,6 +1452,59 @@ export function createCocSessionService({
       ok: true,
       text: formatTextDice(userId, rolled),
     };
+  }
+
+  /** sc / hp|san|mp / st。读-改-写都在 store.update 回调里基于最新快照完成，并发连扣不丢数。 */
+  async function statCommand(channelId, userId, command) {
+    const session = activeSessionInChannel(sessions(), channelId);
+    const role = session ? memberRole(session, userId) : null;
+    if (role !== "KP" && role !== "PL") return { ignore: true };
+    const reject = message => ({ ok: false, skillError: true, message });
+    if (command.kind === "missingSign") return role === "KP" ? reject(`请写明加减，例如 ${command.stat} @某人 -5 或 +5。`) : { ignore: true };
+    const roll = randomInt ?? secureRandomInt;
+    if (command.kind === "adjust" && role !== "KP") return reject("只有本局 KP 可以调整 HP/SAN/MP。");
+    if (command.kind !== "adjust" && role !== "PL") return reject(command.kind === "sc" ? "sc 只能由 PL 对自己的角色使用。" : "st 只能由 PL 查看自己的角色。");
+    const targetUserId = command.kind === "adjust" ? command.targetUserId : userId;
+    if (command.kind === "st") {
+      const stats = currentStats(session.pl.find(item => item.userId === userId));
+      if (!stats) return reject("本局角色 HP/SAN/MP 数据异常，请联系 KP。");
+      return { ok: true, text: `**<@${userId}>** 当前状态\n${formatStatLine(stats)}` };
+    }
+    const saved = await store.update((state) => {
+      const current = activeSessionInChannel(state.sessions, channelId);
+      if (!current || current.sessionId !== session.sessionId || memberRole(current, userId) !== role) {
+        return { errorCode: "REJECTED", message: "跑团状态已改变，请重试。" };
+      }
+      const member = current.pl.find(item => item.userId === targetUserId);
+      if (!member) return { errorCode: "REJECTED", message: "目标不是本局 PL。" };
+      const stats = currentStats(member);
+      if (!stats) return { errorCode: "REJECTED", message: "本局角色 HP/SAN/MP 数据异常，请联系 KP。" };
+      let stat, delta, label, lines = [];
+      if (command.kind === "sc") {
+        const san = stats.current.san;
+        const d100 = rollDice("1d100", roll).total;
+        const fumble = d100 === 100 || (san < 50 && d100 >= 96);
+        const success = !fumble && (d100 === 1 || d100 <= san);
+        const verdict = fumble ? "大失败" : d100 === 1 ? "大成功" : success ? "成功" : "失败";
+        const loss = rollAmount(success ? command.success : command.failure, roll, fumble);
+        stat = "san"; delta = -loss.value; label = loss.label;
+        lines.push(`**<@${userId}>** 理智检定 🎲 1d100=${d100}/${san} ${verdict}，扣除 ${loss.value} 点`);
+      } else {
+        const amount = rollAmount(command.amount, roll);
+        stat = command.stat; delta = command.sign * amount.value;
+        label = `${command.sign > 0 ? "+" : "-"}${amount.label}`;
+        lines.push(`KP 调整 <@${targetUserId}> 的 ${STAT_LABELS[stat]}`);
+      }
+      const changed = applyDelta(stats, stat, delta);
+      lines.push(`${STAT_LABELS[stat]} ${changed.before} → ${changed.after}（${label}）${changed.note}`);
+      if (command.kind === "sc" && changed.before - changed.after >= 5) {
+        lines.push("⚠️ 单次失去 5 点及以上理智，请 KP 安排智力检定判断是否陷入临时疯狂。");
+      }
+      const nextMember = { ...member, current: { ...stats.current, [stat]: changed.after } };
+      const next = { ...current, pl: current.pl.map(item => item.userId === targetUserId ? nextMember : item) };
+      return { state: { ...state, sessions: replaceSession(state.sessions, next) }, result: lines.join("\n") };
+    });
+    return saved.ok ? { ok: true, text: saved.result } : reject(saved.message);
   }
 
   async function roll({ channelId, userId, displayName, expression }) {

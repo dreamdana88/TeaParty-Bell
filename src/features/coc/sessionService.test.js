@@ -1317,5 +1317,101 @@ async function activeTable(overrides) {
   assert(result.skillError && result.message === "请先绑定本局调查员角色卡。", "没卡时属性检定沿用绑定提示");
 }
 
+{
+  // 当前 HP/SAN/MP：sc、hp/san/mp、st。默认 PL 快照没有 current，模拟老 Session 回填。
+  const faces = [];
+  const rand = (min, max) => { const face = faces.shift(); if (face === undefined || face < min || face > max) throw new Error(`bad face ${face}`); return face; };
+  const { service, store } = await activeTable({ config: { messageContentEnabled: true }, randomInt: rand });
+  // Discord 提及只认数字 ID，这里把 PL 换成雪花样式 ID。
+  await store.update(state => ({ state: { ...state, sessions: state.sessions.map(session => ({ ...session,
+    pl: session.pl.map(member => ({ ...member, userId: "1001" })) })) } }));
+  const send = (userId, content) => service.rollTextDice({ channelId: "room-1", userId, content });
+  const pl = () => store.snapshot().sessions[0].pl.find(member => member.userId === "1001");
+  const setCurrent = current => store.update(state => ({ state: { ...state, sessions: state.sessions.map(session => ({ ...session,
+    pl: session.pl.map(member => ({ ...member, current: { ...member.current, ...current } })) })) } }));
+  assert(pl().current === undefined, "老快照没有 current");
+
+  assertEqual((await send("1001", "st")).text, "**<@1001>** 当前状态\nHP 10/10　SAN 50/99　MP 10/10", "st 用初始值回填显示并附上限");
+  assert(pl().current === undefined, "st 只读不写");
+  assert((await send("kp", "st")).skillError, "KP 用 st 被拒");
+  assert((await send("ob", "st")).ignore && (await send("guest", "st")).ignore, "OB 与非成员 st 忽略");
+
+  faces.push(50, 1);
+  assertEqual((await send("1001", "sc 1d3/1d6")).text, "**<@1001>** 理智检定 🎲 1d100=50/50 成功，扣除 1 点\nSAN 50 → 49（1d3=1）", "sc 成功（等于即成功）扣成功栏");
+  assert(JSON.stringify(pl().current) === JSON.stringify({ hp: 10, san: 49, mp: 10 }), "首次修改时 current 按初始值补齐并写回");
+  faces.push(96, 2);
+  assertEqual((await send("1001", "sc 0/1d6")).text, "**<@1001>** 理智检定 🎲 1d100=96/49 大失败，扣除 6 点\nSAN 49 → 43（1d6 取最大=6）\n⚠️ 单次失去 5 点及以上理智，请 KP 安排智力检定判断是否陷入临时疯狂。", "SAN<50 时 96 大失败，失败栏取最大值并提醒智力检定");
+  assertEqual(faces.length, 1, "大失败不再掷失败栏");
+  faces.length = 0;
+  for (const face of [97, 98, 99]) {
+    await setCurrent({ san: 49 });
+    faces.push(face);
+    assert((await send("1001", "sc 0/1")).text.includes(`1d100=${face}/49 大失败`), `SAN<50 时 ${face} 大失败`);
+  }
+  await setCurrent({ san: 50 });
+  faces.push(96, 3);
+  const plainFail = await send("1001", "sc 0/1d6");
+  assert(plainFail.text.includes("1d100=96/50 失败") && !plainFail.text.includes("大失败") && plainFail.text.includes("SAN 50 → 47（1d6=3）"), "SAN≥50 时 96 只是失败");
+  assert(!plainFail.text.includes("临时疯狂"), "扣不到 5 点不提醒");
+  await setCurrent({ san: 99 });
+  faces.push(100);
+  assert((await send("1001", "sc 1/1d10")).text.includes("1d100=100/99 大失败，扣除 10 点"), "100 永远大失败");
+  await setCurrent({ san: 0 });
+  faces.push(1);
+  assertEqual((await send("1001", "sc 0/1d6")).text, "**<@1001>** 理智检定 🎲 1d100=1/0 大成功，扣除 0 点\nSAN 0 → 0（0）", "01 大成功按成功栏扣，下限 0");
+  await setCurrent({ san: 3 });
+  faces.push(80, 20);
+  assert((await send("1001", "sc 1/1d20")).text.includes("SAN 3 → 0（1d20=20），已截断到下限 0"), "SAN 扣穿截断到 0");
+  assert((await send("kp", "sc 0/1d6")).skillError, "KP 不能 sc");
+  assert((await send("ob", "sc 0/1d6")).ignore, "OB sc 忽略");
+
+  const before = JSON.stringify(pl().current);
+  for (const content of ["hp <@1001> -5", "san <@1001> -1d10", "mp <@1001> +3"]) {
+    const denied = await send("1001", content);
+    assert(denied.skillError && denied.message === "只有本局 KP 可以调整 HP/SAN/MP。", `PL 用 ${content} 被拒`);
+    assert((await send("ob", content)).ignore, `OB 用 ${content} 忽略`);
+  }
+  assertEqual(JSON.stringify(pl().current), before, "被拒的调整不写入");
+  assertEqual((await send("kp", "hp <@1001> -4")).text, "KP 调整 <@1001> 的 HP\nHP 10 → 6（-4）", "KP 固定值扣 HP");
+  faces.push(3);
+  assertEqual((await send("kp", "hp <@!1001> +1d6")).text, "KP 调整 <@1001> 的 HP\nHP 6 → 9（+1d6=3）", "KP 骰子加 HP，兼容 <@!id>");
+  assertEqual((await send("kp", "HP <@1001> +5")).text, "KP 调整 <@1001> 的 HP\nHP 9 → 10（+5），已截断到上限 10", "HP 上限截断到 initialHp");
+  assertEqual((await send("kp", "mp <@1001> -20")).text, "KP 调整 <@1001> 的 MP\nMP 10 → 0（-20），已截断到下限 0", "MP 下限截断");
+  assertEqual((await send("kp", "mp <@1001> +99")).text, "KP 调整 <@1001> 的 MP\nMP 0 → 10（+99），已截断到上限 10", "MP 上限 initialMp");
+  assertEqual((await send("kp", "san <@1001> +200")).text, "KP 调整 <@1001> 的 SAN\nSAN 0 → 99（+200），已截断到上限 99", "SAN 上限 99");
+  assert((await send("kp", "hp <@2002> -1")).message === "目标不是本局 PL。", "目标须为本局 PL（非成员被拒）");
+  assertEqual((await send("1001", "st")).text, "**<@1001>** 当前状态\nHP 10/10　SAN 99/99　MP 10/10", "st 读到写回后的值");
+  assertEqual((await send("1001", "ＳＴ")).text, "**<@1001>** 当前状态\nHP 10/10　SAN 99/99　MP 10/10", "全角 ＳＴ 同样生效");
+  faces.push(2);
+  assertEqual((await send("kp", "ＨＰ <@1001> －１Ｄ６")).text, "KP 调整 <@1001> 的 HP\nHP 10 → 8（-1d6=2）", "全角 KP 调整生效");
+  assertEqual((await send("kp", "Hp <@1001> ＋２")).text, "KP 调整 <@1001> 的 HP\nHP 8 → 10（+2）", "混合大小写 + 全角＋");
+  faces.push(30, 1);
+  assert((await send("1001", "Sc 1d3／1d6")).text.endsWith("SAN 99 → 98（1d3=1）"), "全角斜杠 sc 生效");
+  await setCurrent({ san: 99 });
+  for (const content of ["hp <@1001> 5", "ＳＡＮ <@1001> １ｄ１０", "mp <@1001> 2d6"]) {
+    const hint = await send("kp", content);
+    assert(hint.skillError && hint.message === `请写明加减，例如 ${content.normalize("NFKC").split(" ")[0].toLowerCase()} @某人 -5 或 +5。`, `KP 漏符号提示 ${content}`);
+    assert((await send("1001", content)).ignore && (await send("ob", content)).ignore && (await send("guest", content)).ignore, `PL/OB/非成员发 ${content} 忽略`);
+  }
+  assert((await send("kp", "hp <@1001> 5点")).ignore && (await send("kp", "hp快没了")).ignore, "KP 近似聊天不触发");
+  assert(JSON.stringify(pl().current) === JSON.stringify({ hp: 10, san: 99, mp: 10 }), "漏符号提示不写入");
+  const reloaded = createCocSessionStore({ filePath: store.filePath });
+  await reloaded.load();
+  assert(JSON.stringify(reloaded.snapshot().sessions[0].pl.find(member => member.userId === "1001").current) === JSON.stringify({ hp: 10, san: 99, mp: 10 }), "current 持久化到磁盘");
+
+  // 并发：两条几乎同时到达，都基于最新快照计算，不丢数。
+  faces.push(2, 3);
+  const [first, second, third] = await Promise.all([send("kp", "hp <@1001> -1d6"), send("kp", "hp <@1001> -1d6"), send("kp", "hp <@1001> -1")]);
+  assert(first.text.endsWith("HP 10 → 8（-1d6=2）") && second.text.endsWith("HP 8 → 5（-1d6=3）") && third.text.endsWith("HP 5 → 4（-1）"), "并发 hp 依次基于最新值");
+  faces.push(90, 4, 90, 5);
+  await Promise.all([send("1001", "sc 1d6/0"), send("1001", "sc 1d6/0")]);
+  assert(pl().current.san === 90 && pl().current.hp === 4, "并发 sc 两次都扣到（99→95→90），不覆盖 HP");
+
+  const { service: ended, store: endedStore } = await activeTable({ config: { messageContentEnabled: true }, randomInt: rand });
+  await endedStore.update(state => ({ state: { ...state, sessions: state.sessions.map(session => ({ ...session, state: "ended" })) } }));
+  assert((await ended.rollTextDice({ channelId: "room-1", userId: "kp", content: "hp <@1001> -1" })).ignore, "非 ACTIVE 会话不认");
+  assert((await service.rollTextDice({ channelId: "public", userId: "kp", content: "hp <@1001> -1" })).ignore, "非跑团频道不认");
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

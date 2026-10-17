@@ -237,6 +237,13 @@ try {
   const navIds = profileView(session, member, "sk", 1).components.flatMap((row) => row.toJSON().components.map((c) => c.custom_id));
   check(navIds.every((id) => id.length <= 100 && /^coc:v1:pf-(ov|at|sk|bg|eq|list)-\d+:s1(:1)?$/.test(id)), "翻页 customId 只含区块、页码、sessionId、目标 userId");
   check(profileView(session, { userId: "1", characterName: "旧" }, "ov", 0).content === NO_SHEET_MESSAGE, "无 characterSheet 不崩溃");
+  {
+    const stat = { ...member, characterId: "c", initialHp: 12, initialSan: 60, initialMp: 9 };
+    const ov = (extra) => profileView(session, { ...stat, ...extra }, "ov", 0).embeds[0].description;
+    check(ov({ current: { hp: 8, san: 55, mp: 3 } }).startsWith("**当前状态**：HP 8/12　SAN 55/99　MP 3/9\n"), "KP 概览首行显示当前 HP/SAN/MP");
+    check(ov({}).startsWith("**当前状态**：HP 12/12　SAN 60/99　MP 9/9\n"), "老快照概览用初始值回填");
+    check(!profileView(session, { ...stat, current: { hp: 8, san: 55, mp: 3 } }, "at", 0).embeds[0].description.includes("当前状态"), "其他区块不加当前状态");
+  }
 }
 
 // 分页：优先换行；跨页边界的 \* 不被切断；不切断 surrogate pair；每页 ≤ PAGE_CHARS
