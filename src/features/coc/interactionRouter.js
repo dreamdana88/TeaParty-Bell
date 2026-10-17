@@ -34,9 +34,6 @@ import { parseProfileAction, profileMemberPicker, profileView } from "./characte
 import { archiveCommandPanel, archiveEntry, characterChoices, characterInvitation } from "./characterPanel.js";
 
 const CLOSED = "CoC 跑团暂时没有开启。";
-const PROFILE_EXPIRED = "这个档案窗口已过期，请重新打开调查员档案。";
-// Unknown Message / Unknown Webhook / Unknown interaction / Invalid Webhook Token：ephemeral token 失效。
-const EXPIRED_CODES = new Set([10008, 10015, 10062, 50027]);
 
 function ephemeral(content) {
   return { content, flags: MessageFlags.Ephemeral };
@@ -137,14 +134,9 @@ export function createCocInteractionRouter({
     await interaction.editReply({ content: "已在频道邀请目标本人选卡，成功后才会成为 PL。", components: [] });
   }
 
-  /** 在档案的 ephemeral 消息里原地更新；token 过期时改用新 ephemeral 回复友好提示。 */
+  /** 在档案的 ephemeral 消息里原地更新；失败时直接抛错。 */
   async function updateProfile(interaction, payload) {
-    try {
-      await interaction.update(payload);
-    } catch (error) {
-      if (!EXPIRED_CODES.has(error?.code)) throw error;
-      try { await interaction.reply({ ...ephemeral(PROFILE_EXPIRED), allowedMentions: { parse: [] } }); } catch { /* 已无法回复 */ }
-    }
+    await interaction.update(payload);
   }
 
   async function handleProfile(interaction, action, sessionId, targetUserId) {

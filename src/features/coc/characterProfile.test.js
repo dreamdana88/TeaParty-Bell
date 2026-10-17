@@ -161,9 +161,9 @@ try {
   r = await fire({ user: "900", customId: "coc:v1:pf-at-0:s1:101" });
   check((r.updates[0]?.embeds?.[0]?.description ?? "").includes("力量 STR") && r.updates[0].embeds[0].description.includes("移动力 MOV"), "属性区含属性与衍生数值");
 
-  // ephemeral token 过期
+  // 档案更新失败不做专门兜底：错误抛给路由已有的统一错误处理
   r = await fire({ user: "900", customId: "coc:v1:pf-ov-1:s1:101", updateError: Object.assign(new Error("Unknown Webhook"), { code: 10015 }) });
-  check(r.replies[0]?.flags === 64 && r.replies[0].content.includes("请重新打开调查员档案"), "token 过期友好提示");
+  check(r.updates.length === 0 && r.replies.length === 1 && r.replies[0].content === "这次操作没有完成，请稍后再试。", "档案更新失败直接抛错，由已有统一错误处理接住");
 
   // PL 移出后不能再看
   await setState("s1", "ACTIVE");
