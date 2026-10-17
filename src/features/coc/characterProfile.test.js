@@ -300,5 +300,23 @@ try {
   check(bgPages.some((page) => page.includes("\\*")), "背景中的 \\* 完整出现");
 }
 
+// 属性页：初始 SAN 与派生字段中文标签
+{
+  const base = { identity: { name: "甲" }, characteristics: { str: 50, luck: 55 }, occupation: { name: "x" }, skills: [] };
+  const derived = { hp: 11, majorWound: 6, mp: 14, sanMaximum: 99, mov: 8, build: 0, damageBonus: "0", movAdjust: 0 };
+  const attrText = (character) => profilePages({ character, derived }, "at").join("\n");
+  const withSan = attrText({ ...base, initialSan: 65 });
+  check(withSan.includes("**初始理智 SAN**：65"), "属性页显示 character.initialSan");
+  check(withSan.includes("**幸运 Luck**：55") && withSan.includes("**生命值 HP**：11") && withSan.includes("**魔法值 MP**：14"), "Luck 仍取 characteristics.luck，HP/MP 仍取 derived");
+  check(withSan.includes("**重伤阈值**：6") && withSan.includes("**理智上限**：99") && withSan.includes("**移动力调整**：0"), "majorWound/sanMaximum/movAdjust 显示中文标签");
+  check(!/majorWound|sanMaximum|movAdjust/.test(withSan), "属性页不出现 majorWound、sanMaximum、movAdjust 英文 key");
+  for (const [label, value] of [["缺失", undefined], ["字符串", "65"], ["null", null], ["NaN", Number.NaN]]) {
+    const character = { ...base }; if (value !== undefined) character.initialSan = value;
+    let text = "";
+    try { text = attrText(character); } catch { text = null; }
+    check(text !== null && text.includes("**初始理智 SAN**：—"), `initialSan ${label}时显示「—」不报错`);
+  }
+}
+
 console.log(`${passed} passed / ${failed} failed`);
 if (failed) process.exit(1);

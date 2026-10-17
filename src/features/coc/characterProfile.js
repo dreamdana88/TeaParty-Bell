@@ -29,6 +29,7 @@ const CHARACTERISTICS = [
 const DERIVED_LABELS = new Map([
   ["hp", "生命值 HP"], ["mp", "魔法值 MP"], ["san", "理智 SAN"], ["mov", "移动力 MOV"], ["build", "体格"],
   ["damageBonus", "伤害加值 DB"], ["db", "伤害加值 DB"], ["dodge", "闪避"],
+  ["majorWound", "重伤阈值"], ["sanMaximum", "理智上限"], ["movAdjust", "移动力调整"],
 ]);
 const ITEM_LABELS = new Map([
   ["type", "类型"], ["skill", "技能"], ["damage", "伤害"], ["range", "射程"], ["impale", "贯穿"], ["rate", "次数"],
@@ -73,6 +74,9 @@ function sectionBlocks(sheet, section) {
   if (section === "at") {
     const stats = isPlainObject(character.characteristics) ? character.characteristics : {};
     const lines = CHARACTERISTICS.map(([key, label]) => `**${label}**：${present(stats[key]) ? safeText(stats[key]) : "—"}`);
+    // 初始 SAN 只取档案馆保存的 character.initialSan，不自行推导；缺失或非数字显示「—」。
+    const initialSan = character.initialSan;
+    lines.push(`**初始理智 SAN**：${typeof initialSan === "number" && Number.isFinite(initialSan) ? safeText(initialSan) : "—"}`);
     const derivedLines = Object.entries(derived)
       .filter(([, value]) => (typeof value === "number" || typeof value === "string") && present(value))
       .map(([key, value]) => `**${DERIVED_LABELS.get(key) ?? safeText(key)}**：${safeText(value)}`);
