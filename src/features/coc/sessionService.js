@@ -1460,6 +1460,7 @@ export function createCocSessionService({
     const role = session ? memberRole(session, userId) : null;
     if (role !== "KP" && role !== "PL") return { ignore: true };
     const reject = message => ({ ok: false, skillError: true, message });
+    if (command.kind === "missingSign") return role === "KP" ? reject(`请写明加减，例如 ${command.stat} @某人 -5 或 +5。`) : { ignore: true };
     const roll = randomInt ?? secureRandomInt;
     if (command.kind === "adjust" && role !== "KP") return reject("只有本局 KP 可以调整 HP/SAN/MP。");
     if (command.kind !== "adjust" && role !== "PL") return reject(command.kind === "sc" ? "sc 只能由 PL 对自己的角色使用。" : "st 只能由 PL 查看自己的角色。");

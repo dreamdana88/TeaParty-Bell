@@ -18,12 +18,33 @@ assert(san.ok && san.stat === "san" && san.sign === 1 && san.amount.dice.notatio
 assert(parseStatCommand("st").kind === "st" && parseStatCommand("ST").ok, "st");
 for (const bad of [
   "st一下", "hp快没了", "sc是啥", "sc", "st 啊", "我 st", "sc 0/1d6 吧", "请 sc 0/1d6", "sc 0/", "sc /1d6", "sc 0 / 1d6", "sc0/1d6",
-  "sc 0/1d6/2", "sc 0/21d6", "sc 0/1d1", "sc -1/1d6", "sc 1000/1", "hp <@123> 5", "hp <@123> -", "hp @某人 -5", "hp <@123>-5",
+  "sc 0/1d6/2", "sc 0/21d6", "sc 0/1d1", "sc -1/1d6", "sc 1000/1", "hp <@123> -", "hp @某人 -5", "hp <@123>-5",
   "hp <@123> -5 点", "hp <@abc> -5", "hp <@&123> -5", "hp <@123> - 5", "hp <@123> -21d6", "luck <@123> -5", "hpp <@123> -5", "",
 ]) {
   assert(parseStatCommand(bad).ok === false, `不认 ${JSON.stringify(bad)}`);
 }
 assert(parseStatCommand(`sc 0/${"1".repeat(200)}`).ok === false && parseStatCommand(42).ok === false, "超长与非字符串不认");
+
+// 全角半角、大小写通用
+const wide = parseStatCommand("ＨＰ <@1001> －１Ｄ６");
+assert(wide.ok && wide.stat === "hp" && wide.targetUserId === "1001" && wide.sign === -1 && wide.amount.dice.notation === "1d6", "ＨＰ <@1001> －１Ｄ６");
+assert(parseStatCommand("Hp <@1001> ＋３").amount.fixed === 3 && parseStatCommand("Hp <@1001> ＋３").sign === 1, "全角＋与全角数字、混合大小写");
+for (const minus of ["\u2212", "\u2013", "\u2014", "\uFE63", "\uFF0D"]) {
+  assert(parseStatCommand(`mp <@1001> ${minus}2`).sign === -1, `减号变体 U+${minus.codePointAt(0).toString(16).toUpperCase()} 归为 -`);
+}
+assert(parseStatCommand("sc 0／1d6").ok && parseStatCommand("ＳＣ　１ｄ３／１Ｄ２０").failure.dice.notation === "1d20", "全角斜杠、全角空格、全角字母数字的 sc");
+assert(parseStatCommand("ＳＴ").kind === "st" && parseStatCommand("sT").kind === "st", "ＳＴ 与混合大小写 st");
+assert(parseStatCommand("san <@!１００１> -1").targetUserId === "1001", "提及里的全角数字也规范化，提及解析不受影响");
+for (const chat of ["ｓｔ一下", "ＨＰ快没了", "ｓｃ是啥", "ｓｔ　啊", "hp ＜＠1001＞ 5 点", "hp <@1001> ５点"]) {
+  assert(parseStatCommand(chat).ok === false, `全角近似聊天不认 ${chat}`);
+}
+// 漏写正负号：只认精确格式
+const missing = parseStatCommand("ＳＡＮ <@1001> １ｄ１０");
+assert(missing.ok && missing.kind === "missingSign" && missing.stat === "san", "漏符号精确格式识别为 missingSign");
+assert(parseStatCommand("hp <@1001> 5").kind === "missingSign", "hp <@1001> 5 识别为漏符号");
+for (const bad of ["hp <@1001> 5点", "hp <@1001> 五", "hp 5", "hp @某人 5", "hp <@1001> 5 5", "hp <@1001> 1d", "hp <@1001> 21d6"]) {
+  assert(parseStatCommand(bad).ok === false, `漏符号近似格式不认 ${bad}`);
+}
 
 const member = { characterId: "c", initialHp: 12, initialSan: 60, initialMp: 9 };
 assert(JSON.stringify(currentStats(member)) === JSON.stringify({ current: { hp: 12, san: 60, mp: 9 }, max: { hp: 12, san: 99, mp: 9 } }), "缺 current 用初始值补");

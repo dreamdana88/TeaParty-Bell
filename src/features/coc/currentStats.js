@@ -12,10 +12,15 @@ function parseAmount(text) {
   return dice.ok ? { dice } : null;
 }
 
-/** 整句必须完全匹配 sc / hp|san|mp / st；认不出返回 { ok: false }。 */
+/** 全角转半角（NFKC），并把常见减号变体归为 "-"。 */
+function normalizeCommand(content) {
+  return content.normalize("NFKC").replace(/[\u2010-\u2015\u2212\uFE58\uFE63]/g, "-").trim();
+}
+
+/** 整句必须完全匹配 sc / hp|san|mp / st（全角半角、大小写通用）；认不出返回 { ok: false }。 */
 export function parseStatCommand(content) {
   if (typeof content !== "string" || content.length > 100) return { ok: false };
-  const text = content.trim();
+  const text = normalizeCommand(content);
   if (/^st$/i.test(text)) return { ok: true, kind: "st" };
   const sc = /^sc\s+([^\s/]+)\/([^\s/]+)$/i.exec(text);
   if (sc) {
@@ -23,8 +28,9 @@ export function parseStatCommand(content) {
     const failure = parseAmount(sc[2]);
     return success && failure ? { ok: true, kind: "sc", success, failure } : { ok: false };
   }
-  const adjust = /^(hp|san|mp)\s+<@!?(\d{1,25})>\s+([+-])(\S+)$/i.exec(text);
+  const adjust = /^(hp|san|mp)\s+<@!?(\d{1,25})>\s+([+-]?)(\S+)$/i.exec(text);
   if (!adjust) return { ok: false };
+  if (!adjust[3]) return parseAmount(adjust[4]) ? { ok: true, kind: "missingSign", stat: adjust[1].toLowerCase() } : { ok: false };
   const amount = parseAmount(adjust[4]);
   if (!amount) return { ok: false };
   return { ok: true, kind: "adjust", stat: adjust[1].toLowerCase(), targetUserId: adjust[2], sign: adjust[3] === "+" ? 1 : -1, amount };

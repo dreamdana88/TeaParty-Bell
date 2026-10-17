@@ -1381,6 +1381,20 @@ async function activeTable(overrides) {
   assertEqual((await send("kp", "san <@1001> +200")).text, "KP 调整 <@1001> 的 SAN\nSAN 0 → 99（+200），已截断到上限 99", "SAN 上限 99");
   assert((await send("kp", "hp <@2002> -1")).message === "目标不是本局 PL。", "目标须为本局 PL（非成员被拒）");
   assertEqual((await send("1001", "st")).text, "**<@1001>** 当前状态\nHP 10/10　SAN 99/99　MP 10/10", "st 读到写回后的值");
+  assertEqual((await send("1001", "ＳＴ")).text, "**<@1001>** 当前状态\nHP 10/10　SAN 99/99　MP 10/10", "全角 ＳＴ 同样生效");
+  faces.push(2);
+  assertEqual((await send("kp", "ＨＰ <@1001> －１Ｄ６")).text, "KP 调整 <@1001> 的 HP\nHP 10 → 8（-1d6=2）", "全角 KP 调整生效");
+  assertEqual((await send("kp", "Hp <@1001> ＋２")).text, "KP 调整 <@1001> 的 HP\nHP 8 → 10（+2）", "混合大小写 + 全角＋");
+  faces.push(30, 1);
+  assert((await send("1001", "Sc 1d3／1d6")).text.endsWith("SAN 99 → 98（1d3=1）"), "全角斜杠 sc 生效");
+  await setCurrent({ san: 99 });
+  for (const content of ["hp <@1001> 5", "ＳＡＮ <@1001> １ｄ１０", "mp <@1001> 2d6"]) {
+    const hint = await send("kp", content);
+    assert(hint.skillError && hint.message === `请写明加减，例如 ${content.normalize("NFKC").split(" ")[0].toLowerCase()} @某人 -5 或 +5。`, `KP 漏符号提示 ${content}`);
+    assert((await send("1001", content)).ignore && (await send("ob", content)).ignore && (await send("guest", content)).ignore, `PL/OB/非成员发 ${content} 忽略`);
+  }
+  assert((await send("kp", "hp <@1001> 5点")).ignore && (await send("kp", "hp快没了")).ignore, "KP 近似聊天不触发");
+  assert(JSON.stringify(pl().current) === JSON.stringify({ hp: 10, san: 99, mp: 10 }), "漏符号提示不写入");
   const reloaded = createCocSessionStore({ filePath: store.filePath });
   await reloaded.load();
   assert(JSON.stringify(reloaded.snapshot().sessions[0].pl.find(member => member.userId === "1001").current) === JSON.stringify({ hp: 10, san: 99, mp: 10 }), "current 持久化到磁盘");
