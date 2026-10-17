@@ -18,6 +18,14 @@ export function parseSkillDice(content) {
   return { ok: true, name: match[1].trim(), bonus: match[2] ? parseBonusPenalty(`1d100 ${match[2]}${match[3]}`) : null };
 }
 
+/** 技能最终值 = base + growth + occupationPoints + interestPoints；数据异常返回 null。掷骰与档案展示共用。 */
+export function snapshotSkillValue(skill) {
+  const values = [skill?.base, skill?.growth, skill?.occupationPoints, skill?.interestPoints];
+  if (!values.every(value => Number.isSafeInteger(value) && value >= 0)) return null;
+  const value = values.reduce((sum, n) => sum + n, 0);
+  return Number.isSafeInteger(value) ? value : null;
+}
+
 export function findSnapshotSkill(member, query) {
   if (!member?.characterId || !Array.isArray(member.skills)) return { ok: false, message: "请先绑定本局调查员角色卡。" };
   const normalize = value => String(value ?? "").trim().replace(/\s+/g, "").replace(/:/g, "：");
@@ -27,10 +35,8 @@ export function findSnapshotSkill(member, query) {
   if (!matches.length) return { ok: false, message: "本局角色卡里没有这个技能，请检查名称。" };
   if (matches.length !== 1) return { ok: false, message: `技能名称不唯一，请使用完整名称：${matches.map(fullName).join("、")}` };
   const skill = matches[0];
-  const values = [skill.base, skill.growth, skill.occupationPoints, skill.interestPoints];
-  if (!values.every(value => Number.isSafeInteger(value) && value >= 0)) return { ok: false, message: "本局技能数据异常，请联系 KP。" };
-  const value = values.reduce((sum, n) => sum + n, 0);
-  if (!Number.isSafeInteger(value)) return { ok: false, message: "本局技能数据异常，请联系 KP。" };
+  const value = snapshotSkillValue(skill);
+  if (value === null) return { ok: false, message: "本局技能数据异常，请联系 KP。" };
   return { ok: true, name: fullName(skill), value };
 }
 

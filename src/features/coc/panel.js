@@ -144,6 +144,7 @@ export function controlPanel(session, { transcript = false } = {}) {
     new ActionRowBuilder().addComponents(
       button(buildCustomId("members", session.sessionId), "👥 成员管理", ButtonStyle.Primary),
       button(buildCustomId("secret", session.sessionId), "🔒 秘密交流", ButtonStyle.Secondary),
+      button(buildCustomId("profile", session.sessionId), "📁 调查员档案", ButtonStyle.Secondary),
       button(buildCustomId("end", session.sessionId), "🛑 结束本局", ButtonStyle.Danger),
     ),
   ];

@@ -1339,6 +1339,19 @@ export function createCocSessionService({
     return { ok: true, session };
   }
 
+  /** KP 查看调查员档案的统一闸门：打开列表、选人、翻页每次都重新校验。只读 session，不访问档案馆。 */
+  function previewCharacterProfile(sessionId, actorId, targetUserId = null) {
+    if (mode !== "ready") return unavailable(mode === "broken" ? "CoC 场次记录暂时不可用。" : undefined);
+    const session = find(sessionId);
+    if (!session) return { ok: false, message: "这场跑团已经不在了。" };
+    if (session.state !== SESSION_STATES.active) return { ok: false, message: "只有跑团进行中才能查看调查员档案。" };
+    if (!actorId || actorId !== session.kpUserId) return { ok: false, message: "只有本局 KP 可以查看调查员档案。" };
+    if (targetUserId === null) return { ok: true, session };
+    const member = (session.pl ?? []).find((item) => item.userId === targetUserId);
+    if (!member) return { ok: false, message: "这名调查员已不在本局 PL 中。" };
+    return { ok: true, session, member };
+  }
+
   function previewRepost(channelId, actorId) {
     if (mode !== "ready") return unavailable(mode === "broken" ? "CoC 场次记录暂时不可用。" : undefined);
     const session = activeSessionInChannel(sessions(), channelId);
@@ -1487,6 +1500,7 @@ export function createCocSessionService({
     convertPlToOb,
     removeMember,
     previewMembers,
+    previewCharacterProfile,
     recoverInterrupted,
     previewRepost,
     previewSecret,

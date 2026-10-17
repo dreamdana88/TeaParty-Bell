@@ -30,6 +30,7 @@ import {
 } from "./panel.js";
 import { classifyMemberQuery, memberOptionLabel } from "./memberQuery.js";
 import { COC_COMMAND_NAME, COC_OPEN_SUBCOMMAND, COC_PANEL_SUBCOMMAND, COC_ARCHIVE_SUBCOMMAND, ROLL_COMMAND_NAME } from "./commands.js";
+import { parseProfileAction, profileMemberPicker, profileView } from "./characterProfile.js";
 import { archiveCommandPanel, archiveEntry, characterChoices, characterInvitation } from "./characterPanel.js";
 
 const CLOSED = "CoC 跑团暂时没有开启。";
@@ -131,6 +132,32 @@ export function createCocInteractionRouter({
       return;
     }
     await interaction.editReply({ content: "已在频道邀请目标本人选卡，成功后才会成为 PL。", components: [] });
+  }
+
+  /** 在档案的 ephemeral 消息里原地更新；失败时直接抛错。 */
+  async function updateProfile(interaction, payload) {
+    await interaction.update(payload);
+  }
+
+  async function handleProfile(interaction, action, sessionId, targetUserId) {
+    const userId = interaction.user.id;
+    if (action === "profile") {
+      const gate = service.previewCharacterProfile(sessionId, userId);
+      if (!gate.ok) { await replyEphemeral(interaction, gate.message); return; }
+      await interaction.reply({ ...profileMemberPicker(gate.session, 0), flags: MessageFlags.Ephemeral });
+      return;
+    }
+    const parsed = parseProfileAction(action);
+    if (!parsed) return;
+    if (parsed.section === "list") {
+      const gate = service.previewCharacterProfile(sessionId, userId);
+      if (!gate.ok) { await updateProfile(interaction, { content: gate.message, embeds: [], components: [] }); return; }
+      await updateProfile(interaction, profileMemberPicker(gate.session, parsed.page));
+      return;
+    }
+    const gate = service.previewCharacterProfile(sessionId, userId, String(targetUserId ?? ""));
+    if (!gate.ok) { await updateProfile(interaction, { content: gate.message, embeds: [], components: [] }); return; }
+    await updateProfile(interaction, profileView(gate.session, gate.member, parsed.section, parsed.page));
   }
 
   function closedMessage() {
@@ -287,6 +314,10 @@ export function createCocInteractionRouter({
       return;
     }
     const userId = interaction.user.id;
+    if (action === "profile" || action.startsWith("pf-")) {
+      await handleProfile(interaction, action, sessionId, targetUserId);
+      return;
+    }
     if (action === "invite-open" || /^invited-page-\d+$/.test(action)) {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       await showCharacters(interaction, sessionId, action === "invite-open" ? 0 : Number(action.slice("invited-page-".length)), targetUserId);
@@ -673,6 +704,16 @@ export function createCocInteractionRouter({
         if (parsed.action === "pick-invited-character") {
           await interaction.deferUpdate();
           await selectAndReply(interaction, parsed.sessionId, selected, parsed.userId);
+          return;
+        }
+        if (parsed.action === "pf-pick") {
+          if (service.availability() !== "ready") {
+            await updateProfile(interaction, { content: closedMessage(), embeds: [], components: [] });
+            return;
+          }
+          const gate = service.previewCharacterProfile(parsed.sessionId, interaction.user.id, selected);
+          if (!gate.ok) { await updateProfile(interaction, { content: gate.message, embeds: [], components: [] }); return; }
+          await updateProfile(interaction, profileView(gate.session, gate.member, "ov", 0));
           return;
         }
         if (parsed.action === "s-pick") {
