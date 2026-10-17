@@ -8,8 +8,8 @@ import { createCocInteractionRouter } from "./interactionRouter.js";
 import { controlPanel } from "./panel.js";
 import { findSnapshotSkill } from "./textDice.js";
 import {
-  NO_PL_MESSAGE, NO_SHEET_MESSAGE, PROFILE_LIMITS, PROFILE_SECTIONS, TRUNCATED_NOTE,
-  profileMemberPicker, profilePages, profileView,
+  NO_PL_MESSAGE, NO_SHEET_MESSAGE, PAGE_CHARS, PROFILE_LIMITS, PROFILE_SECTIONS, TRUNCATED_NOTE,
+  profileMemberPicker, profilePages, profileView, safeText, splitTextPages,
 } from "./characterProfile.js";
 
 let passed = 0; let failed = 0;
@@ -238,5 +238,67 @@ try {
   check(navIds.every((id) => id.length <= 100 && /^coc:v1:pf-(ov|at|sk|bg|eq|list)-\d+:s1(:1)?$/.test(id)), "翻页 customId 只含区块、页码、sessionId、目标 userId");
   check(profileView(session, { userId: "1", characterName: "旧" }, "ov", 0).content === NO_SHEET_MESSAGE, "无 characterSheet 不崩溃");
 }
+
+// 分页：优先换行；跨页边界的 \* 不被切断；不切断 surrogate pair；每页 ≤ PAGE_CHARS
+{
+  function escapesComplete(page) {
+    for (let i = 0; i < page.length; i++) {
+      if (page[i] === "\\") {
+        if (i + 1 >= page.length) return false;
+        i += 1;
+      }
+    }
+    return true;
+  }
+  // 旧硬切会在 PAGE_CHARS 处把 \ 和 * 拆开
+  const escapedStar = safeText("*");
+  check(escapedStar === "\\*", "safeText(*) 生成 \\*");
+  const across = "a".repeat(PAGE_CHARS - 1) + escapedStar + "b".repeat(80);
+  const starPages = splitTextPages(across, PAGE_CHARS);
+  check(starPages.length >= 2, "边界 \\* 场景会分页");
+  check(starPages.every((page) => page.length <= PAGE_CHARS), "边界 \\* 每页不超过 PAGE_CHARS");
+  check(starPages.every(escapesComplete), "每页转义序列完整（无页以悬挂 \\ 结尾）");
+  check(starPages.some((page) => page.includes("\\*")), "完整 \\* 落在同一页");
+  check(!starPages.some((page) => page.endsWith("\\") && !page.endsWith("\\\\")), "没有页以单个未配对 \\ 结尾");
+  check(starPages.join("") === across, "无换行文本分页后拼接还原");
+
+  // 多个转义贴在边界
+  const multi = "x".repeat(PAGE_CHARS - 3) + safeText("*_~") + "z".repeat(20);
+  const multiPages = splitTextPages(multi, PAGE_CHARS);
+  check(multiPages.every((page) => page.length <= PAGE_CHARS) && multiPages.every(escapesComplete)
+    && multiPages.join("") === multi, "连续转义贴边界时仍完整且不超长");
+
+  // 优先在换行处切
+  const line = "行内容".repeat(30);
+  const lined = Array.from({ length: 40 }, () => line).join("\n");
+  const linePages = splitTextPages(lined, PAGE_CHARS);
+  check(linePages.length > 1 && linePages.every((page) => page.length <= PAGE_CHARS), "换行文本分页且每页不超长");
+  check(linePages.every((page) => !page.endsWith("\n")), "换行切点不把分隔换行留在页尾");
+  check(linePages.join("\n") === lined, "换行切页拼接还原");
+  check(linePages.every((page) => !page.includes("\n") || page.split("\n").every((seg) => seg.length <= PAGE_CHARS)), "各行本身不超过上限");
+
+  // surrogate pair：emoji 正好卡在旧硬切点
+  const emoji = "😀";
+  check(emoji.length === 2, "测试用 emoji 是 surrogate pair");
+  const emojiText = "a".repeat(PAGE_CHARS - 1) + emoji + "尾";
+  const emojiPages = splitTextPages(emojiText, PAGE_CHARS);
+  check(emojiPages.every((page) => page.length <= PAGE_CHARS), "代理对场景每页不超长");
+  check(emojiPages.some((page) => page.includes(emoji)), "emoji 完整在同一页");
+  check(emojiPages.every((page) => {
+    const last = page.charCodeAt(page.length - 1);
+    const first = page.charCodeAt(0);
+    return !(last >= 0xD800 && last <= 0xDBFF) && !(first >= 0xDC00 && first <= 0xDFFF);
+  }), "不切断 surrogate pair");
+  check(emojiPages.join("") === emojiText, "代理对文本拼接还原");
+
+  // 真实档案路径：长背景含 * 与换行，经 profilePages 后每页转义完整
+  const history = `${"前".repeat(100)}*星号*${"中".repeat(2000)}\n第二段*再星*${"后".repeat(2000)}`;
+  const bgSheet = { character: { background: { personalHistory: history } }, derived: {} };
+  const bgPages = profilePages(bgSheet, "bg");
+  check(bgPages.every((page) => page.length <= PAGE_CHARS), "档案背景分页每页正文 ≤ PAGE_CHARS");
+  check(bgPages.every(escapesComplete), "档案背景每页转义完整");
+  check(bgPages.some((page) => page.includes("\\*")), "背景中的 \\* 完整出现");
+}
+
 console.log(`${passed} passed / ${failed} failed`);
 if (failed) process.exit(1);

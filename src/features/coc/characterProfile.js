@@ -4,7 +4,7 @@ import { buildCustomId } from "./panel.js";
 import { snapshotSkillValue } from "./textDice.js";
 
 export const PROFILE_LIMITS = Object.freeze({ embedTotal: 6000, description: 4096, fieldValue: 1024, content: 2000 });
-const PAGE_CHARS = 3500; // description 预算，留出标题、页脚余量
+export const PAGE_CHARS = 3500; // description 预算，留出标题、页脚余量
 const LIST_PAGE_SIZE = 25;
 export const NO_SHEET_MESSAGE = "当前没有保存完整档案。";
 export const NO_PL_MESSAGE = "本局目前没有调查员。";
@@ -109,20 +109,65 @@ function sectionBlocks(sheet, section) {
   return [];
 }
 
-/** 把块切成每页不超过 PAGE_CHARS 的 description；超长单块按字符切开，不丢内容。 */
-function paginate(blocks) {
-  const pieces = [];
-  for (const block of blocks) {
-    for (let i = 0; i < block.length; i += PAGE_CHARS) pieces.push(block.slice(i, i + PAGE_CHARS));
+/**
+ * 在不超过 max 的前提下找安全切点：不切断 surrogate pair，不切断「\\ + 下一字符」转义序列。
+ * 返回切点下标（从 start 起算的绝对下标），保证至少前进 1 个码元（极端情况下最多 2）。
+ */
+export function safeCutIndex(text, start, max) {
+  const limit = Math.min(start + max, text.length);
+  if (limit <= start) return Math.min(start + 1, text.length);
+  let end = limit;
+  // 高位代理落在末尾、低位代理在下一页开头 → 把高位代理留给下一页
+  if (end > start && end < text.length) {
+    const code = text.charCodeAt(end - 1);
+    if (code >= 0xD800 && code <= 0xDBFF) end -= 1;
   }
+  // 奇数个连续尾部反斜杠意味着最后一个 \\ 还在等待被转义的字符 → 回退
+  if (end > start && end < text.length) {
+    let i = end - 1;
+    while (i >= start && text[i] === "\\") i -= 1;
+    if ((end - 1 - i) % 2 === 1) end -= 1;
+  }
+  // 回退后若什么都没切到，至少带走一个完整转义或一个代理对
+  if (end <= start) {
+    end = start + 1;
+    if (end < text.length && text[start] === "\\") end = start + 2;
+    else if (end < text.length) {
+      const code = text.charCodeAt(start);
+      if (code >= 0xD800 && code <= 0xDBFF) end = start + 2;
+    }
+  }
+  return Math.min(end, text.length);
+}
+
+/** 把一段文本切成每页不超过 max 的页；优先在换行处切，单行超长时用 safeCutIndex。 */
+export function splitTextPages(text, max = PAGE_CHARS) {
+  if (!text) return ["—"];
   const pages = [];
-  let current = "";
-  for (const piece of pieces) {
-    const next = current ? `${current}\n${piece}` : piece;
-    if (next.length > PAGE_CHARS) { pages.push(current); current = piece; } else current = next;
+  let cursor = 0;
+  while (cursor < text.length) {
+    if (text.length - cursor <= max) {
+      pages.push(text.slice(cursor));
+      break;
+    }
+    const window = text.slice(cursor, cursor + max);
+    const newline = window.lastIndexOf("\n");
+    let end;
+    if (newline > 0) {
+      end = cursor + newline; // 换行本身留到下一页开头去掉，本页不含尾部 \n
+    } else {
+      end = safeCutIndex(text, cursor, max);
+    }
+    pages.push(text.slice(cursor, end));
+    cursor = end;
+    if (text[cursor] === "\n") cursor += 1; // 吃掉用作分隔的换行，避免下页以空行起头叠出来
   }
-  if (current || !pages.length) pages.push(current || "—");
-  return pages;
+  return pages.length ? pages : ["—"];
+}
+
+/** 把块拼成文本后分页；超长不丢内容，切点不破坏转义与代理对。 */
+function paginate(blocks) {
+  return splitTextPages(blocks.join("\n"), PAGE_CHARS);
 }
 
 export function profilePages(sheet, section) {
