@@ -36,6 +36,10 @@ try {
   check(!(await client.list("200")).ok, "列表中其它 owner 不能展示给用户 B");
   check(!(await client.read("a", "200")).ok, "用户 B 不能选择用户 A 的卡");
   check((await client.read("a", "100")).snapshot.initialSan === 35, "初始理智来自独立字段而非 POW");
+  {
+    const picked = (await client.read("a", "100")).snapshot;
+    check(JSON.stringify(picked.current) === JSON.stringify({ hp: picked.initialHp, san: picked.initialSan, mp: picked.initialMp }), "选卡时 current 用初始 HP/SAN/MP 初始化");
+  }
   const absent = structuredClone(card); delete absent.initialSan;
   data = { ...data, character: absent };
   check(!(await client.read("a", "100")).ok, "缺失 initialSan 明确拒绝，不从 POW 补值");

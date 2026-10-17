@@ -2,6 +2,7 @@
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder } from "discord.js";
 import { buildCustomId } from "./panel.js";
 import { snapshotSkillValue } from "./textDice.js";
+import { currentStats, formatStatLine } from "./currentStats.js";
 
 export const PROFILE_LIMITS = Object.freeze({ embedTotal: 6000, description: 4096, fieldValue: 1024, content: 2000 });
 export const PAGE_CHARS = 3500; // description 预算，留出标题、页脚余量
@@ -214,6 +215,10 @@ export function profileView(session, member, section = "ov", page = 0) {
   }
   const sec = SECTION_LABEL.has(section) ? section : "ov";
   const pages = profilePages(sheet, sec);
+  if (sec === "ov") {
+    const stats = currentStats(member);
+    pages[0] = `**当前状态**：${stats ? formatStatLine(stats) : "数据异常"}\n${pages[0]}`;
+  }
   const current = Math.min(pages.length - 1, Math.max(0, Number.isInteger(page) ? page : 0));
   const name = safeText(member.characterName || sheet.character?.identity?.name || "调查员").slice(0, 150);
   const footer = [`${SECTION_LABEL.get(sec)} 第 ${current + 1}/${pages.length} 页`, "仅 KP 可见 · 选卡时保存的快照"];

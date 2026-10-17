@@ -1,6 +1,7 @@
 import { Events } from "discord.js";
 import { parseBonusPenalty } from "./dice/bonusPenalty.js";
 import { parseDiceExpression } from "./dice/parser.js";
+import { parseStatCommand } from "./currentStats.js";
 
 /** 整句必须是 /r 已接受的骰子表达式。认不出就当普通聊天。 */
 export function isWholeMessageDice(content) {
@@ -105,7 +106,8 @@ export function formatBonusPenalty(userId, result) {
  */
 export function messageNeedsTextDice(message, channelIsActive) {
   if (!channelIsActive || !message || message.system || message.author?.bot || !message.guildId) return false;
-  return isWholeMessageDice(message.content) || isBonusPenaltyMessage(message.content) || parseSkillDice(message.content).ok;
+  return isWholeMessageDice(message.content) || isBonusPenaltyMessage(message.content) || parseSkillDice(message.content).ok
+    || parseStatCommand(message.content).ok;
 }
 
 export function attachTextDiceListener({ client, service, logger = console }) {

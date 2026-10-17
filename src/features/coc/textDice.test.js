@@ -78,6 +78,13 @@ assertEqual(formatBonusPenalty("user", {
     author: { bot: false },
     content: "1d100",
   }, true) === false, "系统消息不掷");
+  for (const content of ["sc 0/1d6", "sc 1d3/1d20", "hp <@123> -5", "san <@123> -1d10", "mp <@!123> +3", "st", "ST"]) {
+    assert(messageNeedsTextDice({ guildId: "g", author: { bot: false }, content }, true), `闸门放行 ${content}`);
+    assert(!messageNeedsTextDice({ guildId: "g", author: { bot: false }, content }, false), `非跑团频道不放行 ${content}`);
+  }
+  for (const content of ["st一下", "hp快没了", "sc是啥", "sc 0/1d6 吧", "hp <@123> 5"]) {
+    assert(!messageNeedsTextDice({ guildId: "g", author: { bot: false }, content }, true), `闸门不放行日常聊天 ${content}`);
+  }
   assert(messageNeedsTextDice({ guildId: "g", author: { bot: false }, content: "2d6-1" }, true) === true, "进行中的频道里整句骰子才读");
   let bonusReads = 0;
   const lobbyBonus = {

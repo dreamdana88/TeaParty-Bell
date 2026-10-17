@@ -77,6 +77,7 @@ export function createCharacterClient({ baseUrl, secret, fetchImpl = globalThis.
       initialHp: data.derived.hp, initialSan: card.initialSan,
       initialMp: data.derived.mp, initialLuck: card.characteristics.luck, skills: card.skills,
       characteristics, characterSheet,
+      current: { hp: data.derived.hp, san: card.initialSan, mp: data.derived.mp },
     }) };
   }
   return { list, read };
