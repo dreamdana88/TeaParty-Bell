@@ -40,6 +40,43 @@ export function findSnapshotSkill(member, query) {
   return { ok: true, name: fullName(skill), value };
 }
 
+const CHARACTERISTICS = [
+  ["str", "力量", "STR"], ["con", "体质", "CON"], ["siz", "体型", "SIZ"],
+  ["dex", "敏捷", "DEX"], ["app", "外貌", "APP"], ["int", "智力", "INT"],
+  ["pow", "意志", "POW"], ["edu", "教育", "EDU"], ["luck", "幸运", "LUCK"],
+];
+
+/** 属性名（中文或英文，英文大小写不敏感）→ { key, label }；不是属性返回 null。 */
+export function findCharacteristic(query) {
+  const text = String(query ?? "").trim();
+  const found = CHARACTERISTICS.find(([, zh, en]) => text === zh || text.toUpperCase() === en);
+  return found ? { key: found[0], label: `${found[1]} ${found[2]}` } : null;
+}
+
+const validCharacteristic = value => Number.isSafeInteger(value) && value >= 0;
+
+/**
+ * 检定目标解析：属性名优先，否则按技能处理。只读本局快照，不读 characterSheet、不读档案馆。
+ * 老 Session 缺 characteristics 时，只有幸运回退到 member.initialLuck。
+ */
+export function resolveCheckTarget(member, query) {
+  const characteristic = findCharacteristic(query);
+  if (!characteristic) return findSnapshotSkill(member, query);
+  if (!member?.characterId) return { ok: false, message: "请先绑定本局调查员角色卡。" };
+  const abnormal = { ok: false, message: "本局角色属性数据异常，请联系 KP。" };
+  const stats = member.characteristics;
+  if (stats == null) {
+    if (characteristic.key === "luck" && validCharacteristic(member.initialLuck)) {
+      return { ok: true, name: characteristic.label, value: member.initialLuck };
+    }
+    return abnormal;
+  }
+  if (typeof stats !== "object" || Array.isArray(stats)) return abnormal;
+  const value = stats[characteristic.key];
+  if (!validCharacteristic(value)) return abnormal;
+  return { ok: true, name: characteristic.label, value };
+}
+
 /**
  * 自然消息骰子的回复。骰面和总值直接用这一次 roll 的结果，不另掷。
  * @param {string} userId
