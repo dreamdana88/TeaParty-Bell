@@ -15,7 +15,7 @@ function check(value, label) { assert.ok(value, label); passed++; console.log(`P
 const secret = "test-b8-secret";
 const card = {
   schemaVersion: 1, ruleset: "coc7", id: "a", ownerDiscordUserId: "100",
-  identity: { name: "奈洛莉" }, characteristics: { pow: 70, luck: 60 }, initialSan: 35,
+  identity: { name: "奈洛莉" }, characteristics: { str: 50, con: 60, siz: 55, dex: 70, app: 65, int: 75, pow: 70, edu: 80, luck: 60 }, initialSan: 35,
   occupation: { name: "演员" }, skills: [{ name: "艺术", specialty: "演技", base: 5, growth: 0, occupationPoints: 45, interestPoints: 0 }],
 };
 let data = { ok: true, character: card, derived: { hp: 11, mp: 14 } };
